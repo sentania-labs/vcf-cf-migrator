@@ -1,0 +1,58 @@
+# CI for vcf-cf-migrator: install the package (which pulls the pinned core
+# wheel by URL), run the suite, then drive the installed console script over
+# a generated fixture zip.
+#
+# Placement (github-ci skill): needs no lab, no Docker daemon, so a
+# GitHub-hosted runner; free on this public repo. Nothing here reads a real
+# corpus: the corpus lives on the admin's workstation and never in CI.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0   # setuptools-scm derives the version from tags
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the package (pulls the pinned core wheel by URL)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pytest
+          python -m pip show vcf-cf-tooling-core | head -3
+
+      - name: Run the suite
+        run: python -m pytest -q
+
+      - name: Drive the installed console script over a generated fixture
+        run: |
+          python tests/fixtures/make_export_fixture.py "$RUNNER_TEMP/fixture.zip"
+          cd "$RUNNER_TEMP"
+          vcfcf-migrator version
+          vcfcf-migrator inspect fixture.zip
+          vcfcf-migrator --source-version 8.18.7 inspect fixture.zip
+          if vcfcf-migrator --source-version 8.9.0 inspect fixture.zip; then echo "::error::8.9.0 must be refused"; exit 1; fi
+          vcfcf-migrator inspect --json fixture.zip | python -c 'import json,sys; d=json.load(sys.stdin); assert len(d["items"]) == 16, d["counts"]; print("items ok:", d["counts"])'

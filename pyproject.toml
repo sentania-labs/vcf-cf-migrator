@@ -1,0 +1,46 @@
+# vcf-cf-migrator: packaging metadata for the vcfcf_migrator package.
+#
+# The core library is pinned by release URL (PEP 508 direct reference), never
+# by a PyPI name: it is published only as a wheel on a GitHub Release of the
+# factory repo. Bump the URL to move to a new core release.
+#
+# Versioning: the tool's version comes from a vX.Y.Z git tag via
+# setuptools-scm. An untagged working tree gets a dev version derived from the
+# commit distance; a tree with no git metadata at all gets fallback_version.
+
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vcf-cf-migrator"
+description = "Move custom content between VCF Operations instances from a content export zip: inspect, tree, preview, select, build an import bundle."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "vcf-cf-tooling-core @ https://github.com/sentania-labs/vcf-content-factory/releases/download/core-v0.1.0/vcf_cf_tooling_core-0.1.0-py3-none-any.whl",
+    "PyYAML>=6.0",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/sentania-labs/vcf-cf-migrator"
+
+[project.scripts]
+vcfcf-migrator = "vcfcf_migrator.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["vcfcf_migrator*"]
+
+[tool.setuptools_scm]
+tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)$"
+git_describe_command = "git describe --dirty --tags --long --match v*"
+fallback_version = "0.0.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
