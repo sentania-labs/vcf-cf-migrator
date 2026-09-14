@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import json
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -36,9 +37,9 @@ def _get(srv, path="/"):
         return r.status, r.read().decode("utf-8")
 
 
-def _post(srv, path, form):
+def _post(srv, path, form, headers=None):
     data = urllib.parse.urlencode(form).encode()
-    req = urllib.request.Request(_url(srv, path), data=data, method="POST")
+    req = urllib.request.Request(_url(srv, path), data=data, method="POST", headers=headers or {})
     with urllib.request.urlopen(req) as r:
         return r.status, r.read().decode("utf-8")
 
@@ -50,6 +51,7 @@ def test_page_shows_versions_settings_and_listing(server):
     assert f"vcfcf_core {vcfcf_core.__version__}" in body
     assert "id='corpus_dir'" in body and "value='corpus'" in body
     assert "current value from: default" in body
+    assert "id='source_version'" in body and "current value from: not declared" in body
     assert "[Fixture] Cluster Overview" in body
     assert "[Fixture] SM 2" in body
     for cmd in ("tree", "build", "corpus-check"):
@@ -70,6 +72,43 @@ def test_saving_corpus_dir_persists_to_the_settings_file(server, config_dir):
     assert "value='/data/exports'" in body
     assert "current value from: settings file" in body
     assert settings.corpus_dir()[0].as_posix() == "/data/exports"
+
+
+def test_saving_source_version_persists_and_rechecks_the_listing(server, config_dir):
+    status, body = _post(server, "/settings", {"source_version": "8.18.7"})
+    assert status == 200
+    assert "source version 8.18.7 saved to" in body
+    assert json.loads((config_dir / "settings.json").read_text()) == {"source_version": "8.18.7"}
+    assert "value='8.18.7'" in body
+    assert "source version: 8.18.7 (declared; floor 8.10 passed)" in body
+    assert settings.source_version() == ("8.18.7", f"settings file ({config_dir / 'settings.json'})")
+
+
+def test_saving_a_source_version_below_the_floor_is_refused_and_not_saved(server, config_dir):
+    _, body = _post(server, "/settings", {"source_version": "8.9.0"})
+    assert "refused: declared source version 8.9.0 is below the floor 8.10" in body
+    assert not (config_dir / "settings.json").exists()
+    _, body = _post(server, "/settings", {"source_version": "eight"})
+    assert "not major.minor[.patch]" in body
+    assert not (config_dir / "settings.json").exists()
+
+
+def test_foreign_origin_post_is_refused_with_403(server, config_dir):
+    """Review W2: a page on another origin must not be able to post here."""
+    for headers in ({"Origin": "http://evil.example"},
+                    {"Origin": "http://127.0.0.1:1"},
+                    {"Origin": "null"},
+                    {"Host": "evil.example"}):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(server, "/settings", {"corpus_dir": "/pwned"}, headers=headers)
+        assert e.value.code == 403, headers
+    assert not (config_dir / "settings.json").exists()
+    # The page's own origin, and a bare same-host request with no Origin, pass.
+    port = server.server_address[1]
+    status, _ = _post(server, "/settings", {"corpus_dir": "/ok"}, headers={"Origin": f"http://127.0.0.1:{port}"})
+    assert status == 200
+    status, _ = _post(server, "/settings", {"corpus_dir": "/ok2"})
+    assert status == 200
 
 
 def test_environment_overrides_the_saved_setting(server, config_dir, monkeypatch):
