@@ -10,8 +10,8 @@
   | From | To | Written as |
   |---|---|---|
   | dashboard | view | uuid, widget `viewDefinitionId` |
-  | dashboard | super metric | widget metric key, by uuid or by name |
-  | dashboard | custom group | widget resource scope, by name, object or list shaped |
+  | dashboard | super metric | any string in the widget subtree, by uuid or by name |
+  | dashboard | custom group | widget scope or `entryKeys.resource`, by name, in any of its shapes |
   | view | super metric | column `attributeKey`, by uuid or by name |
   | super metric | super metric | the `formula` field, by uuid or by name |
   | symptom | super metric | `<Condition key=...>`, by uuid or by name |
@@ -23,8 +23,12 @@
   | notification rule | outbound endpoint, template | by name |
   | report | view, dashboard | uuid, section `ContentKey` |
 
-  An edge whose target is not in the export is shown as missing, named and
-  counted; a by-name value that names no object here, which is the normal case
+  Every reference is read from the parsed document by walking the field, so a
+  value that is an object in one widget and a list in the next is read the
+  same way, and a shape this tool has never seen is reported rather than
+  resolving to nothing. An edge to something a bundle cannot carry is shown
+  as missing, named and counted, saying which it is: not in the export at
+  all, or in it but in a member never carried, as a custom group's policy is; a by-name value that names no object here, which is the normal case
   for a membership rule or a resource scope, is not. A name several different
   objects answer to carries every match and says so, in `tree` and in `build`.
   A uuid quoted in a description is prose, not a reference, and is not

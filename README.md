@@ -56,12 +56,13 @@ dashboard Acme Capacity Overview [aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa] owner 11
       supermetric Acme Spare CPU [dddddddd-4444-4444-8444-dddddddddddd]
   view Acme Host List [eeeeeeee-5555-4555-8555-eeeeeeeeeeee]
 ...
-edges to objects this export does not carry: 197
-  alert [AlertDefinition-VMWARE-SomeBuiltInAlert] wanted by notificationrule ...
+edges to objects a bundle cannot carry: 201
+  alert [AlertDefinition-VMWARE-SomeBuiltInAlert] wanted by notificationrule ...; it is not in this export
 ```
 
 The names and uuids above are made up. The counts are from a real 9.0.2
-export: 430 objects, and one dashboard out of it needs 11.
+export: 430 objects, 201 references to things a bundle from it cannot carry,
+and dashboards whose closure runs from 1 object to 16.
 
 Then pick what you want. A selection file is one object per line, `#`
 comments and blank lines allowed. A bare uuid takes any object with that
@@ -97,8 +98,8 @@ The edges the tree follows, and how the export writes each:
 | From | To | Written as |
 |---|---|---|
 | dashboard | view | uuid, widget `viewDefinitionId` |
-| dashboard | super metric | widget metric key, by uuid or by name |
-| dashboard | custom group | widget resource scope, by name, object or list shaped |
+| dashboard | super metric | any string in the widget subtree, by uuid or by name |
+| dashboard | custom group | widget scope or `entryKeys.resource`, by name, in any of its shapes |
 | view | super metric | column `attributeKey`, by uuid or by name |
 | super metric | super metric | the `formula` field, by uuid or by name |
 | symptom | super metric | `<Condition key=...>`, by uuid or by name |
