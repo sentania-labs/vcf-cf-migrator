@@ -57,9 +57,11 @@ def test_inspect_json_carries_the_same_items(export_zip, capsys):
 
 
 def test_read_export_uses_the_core_readers_for_dashboards_and_supermetrics(export_zip):
+    from make_export_fixture import OWNER
+
     export = read_export(export_zip)
     sources = {(i.kind, i.source) for i in export.items}
-    assert ("dashboard", "dashboards/aaaa1111-0000-4000-8000-00000000000a") in sources
+    assert ("dashboard", f"dashboards/{OWNER}") in sources
     assert ("supermetric", "supermetrics.json") in sources
     assert ("view", "views.zip") in sources
     assert ("report", "reports.zip") in sources
