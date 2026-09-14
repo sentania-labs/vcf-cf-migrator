@@ -3,11 +3,32 @@
 ## Unreleased
 
 - `tree`: the dependency tree over the export's own documents, readable by
-  default and `--json` for machines. Edges: dashboard to view and to super
-  metric, view to super metric, super metric to super metric, alert to
-  symptom and recommendation, notification rule to alert, endpoint and
-  template, report to view and dashboard. An edge whose target is not in
-  the export is shown as missing, named and counted.
+  default and `--json` for machines. Every reference is read from the parsed
+  document, never with a regex over its text, because one reference class is
+  written in several shapes and a regex matches one of them. The edges:
+
+  | From | To | Written as |
+  |---|---|---|
+  | dashboard | view | uuid, widget `viewDefinitionId` |
+  | dashboard | super metric | widget metric key, by uuid or by name |
+  | dashboard | custom group | widget resource scope, by name, object or list shaped |
+  | view | super metric | column `attributeKey`, by uuid or by name |
+  | super metric | super metric | the `formula` field, by uuid or by name |
+  | symptom | super metric | `<Condition key=...>`, by uuid or by name |
+  | alert | symptom, recommendation | uuid, `ref=` |
+  | custom group | custom group | membership `RelationshipRule`, by name |
+  | custom group | policy | uuid; always reported missing, since `policies.xml` is never carried |
+  | notification rule | alert | uuid, condition `AlertDefinitionID` |
+  | notification rule | custom group | condition resource scope, by name |
+  | notification rule | outbound endpoint, template | by name |
+  | report | view, dashboard | uuid, section `ContentKey` |
+
+  An edge whose target is not in the export is shown as missing, named and
+  counted; a by-name value that names no object here, which is the normal case
+  for a membership rule or a resource scope, is not. A name several different
+  objects answer to carries every match and says so, in `tree` and in `build`.
+  A uuid quoted in a description is prose, not a reference, and is not
+  followed.
 - `build`: an import bundle carrying only the closed selection.
   `--select FILE` takes uuid or `kind:uuid` lines (`kind:uuid@owner` for a
   dashboard two owners share), `--select-all` takes everything. Selecting
