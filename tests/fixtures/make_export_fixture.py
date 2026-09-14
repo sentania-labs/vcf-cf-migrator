@@ -30,12 +30,19 @@ DASHBOARD_ID = "2d7b8c1e-4f11-4c7a-9a55-0c1f2e3d4a5b"
 # Only OWNER_2 has this one, so a selection can cross two owner members.
 DASHBOARD_ID_2 = "8e1c2d3f-5a6b-4c7d-9e8f-0a1b2c3d4e5f"
 VIEW_IDS = ("6e8310ed-1753-45a4-aacc-7f1025c03d11", "9a1b2c3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d")
-SM_IDS = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+SM_IDS = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+          "33333333-3333-4333-8333-333333333333")
 REPORT_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f"
 # A super metric uuid nothing in the fixture defines, so an edge to an object
 # the export does not carry can be exercised. Real exports are full of these.
 ABSENT_SM_ID = "deadbeef-0000-4000-8000-000000000001"
 ABSENT_ALERT_ID = "AlertDefinition-VMWARE-NotInThisExport"
+# A super metric named by a formula that nothing in the fixture defines: the
+# by-name spelling has to report a miss the same way the uuid spelling does.
+ABSENT_SM_NAME = "[Fixture] SM Nowhere"
+# A custom group named by a membership rule that names no group here. Most
+# ruleStringValues name ordinary resources, so this one must stay silent.
+ABSENT_GROUP_NAME = "[Fixture] Other Clusters"
 RULE_ID = "5e9c97aa-a5b0-473e-b51f-a581b2535f59"
 RULE_ID_2 = "7f0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
 TEMPLATE_ID = "b97f2879-57ef-4317-880c-a1a0a1f3ecab"
@@ -52,6 +59,7 @@ EXPECTED_ITEMS = {
     ("view", "[Fixture] VM List", VIEW_IDS[1]),
     ("supermetric", "[Fixture] SM 1", SM_IDS[0]),
     ("supermetric", "[Fixture] SM 2", SM_IDS[1]),
+    ("supermetric", "[Fixture] SM 3", SM_IDS[2]),
     ("customgroup", "[Fixture] Prod Clusters", ""),
     ("symptom", "[Fixture] CPU high", "SymptomDefinition-VMWARE-Fixture_CPU_high"),
     ("alert", "[Fixture] Cluster CPU alert", "AlertDefinition-VMWARE-Fixture_Cluster_CPU"),
@@ -159,11 +167,16 @@ def _cluster_overview() -> dict:
 
 
 def _vm_overview() -> dict:
+    # The widget is scoped to a custom group, which an export writes as a
+    # resource binding by name with a Container resource kind.
     return {
         "id": DASHBOARD_ID_2,
         "name": "[Fixture] VM Overview",
-        "widgets": [{"type": "View", "config": {"viewDefinitionId": VIEW_IDS[1]},
-                     "gridsterCoords": {}}],
+        "widgets": [{"type": "View", "gridsterCoords": {},
+                     "config": {"viewDefinitionId": VIEW_IDS[1],
+                                "resource": {"resourceId": "resource:id:0_::_",
+                                             "resourceName": "[Fixture] Prod Clusters",
+                                             "resourceKindId": "002009ContainerEnvironment"}}}],
         "widgetInteractions": [],
     }
 
@@ -198,16 +211,32 @@ def build_export_zip(without=()) -> bytes:
     dash_inner_2 = _dash_zip([_cluster_overview(), _vm_overview()])
 
     sms = {
-        # SM 1's formula reaches SM 2: the super metric to super metric edge.
+        # SM 1 reaches SM 2 by uuid, the 9.x spelling. Its description quotes
+        # SM 3's uuid as prose, which is not a reference and must not be read
+        # as one: real exports say "Companion to X (UUID ...)".
         SM_IDS[0]: {"name": "[Fixture] SM 1",
                     "formula": f"${{this, metric=Super Metric|sm_{SM_IDS[1]}}} + 1",
+                    "description": f"Companion to [Fixture] SM 3 (UUID {SM_IDS[2]}).",
+                    "unitId": "", "resourceKinds": []},
+        # SM 2 reaches SM 3 by name, the 8.x spelling.
+        SM_IDS[1]: {"name": "[Fixture] SM 2",
+                    "formula": '${this, metric=Super Metric|@supermetric:"[Fixture] SM 3"} * 2',
                     "description": "", "unitId": "", "resourceKinds": []},
-        SM_IDS[1]: {"name": "[Fixture] SM 2", "formula": "2", "description": "", "unitId": "", "resourceKinds": []},
+        # SM 3 names one that does not exist, which must be reported missing.
+        SM_IDS[2]: {"name": "[Fixture] SM 3",
+                    "formula": f'${{this, metric=Super Metric|@supermetric:"{ABSENT_SM_NAME}"}}',
+                    "description": "", "unitId": "", "resourceKinds": []},
     }
     groups = {"customGroups": [{
         "name": "[Fixture] Prod Clusters", "description": "", "adapterKind": "Container",
         "resourceKind": "Environment", "autoResolveMembership": True, "started": True,
-        "membershipDefinition": {"rules": []},
+        # A RelationshipRule names another group by name. This one names no
+        # group in this export, which is the common case and stays silent.
+        "membershipDefinition": {"ruleGroups": [{
+            "resourceKind": "VirtualMachine", "adapterKind": "VMWARE",
+            "rules": [{"ruleType": "RelationshipRule", "ruleRelationshipType": "DESCENDANT",
+                       "ruleStringOperator": "EQUALS", "ruleStringValue": ABSENT_GROUP_NAME}],
+        }]},
     }], "customGroupTypes": []}
     # 9.1.1 nesting: one entry whose NotificationRule key holds the list of
     # rules (8.x carries one dict per entry; the reader takes both).
@@ -249,7 +278,7 @@ def build_export_zip(without=()) -> bytes:
         "pluginType": "StandardEmailPlugin",
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
     }]}
-    manifest = {"dashboards": 3, "views": 2, "superMetrics": 2, "customGroups": 1, "reports": 1,
+    manifest = {"dashboards": 3, "views": 2, "superMetrics": 3, "customGroups": 1, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
                 "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 2}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'
