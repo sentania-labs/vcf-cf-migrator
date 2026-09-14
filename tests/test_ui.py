@@ -56,6 +56,7 @@ def test_page_shows_versions_settings_and_listing(server):
     assert "[Fixture] SM 2" in body
     for cmd in ("tree", "build", "corpus-check"):
         assert f"value='{cmd}'" in body
+        assert f"Show the {cmd} command" in body
     assert "id='zip'" in body
 
 
@@ -134,9 +135,18 @@ def test_inspect_form_and_json_toggle(server, export_zip):
     assert "is not a zip file" in body or "cannot read" in body
 
 
-def test_stub_buttons_answer_like_the_cli(server):
+def test_pending_buttons_hand_back_the_command_to_run(server, export_zip):
+    """tree, build and corpus-check run on the CLI today; their page controls
+    land in the next PR. Until then the buttons do the one useful thing they
+    can: hand back the exact command line for what the page is set to."""
+    _, body = _post(server, "/inspect", {"zip": str(export_zip)})
+    _, body = _post(server, "/run", {"cmd": "tree"})
+    assert f"vcfcf-migrator tree {export_zip}" in html.unescape(body)
     _, body = _post(server, "/run", {"cmd": "build"})
-    assert "vcfcf-migrator build: not implemented in M3, see spec" in body
+    assert "--select &lt;picks.txt&gt; --out &lt;bundle.zip&gt;" in body
+    assert "refuses without a declared source version" in body
+    _, body = _post(server, "/run", {"cmd": "corpus-check"})
+    assert "vcfcf-migrator corpus-check" in body
 
 
 def test_unknown_path_is_404(server):

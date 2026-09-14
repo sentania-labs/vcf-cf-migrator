@@ -174,13 +174,17 @@ def test_the_same_template_in_two_members_is_listed_once(tmp_path, capsys):
 def test_a_dashboard_shared_by_two_owners_lists_once_per_owner(export_zip, capsys):
     """Five dashboards on a real 9.x export sit under two owners with the
     same uuid; dashboardsByOwner counts each, so the listing must too."""
-    from make_export_fixture import DASHBOARD_ID, OWNER, OWNER_2
+    from make_export_fixture import DASHBOARD_ID, DASHBOARD_ID_2, OWNER, OWNER_2
 
     assert main(["inspect", "--json", str(export_zip)]) == 0
     doc = json.loads(capsys.readouterr().out)
     dashes = [(i["uuid"], i["source"]) for i in doc["items"] if i["kind"] == "dashboard"]
-    assert sorted(dashes) == sorted([(DASHBOARD_ID, f"dashboards/{OWNER}"), (DASHBOARD_ID, f"dashboards/{OWNER_2}")])
-    assert doc["counts"]["dashboard"] == doc["manifest"]["dashboards"] == 2
+    assert sorted(dashes) == sorted([
+        (DASHBOARD_ID, f"dashboards/{OWNER}"),
+        (DASHBOARD_ID, f"dashboards/{OWNER_2}"),
+        (DASHBOARD_ID_2, f"dashboards/{OWNER_2}"),
+    ])
+    assert doc["counts"]["dashboard"] == doc["manifest"]["dashboards"] == 3
 
 
 def test_payload_templates_read_both_nestings(tmp_path, capsys):
@@ -246,7 +250,6 @@ def test_notification_rules_read_both_nestings(tmp_path, capsys):
 
 def test_inspect_refuses_a_zip_that_is_not_a_content_export(tmp_path, capsys):
     """Review N5: no marker and no configuration.json is not an export."""
-    import io
     import zipfile
 
     empty = tmp_path / "empty.zip"
@@ -276,12 +279,15 @@ def test_inspect_rejects_a_non_zip(tmp_path, capsys):
     assert main(["inspect", str(tmp_path / "missing.zip")]) == 1
 
 
-@pytest.mark.parametrize("argv", [["tree", "x.zip"], ["build", "x.zip"], ["corpus-check"]])
-def test_stubs_exit_2_without_a_traceback(argv, capsys):
-    assert main(argv) == 2
-    captured = capsys.readouterr()
-    assert "not implemented in M3, see spec" in captured.err
-    assert "Traceback" not in captured.err
+@pytest.mark.parametrize("argv,code", [
+    (["tree", "x.zip"], 1),                          # unreadable input
+    (["build", "x.zip", "--out", "o.zip"], 2),       # neither --select nor --select-all
+    (["corpus-check", "nowhere"], 1),                # no such directory
+])
+def test_bad_input_exits_without_a_traceback(argv, code, capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(argv) == code
+    assert "Traceback" not in capsys.readouterr().err
 
 
 def test_no_command_prints_help(capsys):
@@ -289,12 +295,12 @@ def test_no_command_prints_help(capsys):
     assert "usage:" in capsys.readouterr().out
 
 
-def test_stub_exit_code_survives_the_console_script(tmp_path):
-    """The installed entry point, not just main(): no traceback on exit 2."""
+def test_exit_code_survives_the_console_script(tmp_path):
+    """The installed entry point, not just main(): no traceback on a refusal."""
     import subprocess
     import sys
 
     r = subprocess.run([sys.executable, "-m", "vcfcf_migrator", "tree", "x.zip"],
                        capture_output=True, text=True, cwd=tmp_path)
-    assert r.returncode == 2
+    assert r.returncode == 1
     assert "Traceback" not in r.stderr
