@@ -23,6 +23,7 @@ import zipfile
 from pathlib import Path
 
 OWNER = "b58a71ee-e909-5b40-a355-9e199e6f0f53"
+OWNER_2 = "0c44e115-dc21-4ea5-8a56-01c22f18325b"  # shares the dashboard with OWNER
 MARKER = "1757800000000000000L.v1"
 
 DASHBOARD_ID = "2d7b8c1e-4f11-4c7a-9a55-0c1f2e3d4a5b"
@@ -32,7 +33,11 @@ REPORT_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f"
 RULE_ID = "5e9c97aa-a5b0-473e-b51f-a581b2535f59"
 RULE_ID_2 = "7f0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
 TEMPLATE_ID = "b97f2879-57ef-4317-880c-a1a0a1f3ecab"
+TEMPLATE_ID_2 = "c0a1b2c3-d4e5-4f60-8a7b-8c9d0e1f2a3b"
 
+# A dashboard shared by two owners lists once per owner (a set collapses
+# the pair, so EXPECTED_DASHBOARD_LISTINGS carries the count).
+EXPECTED_DASHBOARD_LISTINGS = 2
 EXPECTED_ITEMS = {
     ("dashboard", "[Fixture] Cluster Overview", DASHBOARD_ID),
     ("view", "[Fixture] Cluster List", VIEW_IDS[0]),
@@ -47,6 +52,7 @@ EXPECTED_ITEMS = {
     ("notificationrule", "[Fixture] Cluster rule", RULE_ID),
     ("notificationrule", "[Fixture] Host rule", RULE_ID_2),
     ("notificationtemplate", "[Fixture] Cluster template", TEMPLATE_ID),
+    ("notificationtemplate", "[Fixture] Host template", TEMPLATE_ID_2),
     ("outboundsetting", "[Fixture] Mail relay (StandardEmailPlugin)", ""),
 }
 EXPECTED_CARRIED = {"policies.xml"}
@@ -160,28 +166,37 @@ def build_export_zip(without=()) -> bytes:
         ]}],
         "ruleNameToTemplateNameMap": [],
     }}
+    # 9.x list nesting: one entry whose NotificationTemplateData key holds
+    # the list of templates (the one-dict-per-entry form is also read).
+    # 8.x carries ids as dicts; the listing must show the bare uuid.
     templates = {"NotificationTemplate": {"notificationTemplateData": [{
         "@class": "NotificationTemplateData",
-        # 8.x carries ids as dicts; the listing must show the bare uuid.
-        "NotificationTemplateData": {"id": {"@ObjectType": "NOTIFICATION_TEMPLATE", "@UUID": TEMPLATE_ID},
-                                     "Name": "[Fixture] Cluster template", "pluginTypeId": "WebhookPlugin"},
+        "NotificationTemplateData": [
+            {"id": {"@ObjectType": "NOTIFICATION_TEMPLATE", "@UUID": TEMPLATE_ID},
+             "Name": "[Fixture] Cluster template", "pluginTypeId": "WebhookPlugin"},
+            {"id": TEMPLATE_ID_2, "Name": "[Fixture] Host template", "pluginTypeId": "StandardEmailPlugin"},
+        ],
     }]}}
     outbound = {"serviceCredentials": [], "exportId": "fixture", "plugins": [{
         "pluginType": "StandardEmailPlugin",
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
     }]}
-    manifest = {"dashboards": 1, "views": 2, "superMetrics": 2, "customGroups": 1, "reports": 1,
-                "symptomDefs": 1, "alertDefs": 1, "type": "CUSTOM",
-                "dashboardsByOwner": [{"owner": OWNER, "count": 1}]}
+    manifest = {"dashboards": 2, "views": 2, "superMetrics": 2, "customGroups": 1, "reports": 1,
+                "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
+                "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 1}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'
 
     members = [
         (MARKER, OWNER),
         ("configuration.json", json.dumps(manifest)),
         ("views.zip", views_inner.getvalue()),
-        ("usermappings.json", json.dumps({OWNER: {"userName": "admin", "userId": OWNER}})),
+        ("usermappings.json", json.dumps({OWNER: {"userName": "admin", "userId": OWNER},
+                                          OWNER_2: {"userName": "operator", "userId": OWNER_2}})),
         (f"dashboards/{OWNER}", dash_inner.getvalue()),
         (f"dashboardsharings/{OWNER}", "[]"),
+        # The same dashboard (same uuid) exported under a second owner.
+        (f"dashboards/{OWNER_2}", dash_inner.getvalue()),
+        (f"dashboardsharings/{OWNER_2}", "[]"),
         ("supermetrics.json", json.dumps(sms)),
         ("symptomdefs.xml", _symptomdefs_xml()),
         ("alertdefs.xml", _alertdefs_xml()),

@@ -7,7 +7,13 @@ import re
 import pytest
 
 import vcfcf_core
-from make_export_fixture import EXPECTED_CARRIED, EXPECTED_ITEMS, MEMBER_FOR_KIND, build_export_zip
+from make_export_fixture import (
+    EXPECTED_CARRIED,
+    EXPECTED_DASHBOARD_LISTINGS,
+    EXPECTED_ITEMS,
+    MEMBER_FOR_KIND,
+    build_export_zip,
+)
 from vcfcf_migrator import __version__
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.export_reader import read_export
@@ -44,6 +50,7 @@ def test_inspect_json_carries_the_same_items(export_zip, capsys):
     doc = json.loads(capsys.readouterr().out)
     got = {(i["kind"], i["name"], i["uuid"]) for i in doc["items"]}
     assert got == EXPECTED_ITEMS
+    assert doc["counts"]["dashboard"] == EXPECTED_DASHBOARD_LISTINGS
     assert set(doc["carried"]) == EXPECTED_CARRIED
     assert doc["source_version"] is None
     assert doc["counts"]["view"] == 2
@@ -52,7 +59,7 @@ def test_inspect_json_carries_the_same_items(export_zip, capsys):
 def test_read_export_uses_the_core_readers_for_dashboards_and_supermetrics(export_zip):
     export = read_export(export_zip)
     sources = {(i.kind, i.source) for i in export.items}
-    assert ("dashboard", "dashboards/") in sources
+    assert ("dashboard", "dashboards/b58a71ee-e909-5b40-a355-9e199e6f0f53") in sources
     assert ("supermetric", "supermetrics.json") in sources
     assert ("view", "views.zip") in sources
     assert ("report", "reports.zip") in sources
@@ -157,7 +164,51 @@ def test_the_same_template_in_two_members_is_listed_once(tmp_path, capsys):
     path.write_bytes(out.getvalue())
     assert main(["inspect", "--json", str(path)]) == 0
     doc = json.loads(capsys.readouterr().out)
-    assert doc["counts"]["notificationtemplate"] == 1
+    # The fixture's two payload templates, with the embedded copy of the
+    # first collapsed rather than listed a third time.
+    assert doc["counts"]["notificationtemplate"] == 2
+
+
+def test_a_dashboard_shared_by_two_owners_lists_once_per_owner(export_zip, capsys):
+    """Five dashboards on a real 9.x export sit under two owners with the
+    same uuid; dashboardsByOwner counts each, so the listing must too."""
+    from make_export_fixture import DASHBOARD_ID, OWNER, OWNER_2
+
+    assert main(["inspect", "--json", str(export_zip)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    dashes = [(i["uuid"], i["source"]) for i in doc["items"] if i["kind"] == "dashboard"]
+    assert sorted(dashes) == sorted([(DASHBOARD_ID, f"dashboards/{OWNER}"), (DASHBOARD_ID, f"dashboards/{OWNER_2}")])
+    assert doc["counts"]["dashboard"] == doc["manifest"]["dashboards"] == 2
+
+
+def test_payload_templates_read_both_nestings(tmp_path, capsys):
+    """A list under NotificationTemplateData (the fixture) or one dict per
+    entry: both list every template."""
+    import io
+    import zipfile
+
+    from make_export_fixture import TEMPLATE_ID, TEMPLATE_ID_2
+
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for n in src.namelist():
+            data = src.read(n)
+            if n == "payloadtemplates.json":
+                doc = json.loads(data)
+                tpls = doc["NotificationTemplate"]["notificationTemplateData"][0]["NotificationTemplateData"]
+                doc["NotificationTemplate"]["notificationTemplateData"] = [{"NotificationTemplateData": t} for t in tpls]
+                data = json.dumps(doc).encode()
+            z.writestr(n, data)
+    per_entry = tmp_path / "per-entry.zip"
+    per_entry.write_bytes(out.getvalue())
+    as_list = tmp_path / "as-list.zip"
+    as_list.write_bytes(build_export_zip())
+    for zip_path in (per_entry, as_list):
+        assert main(["inspect", "--json", str(zip_path)]) == 0
+        doc = json.loads(capsys.readouterr().out)
+        got = {(i["name"], i["uuid"]) for i in doc["items"] if i["kind"] == "notificationtemplate"}
+        assert got == {("[Fixture] Cluster template", TEMPLATE_ID), ("[Fixture] Host template", TEMPLATE_ID_2)}, zip_path
 
 
 def test_notification_rules_read_both_nestings(tmp_path, capsys):
@@ -182,9 +233,9 @@ def test_notification_rules_read_both_nestings(tmp_path, capsys):
             z.writestr(n, data)
     path = tmp_path / "eightx.zip"
     path.write_bytes(out.getvalue())
-    for zip_path in (path, tmp_path / "fixture-export.zip"):
-        if not zip_path.exists():
-            zip_path.write_bytes(build_export_zip())
+    as_list = tmp_path / "as-list.zip"
+    as_list.write_bytes(build_export_zip())
+    for zip_path in (path, as_list):
         assert main(["inspect", "--json", str(zip_path)]) == 0
         doc = json.loads(capsys.readouterr().out)
         got = {(i["name"], i["uuid"]) for i in doc["items"] if i["kind"] == "notificationrule"}

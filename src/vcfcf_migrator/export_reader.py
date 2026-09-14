@@ -237,10 +237,13 @@ def _items_from_notifications(doc: dict, source: str) -> List[Item]:
                 out.append(Item("notificationrule", str(rule.get("Name") or rule.get("name") or "(unnamed)"),
                                 _id_text(rule.get("id")), source))
     for entry in block.get("notificationTemplateDataSet") or []:
-        tpl = entry.get("NotificationTemplateData") if isinstance(entry, dict) else None
-        if isinstance(tpl, dict):
-            out.append(Item("notificationtemplate", str(tpl.get("Name") or tpl.get("name") or "(unnamed)").strip(),
-                            _id_text(tpl.get("id")), source))
+        tpls = entry.get("NotificationTemplateData") if isinstance(entry, dict) else None
+        if isinstance(tpls, dict):
+            tpls = [tpls]
+        for tpl in tpls or []:
+            if isinstance(tpl, dict):
+                out.append(Item("notificationtemplate", str(tpl.get("Name") or tpl.get("name") or "(unnamed)").strip(),
+                                _id_text(tpl.get("id")), source))
     return out
 
 
@@ -251,10 +254,15 @@ def _items_from_payload_templates(doc: dict, source: str) -> List[Item]:
     if not isinstance(block, dict):
         return out
     for entry in block.get("notificationTemplateData") or []:
-        tpl = entry.get("NotificationTemplateData") if isinstance(entry, dict) else None
-        if isinstance(tpl, dict):
-            out.append(Item("notificationtemplate", str(tpl.get("Name") or tpl.get("name") or "(unnamed)").strip(),
-                            _id_text(tpl.get("id")), source))
+        # One template per entry, or one entry whose NotificationTemplateData
+        # key holds the list of templates (both seen on 9.x exports).
+        tpls = entry.get("NotificationTemplateData") if isinstance(entry, dict) else None
+        if isinstance(tpls, dict):
+            tpls = [tpls]
+        for tpl in tpls or []:
+            if isinstance(tpl, dict):
+                out.append(Item("notificationtemplate", str(tpl.get("Name") or tpl.get("name") or "(unnamed)").strip(),
+                                _id_text(tpl.get("id")), source))
     return out
 
 
@@ -338,9 +346,16 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
         if declared is None:
             export.notes.append("source version not declared (--source-version); the 8.10 floor was not checked")
 
-        # Core readers over the whole outer zip.
-        if any(n.startswith("dashboards/") for n in names):
-            export.items.extend(_dashboard_items(_dashboards_from_export_zip(data), "dashboards/"))
+        # Dashboards: one core-reader pass per owner member, so a dashboard
+        # shared by two owners (same uuid under dashboards/<a> and
+        # dashboards/<b>; five such on a real 9.x export) lists once per
+        # owner, as the manifest's dashboardsByOwner counts it.
+        for name in names:
+            if name.startswith("dashboards/") and not name.endswith("/"):
+                try:
+                    export.items.extend(_dashboard_items(_dashboards_from_inner_zip(zf.read(name)), name))
+                except ValueError:
+                    export.carried.append(name)
         if "supermetrics.json" in names:
             for sm in _supermetrics_from_export_zip(data).values():
                 export.items.append(Item("supermetric", str(sm.get("name") or "(unnamed)"), str(sm.get("id") or ""), "supermetrics.json"))
@@ -416,10 +431,12 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
     # The same object can appear in two members (a full export embeds the
     # notification template inside notificationrules.json and again in
     # payloadtemplates.json). One listing per kind+uuid; the first wins.
+    # Dashboards are the exception: the same uuid under two owners is two
+    # listings (keyed by owner member), matching dashboardsByOwner.
     seen = set()
     unique: List[Item] = []
     for it in export.items:
-        key = (it.kind, it.uuid) if it.uuid else None
+        key = (it.kind, it.uuid, it.source if it.kind == "dashboard" else "") if it.uuid else None
         if key is not None:
             if key in seen:
                 continue
