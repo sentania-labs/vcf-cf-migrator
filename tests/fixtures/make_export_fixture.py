@@ -43,6 +43,11 @@ ABSENT_SM_NAME = "[Fixture] SM Nowhere"
 # A custom group named by a membership rule that names no group here. Most
 # ruleStringValues name ordinary resources, so this one must stay silent.
 ABSENT_GROUP_NAME = "[Fixture] Other Clusters"
+GROUP_NAME = "[Fixture] Prod Clusters"
+GROUP_NAME_2 = "[Fixture] Web Tier"
+# A custom group's policy lives in policies.xml, which this tool never
+# carries, so a carried group always points at a policy that will be absent.
+GROUP_POLICY_ID = "9f1e2d3c-4b5a-4968-8777-6a5b4c3d2e1f"
 RULE_ID = "5e9c97aa-a5b0-473e-b51f-a581b2535f59"
 RULE_ID_2 = "7f0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
 TEMPLATE_ID = "b97f2879-57ef-4317-880c-a1a0a1f3ecab"
@@ -60,7 +65,8 @@ EXPECTED_ITEMS = {
     ("supermetric", "[Fixture] SM 1", SM_IDS[0]),
     ("supermetric", "[Fixture] SM 2", SM_IDS[1]),
     ("supermetric", "[Fixture] SM 3", SM_IDS[2]),
-    ("customgroup", "[Fixture] Prod Clusters", ""),
+    ("customgroup", GROUP_NAME, ""),
+    ("customgroup", GROUP_NAME_2, ""),
     ("symptom", "[Fixture] CPU high", "SymptomDefinition-VMWARE-Fixture_CPU_high"),
     ("alert", "[Fixture] Cluster CPU alert", "AlertDefinition-VMWARE-Fixture_Cluster_CPU"),
     ("recommendation", "Add hosts to the cluster", "Recommendation-df-VMWARE-Fixture_Add_hosts"),
@@ -159,8 +165,12 @@ def _cluster_overview() -> dict:
         "name": "[Fixture] Cluster Overview",
         "widgets": [
             {"type": "View", "config": {"viewDefinitionId": VIEW_IDS[0]}, "gridsterCoords": {}},
+            # The list-shaped scope: no resourceName, no resource kind, just
+            # the group's name. The same binding as the object shape one
+            # widget up, written the other way an export writes it.
             {"type": "Scoreboard", "gridsterCoords": {},
-             "config": {"metrics": [{"metricKey": f"Super Metric|sm_{SM_IDS[1]}"}]}},
+             "config": {"metrics": [{"metricKey": f"Super Metric|sm_{SM_IDS[1]}"}],
+                        "resource": [{"name": GROUP_NAME_2, "id": "resource:id:4_::_"}]}},
         ],
         "widgetInteractions": [],
     }
@@ -175,7 +185,7 @@ def _vm_overview() -> dict:
         "widgets": [{"type": "View", "gridsterCoords": {},
                      "config": {"viewDefinitionId": VIEW_IDS[1],
                                 "resource": {"resourceId": "resource:id:0_::_",
-                                             "resourceName": "[Fixture] Prod Clusters",
+                                             "resourceName": GROUP_NAME,
                                              "resourceKindId": "002009ContainerEnvironment"}}}],
         "widgetInteractions": [],
     }
@@ -228,14 +238,31 @@ def build_export_zip(without=()) -> bytes:
                     "description": "", "unitId": "", "resourceKinds": []},
     }
     groups = {"customGroups": [{
-        "name": "[Fixture] Prod Clusters", "description": "", "adapterKind": "Container",
+        "name": GROUP_NAME, "description": "", "adapterKind": "Container",
         "resourceKind": "Environment", "autoResolveMembership": True, "started": True,
-        # A RelationshipRule names another group by name. This one names no
-        # group in this export, which is the common case and stays silent.
+        # The policy is always going to be absent on the target: policies.xml
+        # is a member this tool does not understand and never carries.
+        "policy": GROUP_POLICY_ID,
+        "membershipDefinition": {"ruleGroups": [{
+            "resourceKind": "VirtualMachine", "adapterKind": "VMWARE",
+            "rules": [
+                # A RelationshipRule names another group. This one names no
+                # group in this export, the common case, and stays silent.
+                {"ruleType": "RelationshipRule", "ruleRelationshipType": "DESCENDANT",
+                 "ruleStringOperator": "EQUALS", "ruleStringValue": ABSENT_GROUP_NAME},
+                # A ResourceNameRule names a resource, never a group, even
+                # when its value happens to be a group's name.
+                {"ruleType": "ResourceNameRule", "ruleStringOperator": "CONTAINS",
+                 "ruleStringValue": GROUP_NAME_2},
+            ],
+        }]},
+    }, {
+        "name": GROUP_NAME_2, "description": "", "adapterKind": "Container",
+        "resourceKind": "Function", "autoResolveMembership": True, "started": True,
         "membershipDefinition": {"ruleGroups": [{
             "resourceKind": "VirtualMachine", "adapterKind": "VMWARE",
             "rules": [{"ruleType": "RelationshipRule", "ruleRelationshipType": "DESCENDANT",
-                       "ruleStringOperator": "EQUALS", "ruleStringValue": ABSENT_GROUP_NAME}],
+                       "ruleStringOperator": "EQUALS", "ruleStringValue": GROUP_NAME}],
         }]},
     }], "customGroupTypes": []}
     # 9.1.1 nesting: one entry whose NotificationRule key holds the list of
@@ -252,9 +279,17 @@ def build_export_zip(without=()) -> bytes:
                             {"AlertDefinitionID": ["AlertDefinition-VMWARE-Fixture_Cluster_CPU",
                                                    ABSENT_ALERT_ID]}]}}]},
             # Rule 2 names the outbound plugin the export does carry.
+            # A resource condition carries the same by-name scope a widget
+            # does, under a different key.
             {"id": RULE_ID_2, "Name": "[Fixture] Host rule", "Description": "", "PluginType": "StandardEmailPlugin",
              "PluginID": {"@pluginType": "StandardEmailPlugin", "@pluginName": "[Fixture] Mail relay"},
-             "Disabled": "False", "RuleType": "GENERAL_RULE", "entry": []},
+             "Disabled": "False", "RuleType": "GENERAL_RULE",
+             "entry": [{"ConditionType": "RESOURCE_AND_CHILD",
+                        "NotificationRuleResourcesCondition": {"ResourceItems": [
+                            {"NotificationRuleResourceItem": [
+                                {"ResourceID": {"resourceName": GROUP_NAME,
+                                                "adapterKind": "Container",
+                                                "resourceKind": "Environment"}}]}]}}]},
         ]}],
         # Two blocks on purpose: 9.x writes entry as a list, 8.x writes it as
         # a single object, and a select-all must reshape neither.
@@ -278,7 +313,7 @@ def build_export_zip(without=()) -> bytes:
         "pluginType": "StandardEmailPlugin",
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
     }]}
-    manifest = {"dashboards": 3, "views": 2, "superMetrics": 3, "customGroups": 1, "reports": 1,
+    manifest = {"dashboards": 3, "views": 2, "superMetrics": 3, "customGroups": 2, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
                 "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 2}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'

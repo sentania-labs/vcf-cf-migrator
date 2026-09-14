@@ -18,6 +18,9 @@ from make_export_fixture import (
     ABSENT_GROUP_NAME,
     ABSENT_SM_ID,
     ABSENT_SM_NAME,
+    GROUP_NAME,
+    GROUP_NAME_2,
+    GROUP_POLICY_ID,
     DASHBOARD_ID,
     DASHBOARD_ID_2,
     OWNER,
@@ -126,24 +129,81 @@ def test_two_super_metrics_sharing_a_name_are_both_carried(tmp_path):
     path.write_bytes(out.getvalue())
     graph = _graph.build_graph(read_members(path).data)
     assert _edge_idents(graph, f"supermetric:{SM_IDS[1]}", "supermetric") == {SM_IDS[2], twin}
-    assert graph.ambiguous and "objects answer to that name" in graph.ambiguous[0]
-    assert "references by name that more than one object answers to" in _graph.render_tree(graph)
+    # Exactly one ambiguity, and it names both uuids so they can be told apart.
+    assert len(graph.ambiguous) == 1
+    assert "2 different objects answer to" in graph.ambiguous[0]
+    assert SM_IDS[2] in graph.ambiguous[0] and twin in graph.ambiguous[0]
+    assert "references by name that several objects answer to" in _graph.render_tree(graph)
+    # The command that writes the bundle says it too, not only tree.
+    picked = _selection.close(graph, [f"supermetric:{SM_IDS[1]}"])
+    assert picked.ambiguous == graph.ambiguous
+    assert "references by name that several objects answer to" in _selection.render(graph, picked)
+    assert _selection.as_dict(graph, picked)["ambiguous"] == graph.ambiguous
+
+
+def test_a_dashboard_under_two_owners_is_not_an_ambiguity(graph):
+    """Two nodes of one object, which is the deliberate two-owner case. The
+    guard that was meant to suppress it compared key suffixes, and a dashboard
+    key ends in uuid@owner, so it never matched and the case reported as an
+    ambiguity naming a uuid under a by-name heading."""
+    assert graph.edges[f"report:{REPORT_ID}"]
+    assert graph.ambiguous == []
 
 
 def test_a_dashboard_scoped_to_a_custom_group_reaches_it_by_name(graph):
-    """A widget scoped to a group binds to it as a resource, by name, with a
-    Container resource kind. Custom groups carry no uuid in an export, so by
-    name is the only spelling there is."""
+    """A widget scoped to a group binds to it as a resource, by name. Custom
+    groups carry no uuid in an export, so by name is the only spelling there
+    is. The object shape carries it as resourceName next to a Container
+    resource kind."""
     key = f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"
-    assert _edge_idents(graph, key, "customgroup") == {"[Fixture] Prod Clusters"}
+    assert _edge_idents(graph, key, "customgroup") == {GROUP_NAME}
+
+
+def test_a_list_shaped_resource_scope_reaches_the_group_too(graph):
+    """The same scope written the other way an export writes it: a list of
+    {"name", "id"}, with no resourceName and no resource kind at all. A regex
+    for the object shape matches nothing here, which is why extraction walks
+    the parsed structure instead."""
+    key = f"dashboard:{DASHBOARD_ID}@{OWNER}"
+    assert _edge_idents(graph, key, "customgroup") == {GROUP_NAME_2}
 
 
 def test_a_membership_rule_naming_no_group_here_is_not_a_missing_edge(graph):
     """Most ruleStringValues name ordinary resources. Reporting every one as a
     missing dependency would drown the one report an admin relies on."""
-    key = "customgroup:[Fixture] Prod Clusters"
-    assert graph.missing_for(key) == []
+    key = f"customgroup:{GROUP_NAME}"
+    assert [m.kind for m in graph.missing_for(key)] == ["policy"]
     assert graph.edges[key] == []
+
+
+def test_only_a_relationship_rule_names_another_group(graph):
+    """A ResourceNameRule names a resource, never a group, even when its value
+    is a group's name. Across the corpus 20 of 28 rule values are name or
+    metric rules carrying words like template, vms and group, so a group named
+    any of those would be pulled into a bundle that does not depend on it."""
+    # Prod Clusters' only RelationshipRule names a group that is not here, and
+    # its ResourceNameRule names Web Tier, which is. Neither is an edge.
+    assert graph.edges[f"customgroup:{GROUP_NAME}"] == []
+    # Web Tier's RelationshipRule names Prod Clusters, which is.
+    assert _edge_idents(graph, f"customgroup:{GROUP_NAME_2}", "customgroup") == {GROUP_NAME}
+
+
+def test_a_carried_group_says_its_policy_will_be_missing(graph):
+    """policies.xml is a member this tool does not understand and never
+    carries, so a carried group's policy is always absent on the target. The
+    report that says what will break has to say it."""
+    gaps = graph.missing_for(f"customgroup:{GROUP_NAME}")
+    assert [(g.kind, g.ident) for g in gaps] == [("policy", GROUP_POLICY_ID)]
+    assert "policies.xml" in gaps[0].via
+
+
+def test_a_notification_rule_resource_condition_reaches_a_group_by_name(graph):
+    """The same binding a widget writes, in a different document under a
+    different key: ResourceID.resourceName inside a RESOURCE_AND_CHILD
+    condition."""
+    other = next(n for n in graph.nodes.values()
+                 if n.kind == "notificationrule" and n.ident != RULE_ID)
+    assert _edge_idents(graph, other.key, "customgroup") == {GROUP_NAME}
 
 
 def test_alert_reaches_its_symptom_and_recommendation(graph):
@@ -182,7 +242,7 @@ def test_an_edge_out_of_the_export_is_named_and_counted_not_an_error(graph):
     assert f"MISSING supermetric [{ABSENT_SM_ID}]" in text
     assert ("supermetric", ABSENT_SM_NAME) in idents
     assert f'MISSING supermetric [{ABSENT_SM_NAME}]' in text
-    assert "edges to objects this export does not carry: 4" in text
+    assert "edges to objects this export does not carry: 5" in text
     # A membership rule naming no group in this export is normal, not missing.
     assert ABSENT_GROUP_NAME not in text
 
@@ -209,10 +269,17 @@ def test_selecting_a_dashboard_pulls_in_its_view_and_super_metrics(graph):
     picked = _selection.close(graph, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     assert set(picked.keys) == {
         f"dashboard:{DASHBOARD_ID}@{OWNER}", f"view:{VIEW_IDS[0]}",
-        f"supermetric:{SM_IDS[0]}", f"supermetric:{SM_IDS[1]}", f"supermetric:{SM_IDS[2]}"}
+        f"supermetric:{SM_IDS[0]}", f"supermetric:{SM_IDS[1]}", f"supermetric:{SM_IDS[2]}",
+        # Reached by the list-shaped resource scope, which in turn reaches the
+        # group its own RelationshipRule names.
+        f"customgroup:{GROUP_NAME_2}", f"customgroup:{GROUP_NAME}"}
     reasons = [a.reason for a in picked.added]
-    assert any("view [Fixture] Cluster List added: required by dashboard" in r for r in reasons)
-    assert any("supermetric [Fixture] SM 1 added: required by view" in r for r in reasons)
+    # The reason names the uuid as well as the name, so two objects sharing a
+    # display name do not render as two identical lines.
+    assert any(f"view [Fixture] Cluster List [{VIEW_IDS[0]}] added: required by dashboard"
+               in r for r in reasons)
+    assert any(f"supermetric [Fixture] SM 1 [{SM_IDS[0]}] added: required by view"
+               in r for r in reasons)
 
 
 def test_closure_reports_a_dependency_the_export_does_not_carry(graph):
@@ -408,7 +475,8 @@ def test_the_same_uuid_under_two_owners_can_both_be_carried(tmp_path, export_zip
 def test_a_subset_bundle_carries_the_closure_and_nothing_more(tmp_path, export_zip):
     out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     assert code == 0
-    assert read_export(out).counts() == {"dashboard": 1, "view": 1, "supermetric": 3}
+    assert read_export(out).counts() == {"dashboard": 1, "view": 1, "supermetric": 3,
+                                        "customgroup": 2}
     names = zipfile.ZipFile(out).namelist()
     assert "reports.zip" not in names and "alertdefs.xml" not in names
 
