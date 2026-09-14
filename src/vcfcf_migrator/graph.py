@@ -33,7 +33,7 @@ alert to recommendation       uuid           ``<Recommendation ref>``
 customgroup to customgroup    name           membership ``RelationshipRule``
 customgroup to policy         uuid           ``policy``, always reported missing
 notificationrule to alert     uuid           condition ``AlertDefinitionID``
-notificationrule to group     name           condition ``ResourceID.resourceName``
+notificationrule to group     name           condition ``ResourceID``, any shape
 notificationrule to outbound  name           rule ``PluginID``
 notificationrule to template  name           ``ruleNameToTemplateNameMap``
 report to view, dashboard     uuid           section ``ContentKey``
@@ -166,10 +166,17 @@ class Node:
         return f"{self.kind}:{self.ident}"
 
     def label(self) -> str:
-        """Kind, name and uuid. Custom groups and outbound settings carry no
-        uuid on any corpus export, so for those the name is the identity and
-        there is no bracket to print."""
-        return f"{self.kind} {self.name}" + (f" [{self.uuid}]" if self.uuid else "")
+        """Kind, name, uuid and, for a dashboard, the owner whose copy this is.
+
+        Custom groups and outbound settings carry no uuid on any corpus
+        export, so for those the name is the identity and there is no bracket
+        to print. The owner is part of the label rather than something each
+        caller appends, so a note about one of two same-uuid copies stays
+        distinct from a note about the other wherever it is printed.
+        """
+        return (f"{self.kind} {self.name}"
+                + (f" [{self.uuid}]" if self.uuid else "")
+                + (f" owner {self.owner}" if self.owner else ""))
 
     def as_dict(self) -> dict:
         return {
@@ -308,13 +315,17 @@ def _json_strings(node, key: str = "", skip_prose: bool = True):
 
 
 def _json_values(node, wanted_key: str):
-    """Every value stored under *wanted_key*, at any depth of a parsed value."""
+    """Every value stored under *wanted_key*, at any depth of a parsed value.
+
+    A match is yielded *and* descended into, because the keys this is used for
+    nest inside themselves: a widget list holds widgets whose configs hold
+    widget lists of their own.
+    """
     if isinstance(node, dict):
         for key, value in node.items():
             if key == wanted_key:
                 yield value
-            else:
-                yield from _json_values(value, wanted_key)
+            yield from _json_values(value, wanted_key)
     elif isinstance(node, list):
         for item in node:
             yield from _json_values(item, wanted_key)
@@ -396,12 +407,17 @@ def _resource_names(node, where: str, unhandled: List[str]) -> List[str]:
             continue
         # A resource kind that is present and is not a Container is positive
         # evidence this is an ordinary resource, not a group. Absent is not
-        # evidence either way: two of the corpus shapes never carry one.
-        for kind_key in ("resourceKindId", "adapterKindKey"):
-            kind = item.get(kind_key)
-            if isinstance(kind, str) and "Container" not in kind:
-                break
-        else:
+        # evidence either way: two of the corpus shapes never carry one. When
+        # both kind keys are present and disagree, the Container one wins: a
+        # scope that says Container anywhere is a scope worth resolving, and
+        # over-carrying a group is the recoverable error. No object in any of
+        # the five corpus exports carries both keys, so this says what is
+        # intended rather than settling anything observed.
+        kinds = [item[k] for k in ("resourceKindId", "adapterKindKey")
+                 if isinstance(item.get(k), str)]
+        if kinds and all("Container" not in kind for kind in kinds):
+            continue
+        if True:
             for key in RESOURCE_NAME_KEYS:
                 value = item.get(key)
                 if isinstance(value, str) and value:
@@ -417,24 +433,29 @@ def _resource_names(node, where: str, unhandled: List[str]) -> List[str]:
 def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
     """A dashboard's views, super metrics and custom group scopes.
 
-    ``widgets`` nests: a widget's ``config`` can hold ``widgets`` of its own,
-    either inline objects (36 such on this corpus, none carrying a reference
-    today) or bare widget ids naming siblings in the same document, so the walk
-    recurses rather than reading one level and trusting it stays one.
+    ``widgets`` is walked **wherever the key appears**, not only at the top and
+    not only through ``config.widgets``. A dashboard document holds widget
+    lists in at least three places: its own ``widgets``, a tab or group
+    widget's ``config.widgets``, and each entry of ``dashboardNavigations``,
+    which is keyed by widget uuid and whose values are ``{id, widgets}``
+    objects (15 widget-shaped objects across 8 dashboards on this corpus,
+    carrying no content reference today). Enumerating the places a field can
+    appear is the same trap as enumerating the shapes a value can take, so the
+    walk takes the key by name at any depth instead.
+
+    A string in a widget list is a widget id naming a sibling inline: a tab
+    widget lists its members that way rather than repeating them (36 such on
+    this corpus, every one resolving to a widget id in the same document).
+    That is checked, not assumed. A string that is not one of the document's
+    own widget ids is reported, because an export writing a nested widget by
+    name or by a content uuid would otherwise be dropped in silence, which is
+    how three reference classes were missed before.
 
     ``entryKeys.resource`` is read too. It is per dashboard and carries the
-    same binding in a third shape (``{resourceKindKey, internalId,
+    resource binding in a third shape (``{resourceKindKey, internalId,
     adapterKindKey, identifiers, name}``); on this corpus its ten values are
     all worlds and adapter instances, but a dashboard that scoped a group
     there and not in a widget would be missed exactly as one was before.
-
-    The container's own ``entries.resource`` is deliberately *not* read. It
-    sits outside every dashboard document, in the owner's file, shared by all
-    of that owner's dashboards, so attributing its names to any one of them
-    would carry a group into a bundle that does not use it. Safe because every
-    one of the six group names it carries across the corpus is also bound by a
-    widget scope in the same container, which is followed; and the block is
-    copied verbatim into the rebuilt inner zip either way.
     """
     doc = _json(raw)
     if not isinstance(doc, dict):
@@ -444,24 +465,29 @@ def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
     seen_views, seen_groups = set(), set()
     metric_values: List[str] = []
 
+    widget_lists = [v for v in _json_values(doc, "widgets")]
+    widget_ids = {w["id"] for lst in widget_lists if isinstance(lst, list)
+                  for w in lst if isinstance(w, dict) and isinstance(w.get("id"), str)}
+
     def add_group(name: str, where: str) -> None:
         if name not in seen_groups:
             seen_groups.add(name)
             out.append(Ref("customgroup", name, where, optional=True))
 
-    def walk(widgets, depth: int) -> None:
+    for widgets in widget_lists:
         if widgets is None:
-            return
+            continue
         if not isinstance(widgets, list):
             unhandled.append(f"dashboard: widgets written as "
                              f"{type(widgets).__name__}, which this tool does not read")
-            return
+            continue
         for widget in widgets:
             if isinstance(widget, str):
-                # A tab or group widget lists its members by widget id rather
-                # than inline. Those ids are siblings on this same dashboard,
-                # not references to content: all 36 on this corpus resolve to
-                # a widget id in the same document. Nothing to follow.
+                if widget not in widget_ids:
+                    unhandled.append(
+                        f"dashboard: a widget list holds {widget!r}, which is not a "
+                        "widget id in this document, so this tool does not know what "
+                        "it names")
                 continue
             if not isinstance(widget, dict):
                 unhandled.append("dashboard: a widget that is neither an object "
@@ -480,21 +506,18 @@ def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
                                         "dashboard widget config.resource", unhandled):
                 add_group(name, "widget resource scope, by name")
             metric_values.extend(v for _k, v in _json_strings(widget))
-            walk(config.get("widgets"), depth + 1)
 
     if "widgets" not in doc:
         unhandled.append("dashboard: a document with no widgets key")
-    walk(doc.get("widgets"), 0)
-    for dash_entry in [doc.get("entryKeys")]:
-        if dash_entry is None:
-            continue
-        if not isinstance(dash_entry, dict):
+    entry_keys = doc.get("entryKeys")
+    if entry_keys is not None:
+        if not isinstance(entry_keys, dict):
             unhandled.append("dashboard: entryKeys written as "
-                             f"{type(dash_entry).__name__}, which this tool does not read")
-            continue
-        for name in _resource_names(dash_entry.get("resource"),
-                                    "dashboard entryKeys.resource", unhandled):
-            add_group(name, "dashboard entryKeys resource, by name")
+                             f"{type(entry_keys).__name__}, which this tool does not read")
+        else:
+            for name in _resource_names(entry_keys.get("resource"),
+                                        "dashboard entryKeys.resource", unhandled):
+                add_group(name, "dashboard entryKeys resource, by name")
     # A super metric can be addressed from several widget config keys
     # (``metric``, ``metricKey``, ``configs`` all carry one in the corpus), so
     # the metric-key regex runs over every string value in the widget subtree
@@ -788,7 +811,7 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
 
     def walk(node: Node, depth: int, seen: set) -> None:
         pad = "  " * depth
-        lines.append(pad + node.label() + (f" owner {node.owner}" if node.owner else ""))
+        lines.append(pad + node.label())
         if node.key in seen or depth >= max_depth:
             if graph.edges.get(node.key):
                 lines.append(f"{pad}  (already shown above)")

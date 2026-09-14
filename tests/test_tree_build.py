@@ -252,7 +252,8 @@ def test_a_resource_scope_shape_nobody_has_seen_says_so(scope):
     that is genuinely empty, of which the corpus has 701."""
     notes = []
     assert _graph._resource_names(scope, "test", notes) == []
-    assert len(notes) == 1 and "does not read" in notes[0] or "no resourceName" in notes[0]
+    assert len(notes) == 1
+    assert "does not read" in notes[0] or "no resourceName" in notes[0]
 
 
 @pytest.mark.parametrize("doc,note", [
@@ -266,15 +267,45 @@ def test_a_dashboard_shape_nobody_has_seen_says_so(doc, note):
     assert any(note in n for n in notes), notes
 
 
-def test_widgets_nest_and_the_walk_goes_with_them(graph):
+def test_widgets_nest_and_the_walk_goes_with_them():
     """A tab widget holds widgets of its own, inline or as bare widget ids
     naming siblings. Reading one level and trusting it stays one level is the
     same mistake as reading one shape."""
     doc = {"id": "d", "name": "D", "widgets": [
-        {"config": {"widgets": [{"config": {"viewDefinitionId": "V1"}}, "some-widget-id"]}}]}
+        {"id": "w1", "config": {"widgets": [
+            {"id": "w2", "config": {"viewDefinitionId": "V1"}}, "w2"]}}]}
     notes = []
     refs = _graph._dashboard_refs(json.dumps(doc).encode(), notes)
     assert [(r.kind, r.ident) for r in refs] == [("view", "V1")]
+    assert notes == []
+
+
+def test_a_bare_widget_id_is_checked_against_the_document_not_assumed():
+    """A tab widget lists its members by widget id rather than repeating them,
+    36 such on this corpus and every one a sibling. A string that is not one of
+    the document's own widget ids is something this tool cannot read, and
+    dropping it in silence is how three reference classes were missed."""
+    doc = {"id": "d", "name": "D", "widgets": [
+        {"id": "w1", "config": {"widgets": ["w1", "a-name-or-a-uuid"]}}]}
+    notes = []
+    assert _graph._dashboard_refs(json.dumps(doc).encode(), notes) == []
+    assert len(notes) == 1
+    assert "'a-name-or-a-uuid'" in notes[0] and "not a widget id" in notes[0]
+
+
+def test_widgets_are_walked_wherever_the_key_appears():
+    """dashboardNavigations is a second place a dashboard holds widgets, keyed
+    by widget uuid. Enumerating the places a field appears is the same trap as
+    enumerating the shapes a value takes, so the walk takes the key by name at
+    any depth."""
+    doc = {"id": "d", "name": "D", "widgets": [],
+           "dashboardNavigations": {"nav-uuid": [
+               {"id": "n1", "widgets": [{"id": "w9", "config": {
+                   "viewDefinitionId": "V1",
+                   "resource": {"resourceName": "G"}}}]}]}}
+    notes = []
+    refs = _graph._dashboard_refs(json.dumps(doc).encode(), notes)
+    assert sorted((r.kind, r.ident) for r in refs) == [("customgroup", "G"), ("view", "V1")]
     assert notes == []
 
 
@@ -299,6 +330,11 @@ def test_an_unhandled_shape_reaches_both_reports(tmp_path, export_zip):
     graph = _graph.build_graph(read_members(path).data)
     assert graph.unhandled and "no resourceName or name key" in graph.unhandled[0].text
     assert "field values in a shape this tool does not read" in _graph.render_tree(graph)
+    # The two owner copies of one dashboard are two notes on both surfaces:
+    # the owner is in the label, so they cannot collapse into each other in
+    # one command and not the other.
+    assert len(graph.unhandled) == 2
+    assert len(_selection.select_all(graph).unhandled) == len(graph.unhandled)
     picked = _selection.close(graph, [graph.unhandled[0].source_key])
     assert picked.unhandled == [graph.unhandled[0].text]
     assert "field values in a shape this tool does not read" in _selection.render(graph, picked)
