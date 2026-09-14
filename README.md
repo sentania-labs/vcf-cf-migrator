@@ -92,10 +92,26 @@ bundle: bundle.zip
 `vcfcf-migrator inspect bundle.zip` lists exactly those 11 items. Import
 the bundle into the target the way you would import any content export.
 
-The edges the tree follows: dashboard to view and to super metric, view to
-super metric, super metric to super metric, symptom to super metric, alert
-to symptom and to recommendation, notification rule to alert, to outbound
-endpoint and to notification template, report to view and to dashboard.
+The edges the tree follows, and how the export writes each:
+
+| From | To | Written as |
+|---|---|---|
+| dashboard | view | uuid, widget `viewDefinitionId` |
+| dashboard | super metric | widget metric key, by uuid or by name |
+| dashboard | custom group | widget resource binding, by name |
+| view | super metric | column `attributeKey`, by uuid or by name |
+| super metric | super metric | the `formula` field, by uuid or by name |
+| symptom | super metric | `<Condition key=...>`, by uuid or by name |
+| alert | symptom, recommendation | uuid, `ref=` |
+| custom group | custom group | membership rule, by name |
+| notification rule | alert | uuid, condition `AlertDefinitionID` |
+| notification rule | outbound endpoint, template | by name |
+| report | view, dashboard | uuid, section `ContentKey` |
+
+By name matters as much as by uuid: an 8.x super metric formula names another
+one as `Super Metric|@supermetric:"<Name>"`, and an export gives custom
+groups no uuid at all. A name that more than one object answers to carries
+every match and says so.
 
 Two things worth knowing about what comes out. Each object's document is
 copied into the bundle as the bytes the export held, never re-rendered
