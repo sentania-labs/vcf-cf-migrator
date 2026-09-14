@@ -181,7 +181,7 @@ def serve(zip_path: Optional[str] = None, port: int = 0, open_browser: bool = Tr
           corpus_cli: Optional[str] = None) -> int:
     server = make_server(zip_path, port, corpus_cli)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
-    print(f"vcfcf-migrator ui: {url} (Ctrl-C to stop)")
+    print(f"vcfcf-migrator ui: {url} (Ctrl-C to stop)", flush=True)
     if open_browser:
         threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
     try:

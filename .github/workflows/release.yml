@@ -102,8 +102,11 @@ jobs:
       - name: Build the one-file binary
         shell: bash
         run: |
+          # copy-metadata: without it the binary has no dist-info and both
+          # version strings read 0.0.0.
           python -m PyInstaller --onefile --clean --noconfirm \
             --name "vcfcf-migrator-${{ matrix.name }}" \
+            --copy-metadata vcf-cf-migrator --copy-metadata vcf-cf-tooling-core \
             src/vcfcf_migrator/__main__.py
           ls -l dist/
 
