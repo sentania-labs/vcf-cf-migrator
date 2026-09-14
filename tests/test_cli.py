@@ -7,7 +7,7 @@ import re
 import pytest
 
 import vcfcf_core
-from make_export_fixture import EXPECTED_CARRIED, EXPECTED_ITEMS
+from make_export_fixture import EXPECTED_CARRIED, EXPECTED_ITEMS, MEMBER_FOR_KIND, build_export_zip
 from vcfcf_migrator import __version__
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.export_reader import read_export
@@ -31,7 +31,8 @@ def test_inspect_lists_every_item(export_zip, capsys):
             assert uuid in line
         else:
             assert "(no uuid)" in line
-    assert "version: undetermined (continuing)" in out
+    assert "source version: not declared" in out
+    assert "not declared (--source-version)" in out
     assert "marker: 1757800000000000000L.v1 (format v1, owner b58a71ee" in out
     assert "carried, not inspected: 1" in out
     for name in EXPECTED_CARRIED:
@@ -44,7 +45,7 @@ def test_inspect_json_carries_the_same_items(export_zip, capsys):
     got = {(i["kind"], i["name"], i["uuid"]) for i in doc["items"]}
     assert got == EXPECTED_ITEMS
     assert set(doc["carried"]) == EXPECTED_CARRIED
-    assert doc["version"] is None
+    assert doc["source_version"] is None
     assert doc["counts"]["view"] == 2
 
 
@@ -54,22 +55,133 @@ def test_read_export_uses_the_core_readers_for_dashboards_and_supermetrics(expor
     assert ("dashboard", "dashboards/") in sources
     assert ("supermetric", "supermetrics.json") in sources
     assert ("view", "views.zip") in sources
-    assert ("report", "Reports.zip") in sources
+    assert ("report", "reports.zip") in sources
+    assert ("symptom", "symptomdefs.xml") in sources
+    assert ("recommendation", "recommendationdefs.xml") in sources
+    assert ("outboundsetting", "outboundsettings.json") in sources
 
 
-def test_inspect_refuses_below_the_floor(old_export_zip, capsys):
-    assert main(["inspect", str(old_export_zip)]) == 1
+@pytest.mark.parametrize("declared", ["8.9.0", "8.9", "7.5.0"])
+def test_inspect_refuses_a_declared_version_below_the_floor(export_zip, capsys, declared):
+    assert main(["--source-version", declared, "inspect", str(export_zip)]) == 1
     err = capsys.readouterr().err
-    assert "refused" in err and "8.5.0" in err and "floor is 8.10" in err
+    assert "refused" in err and declared in err and "floor 8.10" in err
 
 
-def test_inspect_accepts_a_versioned_export_at_or_above_the_floor(tmp_path, capsys):
-    from make_export_fixture import build_export_zip
+@pytest.mark.parametrize("declared", ["8.10", "8.10.0", "8.18.7", "9.0.2"])
+def test_inspect_accepts_a_declared_version_at_or_above_the_floor(export_zip, capsys, declared):
+    assert main(["--source-version", declared, "inspect", str(export_zip)]) == 0
+    out = capsys.readouterr().out
+    assert f"source version: {declared} (declared; floor 8.10 passed)" in out
+    assert "not declared" not in out
 
-    path = tmp_path / "v.zip"
-    path.write_bytes(build_export_zip(version="8.10.2"))
+
+@pytest.mark.parametrize("declared", ["1", "eight", "8.", "v8.10", "8.10.1.2"])
+def test_inspect_rejects_a_malformed_declaration_as_usage(export_zip, capsys, declared):
+    assert main(["--source-version", declared, "inspect", str(export_zip)]) == 2
+    assert "not major.minor[.patch]" in capsys.readouterr().err
+
+
+def test_declared_version_comes_from_env_and_settings_too(export_zip, capsys, monkeypatch):
+    from vcfcf_migrator import settings
+
+    settings.save_settings({"source_version": "8.9.0"})
+    assert main(["inspect", str(export_zip)]) == 1
+    monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "8.18.7")
+    assert main(["inspect", str(export_zip)]) == 0
+    assert "source version: 8.18.7" in capsys.readouterr().out
+
+
+def test_a_manifest_format_version_integer_is_never_a_product_version(tmp_path, capsys):
+    """Review W1: a bare {"version": 1} in configuration.json must not be
+    refused as VCF Operations 1. The reader no longer sniffs at all."""
+    import io
+    import zipfile
+
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for n in src.namelist():
+            data = src.read(n)
+            if n == "configuration.json":
+                data = json.dumps({"version": 1, "type": "CUSTOM"}).encode()
+            z.writestr(n, data)
+    path = tmp_path / "fmt.zip"
+    path.write_bytes(out.getvalue())
     assert main(["inspect", str(path)]) == 0
-    assert "version: 8.10.2 (from configuration.json)" in capsys.readouterr().out
+    assert "source version: not declared" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("drop", [
+    ["reports.zip", "customgroups.json"],
+    ["symptomdefs.xml", "alertdefs.xml", "recommendationdefs.xml"],
+    ["notificationrules.json", "payloadtemplates.json", "outboundsettings.json", "supermetrics.json"],
+])
+def test_inspect_tolerates_missing_optional_members(tmp_path, capsys, drop):
+    """Review W5: an export carrying fewer content types lists fewer items,
+    exits 0, and never tracebacks."""
+    path = tmp_path / "partial.zip"
+    path.write_bytes(build_export_zip(without=drop))
+    assert main(["inspect", "--json", str(path)]) == 0
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    doc = json.loads(captured.out)
+    kinds = {i["kind"] for i in doc["items"]}
+    for member in drop:
+        for kind, owner in MEMBER_FOR_KIND.items():
+            if owner == member:
+                assert kind not in kinds, (kind, member)
+    assert "dashboard" in kinds and "view" in kinds
+
+
+def test_the_same_template_in_two_members_is_listed_once(tmp_path, capsys):
+    """A full export embeds the payload template in notificationrules.json
+    too; the listing must not show it twice."""
+    import io
+    import zipfile
+
+    from make_export_fixture import TEMPLATE_ID
+
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for n in src.namelist():
+            data = src.read(n)
+            if n == "notificationrules.json":
+                doc = json.loads(data)
+                doc["NotificationRules"]["notificationTemplateDataSet"] = [{"NotificationTemplateData": {
+                    "id": TEMPLATE_ID, "Name": "[Fixture] Cluster template"}}]
+                data = json.dumps(doc).encode()
+            z.writestr(n, data)
+    path = tmp_path / "dup.zip"
+    path.write_bytes(out.getvalue())
+    assert main(["inspect", "--json", str(path)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["counts"]["notificationtemplate"] == 1
+
+
+def test_inspect_refuses_a_zip_that_is_not_a_content_export(tmp_path, capsys):
+    """Review N5: no marker and no configuration.json is not an export."""
+    import io
+    import zipfile
+
+    empty = tmp_path / "empty.zip"
+    with zipfile.ZipFile(empty, "w"):
+        pass
+    assert main(["inspect", str(empty)]) == 1
+    assert "not a content export" in capsys.readouterr().err
+
+    junk = tmp_path / "junk.zip"
+    with zipfile.ZipFile(junk, "w") as z:
+        z.writestr("readme.txt", "hello")
+        z.writestr("supermetrics.json", "{}")
+    assert main(["inspect", str(junk)]) == 1
+    assert "not a content export" in capsys.readouterr().err
+
+    marker_only = tmp_path / "marker.zip"
+    with zipfile.ZipFile(marker_only, "w") as z:
+        z.writestr("1757800000000000000L.v1", "owner")
+    assert main(["inspect", str(marker_only)]) == 0
 
 
 def test_inspect_rejects_a_non_zip(tmp_path, capsys):

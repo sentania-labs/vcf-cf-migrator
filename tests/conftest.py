@@ -11,17 +11,18 @@ sys.path.insert(0, str(FIXTURES))
 from make_export_fixture import build_export_zip  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolated_settings(tmp_path, monkeypatch):
+    """No test reads or writes the user's real settings file."""
+    monkeypatch.setenv("VCFCF_MIGRATOR_CONFIG_DIR", str(tmp_path / "config-autouse"))
+    monkeypatch.delenv("VCFCF_MIGRATOR_CORPUS", raising=False)
+    monkeypatch.delenv("VCFCF_MIGRATOR_SOURCE_VERSION", raising=False)
+
+
 @pytest.fixture
 def export_zip(tmp_path) -> Path:
     path = tmp_path / "fixture-export.zip"
     path.write_bytes(build_export_zip())
-    return path
-
-
-@pytest.fixture
-def old_export_zip(tmp_path) -> Path:
-    path = tmp_path / "fixture-export-8.5.zip"
-    path.write_bytes(build_export_zip(version="8.5.0"))
     return path
 
 
@@ -32,4 +33,5 @@ def config_dir(tmp_path, monkeypatch) -> Path:
     d = tmp_path / "config"
     monkeypatch.setenv("VCFCF_MIGRATOR_CONFIG_DIR", str(d))
     monkeypatch.delenv("VCFCF_MIGRATOR_CORPUS", raising=False)
+    monkeypatch.delenv("VCFCF_MIGRATOR_SOURCE_VERSION", raising=False)
     return d

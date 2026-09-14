@@ -10,11 +10,20 @@ The export layout (from the factory's ``vcfops-api`` skill, wire-formats):
     dashboardsharings/<ownerUserId>
     supermetrics.json             dict keyed by uuid
 
-UI exports of the other content types add ``AlertContent.xml`` (symptoms,
-alerts, recommendations), a custom group JSON (``customGroups`` list), a
-notification settings JSON (``NotificationRules``) and a reports zip whose
-``content.xml`` carries ``ReportDef`` elements. Everything not recognised is
-listed as "carried, not inspected" and left alone.
+A full export (the corpus zips, 8.18.7 and 9.0.2, share this layout) adds
+``symptomdefs.xml``, ``alertdefs.xml`` and ``recommendationdefs.xml`` (each
+an ``alertContent`` document), ``customgroups.json`` (``customGroups``),
+``notificationrules.json`` (``NotificationRules``), ``payloadtemplates.json``
+(``NotificationTemplate``), ``outboundsettings.json`` (``plugins``) and
+``reports.zip`` whose ``content.xml`` carries ``ReportDef`` elements. The
+reader dispatches on content, not on member name. Everything not recognised
+(policies, users, roles, solution config, cost drivers) is listed as
+"carried, not inspected" and left alone.
+
+No export carries a product version anywhere (checked on both corpus zips;
+the ``L.v1`` marker is a format marker and is identical across instances),
+so the admin declares it with ``--source-version`` and the 8.10 floor is
+enforced on the declared value only.
 
 The zip readers for dashboards, super metrics and view XML come from
 ``vcfcf_core.extractor.extractor``; this module adds the walk and the
@@ -52,18 +61,23 @@ KIND_ORDER = [
     "report",
     "notificationrule",
     "notificationtemplate",
+    "outboundsetting",
 ]
 
 _MARKER_RE = re.compile(r"^(\d+)L\.v(\d+)$")
-_VERSION_KEYS = ("version", "productVersion", "buildVersion", "exportVersion", "opsVersion")
+_SOURCE_VERSION_RE = re.compile(r"^\d+\.\d+(?:\.\d+)?$")
 
 
 class UnsupportedExport(Exception):
-    """The export is readable but refused (below the version floor)."""
+    """The declared source version is below the floor."""
 
 
 class NotAnExport(Exception):
-    """The path is not a readable zip."""
+    """The path is not a readable zip, or the zip is not a content export."""
+
+
+class BadSourceVersion(ValueError):
+    """A declared source version that is not major.minor[.patch]."""
 
 
 @dataclass
@@ -83,8 +97,7 @@ class Export:
     marker: Optional[str] = None
     marker_format: Optional[str] = None
     owner: Optional[str] = None
-    version: Optional[str] = None
-    version_source: Optional[str] = None
+    source_version: Optional[str] = None  # declared by the admin, never sniffed
     manifest: dict = field(default_factory=dict)
     items: List[Item] = field(default_factory=list)
     carried: List[str] = field(default_factory=list)
@@ -108,8 +121,7 @@ class Export:
             "marker": self.marker,
             "marker_format": self.marker_format,
             "owner": self.owner,
-            "version": self.version,
-            "version_source": self.version_source,
+            "source_version": self.source_version,
             "manifest": self.manifest,
             "counts": self.counts(),
             "items": [it.as_dict() for it in self.sorted_items()],
@@ -123,26 +135,32 @@ class Export:
 # ---------------------------------------------------------------------------
 
 def parse_version(text: str) -> Optional[Tuple[int, ...]]:
-    """``"8.10.2"`` -> ``(8, 10, 2)``; None when the text has no leading digits."""
-    m = re.match(r"^\s*v?(\d+(?:\.\d+)*)", str(text))
-    if not m:
+    """``"8.10.2"`` -> ``(8, 10, 2)``; None unless the text is a dotted
+    major.minor[.patch] string. A bare integer is never a product version."""
+    if not _SOURCE_VERSION_RE.match(str(text).strip()):
         return None
-    return tuple(int(p) for p in m.group(1).split("."))
+    return tuple(int(p) for p in str(text).strip().split("."))
 
 
-def below_floor(version: str) -> bool:
-    parsed = parse_version(version)
+def check_source_version(declared: Optional[str]) -> Optional[str]:
+    """Validate a declared source version against the floor.
+
+    Returns the normalised string, or None when nothing was declared. Raises
+    ``BadSourceVersion`` on a malformed value and ``UnsupportedExport`` when
+    it is below the floor.
+    """
+    if declared is None or not str(declared).strip():
+        return None
+    parsed = parse_version(declared)
     if parsed is None:
-        return False
-    return parsed < VERSION_FLOOR
-
-
-def _version_from_manifest(manifest: dict) -> Optional[str]:
-    for key in _VERSION_KEYS:
-        value = manifest.get(key)
-        if isinstance(value, (str, int, float)) and parse_version(str(value)):
-            return str(value)
-    return None
+        raise BadSourceVersion(
+            f"source version {declared!r} is not major.minor[.patch] (for example 8.18.7)"
+        )
+    if parsed < VERSION_FLOOR:
+        raise UnsupportedExport(
+            f"refused: declared source version {str(declared).strip()} is below the floor {VERSION_FLOOR_TEXT}"
+        )
+    return str(declared).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +192,23 @@ def _items_from_alert_content(root: ET.Element, source: str) -> List[Item]:
         # themselves live under <Recommendations> and carry a key.
         if el.get("ref"):
             continue
-        name = el.get("name") or el.get("description") or (el.text or "").strip() or "(unnamed)"
+        name = el.get("name") or el.get("description") or (el.findtext("Description") or "").strip() or "(unnamed)"
         out.append(Item("recommendation", name, el.get("key") or el.get("id") or "", source))
     return out
+
+
+def _id_text(value) -> str:
+    """An export id as text. 8.x JSON members carry ids as dicts
+    (``{"@UUID": "...", "@ObjectType": "NOTIFICATION_TEMPLATE"}``); 9.x
+    and the UI exports carry plain strings."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        for key in ("@UUID", "UUID", "uuid", "id", "@id"):
+            if value.get(key):
+                return str(value[key])
+        return ""
+    return str(value)
 
 
 def _items_from_customgroups(doc: dict, source: str) -> List[Item]:
@@ -184,8 +216,8 @@ def _items_from_customgroups(doc: dict, source: str) -> List[Item]:
     for group in doc.get("customGroups") or []:
         if not isinstance(group, dict):
             continue
-        uuid = group.get("id") or group.get("identifier") or ""
-        out.append(Item("customgroup", str(group.get("name") or "(unnamed)"), str(uuid), source))
+        uuid = _id_text(group.get("id") or group.get("identifier"))
+        out.append(Item("customgroup", str(group.get("name") or "(unnamed)"), uuid, source))
     return out
 
 
@@ -198,12 +230,41 @@ def _items_from_notifications(doc: dict, source: str) -> List[Item]:
         rule = entry.get("NotificationRule") if isinstance(entry, dict) else None
         if isinstance(rule, dict):
             out.append(Item("notificationrule", str(rule.get("Name") or rule.get("name") or "(unnamed)"),
-                            str(rule.get("id") or ""), source))
+                            _id_text(rule.get("id")), source))
     for entry in block.get("notificationTemplateDataSet") or []:
         tpl = entry.get("NotificationTemplateData") if isinstance(entry, dict) else None
         if isinstance(tpl, dict):
             out.append(Item("notificationtemplate", str(tpl.get("Name") or tpl.get("name") or "(unnamed)").strip(),
-                            str(tpl.get("id") or ""), source))
+                            _id_text(tpl.get("id")), source))
+    return out
+
+
+def _items_from_payload_templates(doc: dict, source: str) -> List[Item]:
+    """``payloadtemplates.json``: ``{"NotificationTemplate": {"notificationTemplateData": [...]}}``."""
+    out: List[Item] = []
+    block = doc.get("NotificationTemplate") or {}
+    if not isinstance(block, dict):
+        return out
+    for entry in block.get("notificationTemplateData") or []:
+        tpl = entry.get("NotificationTemplateData") if isinstance(entry, dict) else None
+        if isinstance(tpl, dict):
+            out.append(Item("notificationtemplate", str(tpl.get("Name") or tpl.get("name") or "(unnamed)").strip(),
+                            _id_text(tpl.get("id")), source))
+    return out
+
+
+def _items_from_outbound_settings(doc: dict, source: str) -> List[Item]:
+    """``outboundsettings.json``: ``plugins[]`` with ``pluginType`` and a
+    ``pluginConfig`` carrying ``pluginName``. Values ride through untouched
+    (spec: outbound settings are passed along as exported)."""
+    out: List[Item] = []
+    for plugin in doc.get("plugins") or []:
+        if not isinstance(plugin, dict):
+            continue
+        cfg = plugin.get("pluginConfig") if isinstance(plugin.get("pluginConfig"), dict) else {}
+        name = cfg.get("pluginName") or plugin.get("pluginName") or plugin.get("pluginType") or "(unnamed)"
+        uuid = _id_text(cfg.get("id") or plugin.get("id"))
+        out.append(Item("outboundsetting", f"{name} ({plugin.get('pluginType', 'unknown plugin type')})", uuid, source))
     return out
 
 
@@ -225,14 +286,17 @@ def _dashboard_items(dashes: List[dict], source: str) -> List[Item]:
 # The walk
 # ---------------------------------------------------------------------------
 
-def read_export(path) -> Export:
+def read_export(path, source_version: Optional[str] = None) -> Export:
     """Walk the export at *path* and return what it carries.
 
-    Raises ``NotAnExport`` when the file is not a zip and
-    ``UnsupportedExport`` when the export identifies as older than the floor.
-    When the version cannot be determined the export is read anyway and a
-    note says so.
+    *source_version* is the admin's declaration (``--source-version``); it is
+    checked against the floor first. Raises ``NotAnExport`` when the file is
+    not a zip or carries neither a marker nor ``configuration.json``,
+    ``BadSourceVersion`` on a malformed declaration and ``UnsupportedExport``
+    when the declared version is below the floor. With no declaration the
+    export is read anyway and the listing says so.
     """
+    declared = check_source_version(source_version)
     path = Path(path)
     try:
         data = path.read_bytes()
@@ -241,7 +305,7 @@ def read_export(path) -> Export:
     if not zipfile.is_zipfile(io.BytesIO(data)):
         raise NotAnExport(f"{path} is not a zip file")
 
-    export = Export(path=str(path))
+    export = Export(path=str(path), source_version=declared)
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/") and not n.startswith("__MACOSX/")]
 
@@ -260,19 +324,14 @@ def read_export(path) -> Export:
                 except ValueError:
                     export.notes.append("configuration.json is not valid JSON")
 
-        version = _version_from_manifest(export.manifest)
-        if version:
-            export.version, export.version_source = version, "configuration.json"
-            if below_floor(version):
-                raise UnsupportedExport(
-                    f"refused: export identifies as VCF Operations {version}; the floor is {VERSION_FLOOR_TEXT}"
-                )
-        else:
-            export.notes.append("export version could not be determined; continuing")
+        if export.marker is None and not export.manifest:
+            raise NotAnExport(f"{path} is not a content export: no <digits>L.v1 marker and no configuration.json")
         if export.marker is None:
-            export.notes.append("no <digits>L.v1 marker found; this may not be a content export")
+            export.notes.append("no <digits>L.v1 marker found")
         elif export.marker_format != "v1":
             export.notes.append(f"marker format {export.marker_format} is not the known v1")
+        if declared is None:
+            export.notes.append("source version not declared (--source-version); the 8.10 floor was not checked")
 
         # Core readers over the whole outer zip.
         if any(n.startswith("dashboards/") for n in names):
@@ -338,11 +397,30 @@ def read_export(path) -> Export:
                 if isinstance(doc, dict) and "NotificationRules" in doc:
                     export.items.extend(_items_from_notifications(doc, name))
                     continue
+                if isinstance(doc, dict) and "NotificationTemplate" in doc:
+                    export.items.extend(_items_from_payload_templates(doc, name))
+                    continue
+                if isinstance(doc, dict) and isinstance(doc.get("plugins"), list) and "serviceCredentials" in doc:
+                    export.items.extend(_items_from_outbound_settings(doc, name))
+                    continue
                 export.carried.append(name)
                 continue
 
             export.carried.append(name)
 
+    # The same object can appear in two members (a full export embeds the
+    # notification template inside notificationrules.json and again in
+    # payloadtemplates.json). One listing per kind+uuid; the first wins.
+    seen = set()
+    unique: List[Item] = []
+    for it in export.items:
+        key = (it.kind, it.uuid) if it.uuid else None
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
+        unique.append(it)
+    export.items = unique
     return export
 
 
@@ -365,10 +443,10 @@ def render_text(export: Export) -> str:
         lines.append(f"marker: {export.marker} (format {export.marker_format}, owner {export.owner or 'unknown'})")
     else:
         lines.append("marker: none")
-    if export.version:
-        lines.append(f"version: {export.version} (from {export.version_source})")
+    if export.source_version:
+        lines.append(f"source version: {export.source_version} (declared; floor {VERSION_FLOOR_TEXT} passed)")
     else:
-        lines.append("version: undetermined (continuing)")
+        lines.append("source version: not declared")
     if export.manifest:
         summary = " ".join(f"{k}={v}" for k, v in export.manifest.items() if not isinstance(v, (dict, list)))
         lines.append(f"manifest: {summary}")

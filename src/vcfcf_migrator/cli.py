@@ -18,7 +18,14 @@ import vcfcf_core
 
 from vcfcf_migrator import __version__
 from vcfcf_migrator import settings as _settings
-from vcfcf_migrator.export_reader import NotAnExport, UnsupportedExport, read_export, render_text
+from vcfcf_migrator.export_reader import (
+    VERSION_FLOOR_TEXT,
+    BadSourceVersion,
+    NotAnExport,
+    UnsupportedExport,
+    read_export,
+    render_text,
+)
 
 SPEC_POINTER = "knowledge/designs/content-migrator-v1.md in the factory repo"
 NOT_IMPLEMENTED = {"tree", "build", "corpus-check"}
@@ -38,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--corpus", metavar="DIR", default=None,
                    help=f"corpus directory holding real export zips (also {_settings.ENV_CORPUS}; default ./corpus)")
+    p.add_argument("--source-version", metavar="X.Y[.Z]", default=None,
+                   help="VCF Operations version the export came from, for example 8.18.7; exports carry none, "
+                        f"so you declare it (also {_settings.ENV_SOURCE_VERSION}, or the ui page). "
+                        f"Floor {VERSION_FLOOR_TEXT}; without it inspect continues and build refuses")
     sub = p.add_subparsers(dest="command", metavar="command")
 
     sub.add_parser("version", help="print the tool and library versions")
@@ -69,12 +80,13 @@ def cmd_version(_args) -> int:
 
 
 def cmd_inspect(args) -> int:
+    declared, _source = _settings.source_version(args.source_version)
     try:
-        export = read_export(args.zip)
-    except NotAnExport as e:
+        export = read_export(args.zip, source_version=declared)
+    except BadSourceVersion as e:
         print(f"vcfcf-migrator inspect: {e}", file=sys.stderr)
-        return 1
-    except UnsupportedExport as e:
+        return 2
+    except (NotAnExport, UnsupportedExport) as e:
         print(f"vcfcf-migrator inspect: {e}", file=sys.stderr)
         return 1
     if args.json:
@@ -92,7 +104,8 @@ def cmd_not_implemented(args) -> int:
 def cmd_ui(args) -> int:
     from vcfcf_migrator.ui import serve
 
-    return serve(zip_path=args.zip, port=args.port, open_browser=not args.no_browser, corpus_cli=args.corpus)
+    return serve(zip_path=args.zip, port=args.port, open_browser=not args.no_browser,
+                 corpus_cli=args.corpus, source_version_cli=args.source_version)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

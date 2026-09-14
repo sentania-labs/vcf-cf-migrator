@@ -1,15 +1,17 @@
 """Build a hand-made, export-shaped zip for tests and CI.
 
-Mirrors the layout of a real content export (the factory's wire-formats
-reference): marker, configuration.json, usermappings.json, views.zip with
-content.xml, dashboards/<owner> inner zip, dashboardsharings/<owner>,
-supermetrics.json. On top, the members a UI export of the other types
-carries: AlertContent.xml, CustomGroup.json, Notification Setting.json, a
-reports zip, and one properties file that inspect must list as carried.
+Mirrors the member layout of the two corpus exports (8.18.7 and 9.0.2,
+identical for every content type both carry): the ``<digits>L.v1`` marker,
+configuration.json, usermappings.json, views.zip with content.xml,
+dashboards/<owner> inner zip, dashboardsharings/<owner>, supermetrics.json,
+symptomdefs.xml, alertdefs.xml, recommendationdefs.xml (each an alertContent
+document), customgroups.json, notificationrules.json, payloadtemplates.json,
+outboundsettings.json, reports.zip, plus one policies.xml that inspect must
+list as carried. No member carries a product version; real exports do not.
 
 Made-up names, no instance data. Nothing here reads a real corpus.
 
-Usage: python tests/fixtures/make_export_fixture.py OUT.zip [--version X.Y]
+Usage: python tests/fixtures/make_export_fixture.py OUT.zip [--without MEMBER ...]
 """
 from __future__ import annotations
 
@@ -43,8 +45,20 @@ EXPECTED_ITEMS = {
     ("report", "[Fixture] Cluster Report", REPORT_ID),
     ("notificationrule", "[Fixture] Cluster rule", RULE_ID),
     ("notificationtemplate", "[Fixture] Cluster template", TEMPLATE_ID),
+    ("outboundsetting", "[Fixture] Mail relay (StandardEmailPlugin)", ""),
 }
-EXPECTED_CARRIED = {"resources/content.properties"}
+EXPECTED_CARRIED = {"policies.xml"}
+# Which member each optional kind comes from, for the drop-a-member tests.
+MEMBER_FOR_KIND = {
+    "report": "reports.zip",
+    "customgroup": "customgroups.json",
+    "symptom": "symptomdefs.xml",
+    "alert": "alertdefs.xml",
+    "recommendation": "recommendationdefs.xml",
+    "notificationrule": "notificationrules.json",
+    "notificationtemplate": "payloadtemplates.json",
+    "outboundsetting": "outboundsettings.json",
+}
 
 
 def _views_xml() -> str:
@@ -67,19 +81,31 @@ def _reports_xml() -> str:
     )
 
 
-def _alert_xml() -> str:
+def _alertdefs_xml() -> str:
     return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><alertContent>'
+        '<?xml version="1.0" encoding="UTF-8"?><alertContent>'
         '<AlertDefinitions><AlertDefinition adapterKind="VMWARE" id="AlertDefinition-VMWARE-Fixture_Cluster_CPU" '
         'name="[Fixture] Cluster CPU alert" resourceKind="ClusterComputeResource" type="16" subType="19">'
         '<State severity="critical"><SymptomSet ref="SymptomDefinition-VMWARE-Fixture_CPU_high" aggregation="all"/>'
         '<Recommendation priority="1" ref="Recommendation-df-VMWARE-Fixture_Add_hosts"/></State>'
-        "</AlertDefinition></AlertDefinitions>"
+        "</AlertDefinition></AlertDefinitions></alertContent>"
+    )
+
+
+def _symptomdefs_xml() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><alertContent>'
         '<SymptomDefinitions><SymptomDefinition adapterKind="VMWARE" id="SymptomDefinition-VMWARE-Fixture_CPU_high" '
-        'name="[Fixture] CPU high" resourceKind="ClusterComputeResource"/></SymptomDefinitions>'
-        '<Recommendations><Recommendation key="Recommendation-df-VMWARE-Fixture_Add_hosts" '
-        'description="Add hosts to the cluster"/></Recommendations>'
-        "</alertContent>"
+        'name="[Fixture] CPU high" resourceKind="ClusterComputeResource"/></SymptomDefinitions></alertContent>'
+    )
+
+
+def _recommendationdefs_xml() -> str:
+    # Real exports put the text in a Description child, not an attribute.
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><alertContent>'
+        '<Recommendations><Recommendation key="Recommendation-df-VMWARE-Fixture_Add_hosts">'
+        "<Description>Add hosts to the cluster</Description></Recommendation></Recommendations></alertContent>"
     )
 
 
@@ -96,9 +122,9 @@ def _dashboard_json() -> dict:
     }
 
 
-def build_export_zip(version: str = "") -> bytes:
-    """The fixture bytes. *version* goes into configuration.json when given;
-    real exports carry none, so the default leaves it out."""
+def build_export_zip(without=()) -> bytes:
+    """The fixture bytes. *without* names members to leave out, so tests can
+    mirror an export that carries fewer content types."""
     views_inner = io.BytesIO()
     with zipfile.ZipFile(views_inner, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("content.xml", _views_xml())
@@ -124,40 +150,59 @@ def build_export_zip(version: str = "") -> bytes:
             "id": RULE_ID, "Name": "[Fixture] Cluster rule", "Description": "", "PluginType": "WebhookPlugin",
             "Disabled": "False", "RuleType": "GENERAL_RULE",
         }}],
-        "notificationTemplateDataSet": [{"NotificationTemplateData": {
-            "id": TEMPLATE_ID, "Name": "[Fixture] Cluster template", "pluginTypeId": "WebhookPlugin",
-        }}],
         "ruleNameToTemplateNameMap": [],
     }}
-    manifest = {"dashboards": 1, "views": 2, "superMetrics": 2, "type": "CUSTOM"}
-    if version:
-        manifest["version"] = version
+    templates = {"NotificationTemplate": {"notificationTemplateData": [{
+        "@class": "NotificationTemplateData",
+        # 8.x carries ids as dicts; the listing must show the bare uuid.
+        "NotificationTemplateData": {"id": {"@ObjectType": "NOTIFICATION_TEMPLATE", "@UUID": TEMPLATE_ID},
+                                     "Name": "[Fixture] Cluster template", "pluginTypeId": "WebhookPlugin"},
+    }]}}
+    outbound = {"serviceCredentials": [], "exportId": "fixture", "plugins": [{
+        "pluginType": "StandardEmailPlugin",
+        "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
+    }]}
+    manifest = {"dashboards": 1, "views": 2, "superMetrics": 2, "customGroups": 1, "reports": 1,
+                "symptomDefs": 1, "alertDefs": 1, "type": "CUSTOM",
+                "dashboardsByOwner": [{"owner": OWNER, "count": 1}]}
+    policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'
 
+    members = [
+        (MARKER, OWNER),
+        ("configuration.json", json.dumps(manifest)),
+        ("views.zip", views_inner.getvalue()),
+        ("usermappings.json", json.dumps({OWNER: {"userName": "admin", "userId": OWNER}})),
+        (f"dashboards/{OWNER}", dash_inner.getvalue()),
+        (f"dashboardsharings/{OWNER}", "[]"),
+        ("supermetrics.json", json.dumps(sms)),
+        ("symptomdefs.xml", _symptomdefs_xml()),
+        ("alertdefs.xml", _alertdefs_xml()),
+        ("recommendationdefs.xml", _recommendationdefs_xml()),
+        ("customgroups.json", json.dumps(groups)),
+        ("notificationrules.json", json.dumps(rules)),
+        ("payloadtemplates.json", json.dumps(templates)),
+        ("outboundsettings.json", json.dumps(outbound)),
+        ("reports.zip", reports_inner.getvalue()),
+        ("policies.xml", policies),
+    ]
+    skip = set(without)
     outer = io.BytesIO()
     with zipfile.ZipFile(outer, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr(MARKER, OWNER)
-        z.writestr("configuration.json", json.dumps(manifest))
-        z.writestr("views.zip", views_inner.getvalue())
-        z.writestr("usermappings.json", json.dumps({OWNER: {"userName": "admin", "userId": OWNER}}))
-        z.writestr(f"dashboards/{OWNER}", dash_inner.getvalue())
-        z.writestr(f"dashboardsharings/{OWNER}", "[]")
-        z.writestr("supermetrics.json", json.dumps(sms))
-        z.writestr("AlertContent.xml", _alert_xml())
-        z.writestr("CustomGroup.json", json.dumps(groups))
-        z.writestr("Notification Setting.json", json.dumps(rules))
-        z.writestr("Reports.zip", reports_inner.getvalue())
-        z.writestr("resources/content.properties", "fixture=1\n")
+        for name, data in members:
+            if name in skip:
+                continue
+            z.writestr(name, data)
     return outer.getvalue()
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("out", help="path of the zip to write")
-    p.add_argument("--version", default="", help="version string to put in configuration.json (default: none)")
+    p.add_argument("--without", nargs="*", default=[], metavar="MEMBER", help="members to leave out")
     args = p.parse_args(argv)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(build_export_zip(args.version))
+    out.write_bytes(build_export_zip(args.without))
     print(out)
     return 0
 
