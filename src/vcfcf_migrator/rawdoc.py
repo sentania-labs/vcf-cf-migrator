@@ -34,11 +34,14 @@ Two limits of the XML side, both deliberate and both narrow:
 
 * **Encoding.** Slicing is encoding-blind, but *rebuilding* is not: the
   separators and close tags a rebuilt container needs are only safe in an
-  ASCII-compatible encoding. A document declaring one that is not (UTF-16 and
-  friends) is refused outright rather than rebuilt into something subtly
-  wrong. Close tags are cut from the source's own start-tag bytes, so a tag
-  name outside ASCII survives whatever ASCII-compatible encoding carried it.
-  Every content XML in all five corpus exports is UTF-8.
+  ASCII-compatible encoding. Such a document is refused outright rather than
+  rebuilt into something subtly wrong, and the encoding is read from the
+  *bytes* (BOM, or a NUL among the opening four) rather than from the
+  declaration, because a real UTF-16 document's declaration is not readable
+  until you already know the encoding. Close tags are cut from the source's
+  own start-tag bytes, so a tag name outside ASCII survives whatever
+  ASCII-compatible encoding carried it. Every content XML in all five corpus
+  exports is UTF-8.
 * **Namespace prefixes.** The parser runs without namespace processing, so a
   prefixed tag reads as ``n:ViewDef`` and will not match a wanted tag of
   ``ViewDef``. This fails safe: the member is listed as carried and not
@@ -102,10 +105,24 @@ class XmlContainer:
         return b"".join(parts)
 
 
-# Encodings whose bytes for ``<``, ``/``, ``>`` and a newline are the ASCII
-# ones, which is what a rebuilt container's scaffolding assumes.
-_ASCII_COMPATIBLE = ("utf-8", "utf8", "us-ascii", "ascii", "iso-8859", "latin",
-                     "windows-12", "cp12", "koi8", "shift_jis", "euc-")
+# Encodings expat can parse *and* whose bytes for ``<``, ``/``, ``>`` and a
+# newline are the ASCII ones, which is what a rebuilt container's scaffolding
+# assumes. Deliberately narrow: Shift_JIS, EUC and KOI8 are ASCII-compatible on
+# paper but expat refuses multi-byte encodings outright, so whitelisting them
+# only converts a clean refusal into a crash further down.
+_REBUILDABLE = ("utf-8", "utf8", "us-ascii", "ascii", "iso-8859", "latin",
+                "windows-12", "cp12")
+
+# Byte signatures of the encodings that are not ASCII-compatible. An XML
+# document in one of them does not begin with the ASCII bytes ``<?xml``, which
+# is exactly why reading the declaration is not enough to catch it: the
+# declaration is unreadable until you already know the encoding.
+_BOMS = (
+    (b"\x00\x00\xfe\xff", "utf-32-be"), (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"\xfe\xff", "utf-16-be"), (b"\xff\xfe", "utf-16-le"),
+)
+
+
 def _declared_encoding(data: bytes) -> Optional[str]:
     """The ``encoding="..."`` of an XML declaration, lowercased."""
     head = data[:200]
@@ -118,14 +135,42 @@ def _declared_encoding(data: bytes) -> Optional[str]:
     return match.group(1).decode("ascii", "replace").lower() if match else None
 
 
+def sniff_encoding(data: bytes) -> Optional[str]:
+    """The document's encoding as the *bytes* give it, not as they claim.
+
+    A BOM first, then the shape of the opening bytes: a UTF-16 or UTF-32
+    document with no BOM still starts with a NUL somewhere in its first four
+    bytes, because its first character is an ASCII ``<``. Only then the
+    declaration, which is readable at all only once the encoding is
+    ASCII-compatible. None when nothing says.
+    """
+    for bom, name in _BOMS:
+        if data.startswith(bom):
+            return name
+    head = data[:4]
+    if b"\x00" in head and not head.startswith(b"\x00\x00\x00\x00"):
+        return "utf-16 or utf-32 (no BOM, NUL in the opening bytes)"
+    if data.startswith(b"\xef\xbb\xbf"):
+        return "utf-8"
+    return _declared_encoding(data)
+
+
 def _refuse_unrebuildable_encoding(data: bytes) -> None:
-    declared = _declared_encoding(data)
-    if declared is None:
+    """Refuse a document this module could slice but could not rebuild.
+
+    Slicing is encoding-blind; rebuilding is not, because the separators and
+    close tags a fresh container needs are ASCII bytes. Refusing up front is
+    the whole point: the alternative is a bundle that looks written and is not
+    well-formed.
+    """
+    sniffed = sniff_encoding(data)
+    if sniffed is None:
         return
-    if not any(declared.startswith(ok) for ok in _ASCII_COMPATIBLE):
+    if not any(sniffed.startswith(ok) for ok in _REBUILDABLE):
         raise RawDocError(
-            f"XML declaring encoding {declared!r} cannot be subset safely: rebuilding a "
-            "container needs an ASCII-compatible encoding, and guessing would corrupt it")
+            f"XML in encoding {sniffed!r} cannot be subset safely: rebuilding a "
+            "container needs an ASCII-compatible encoding expat can parse, and "
+            "guessing would corrupt it")
 
 
 def _tag_name_bytes(start_tag: bytes) -> bytes:
@@ -224,6 +269,10 @@ def xml_container(data: bytes, wanted_tags: Sequence[str],
         parser.Parse(data, True)
     except expat.ExpatError as e:
         raise RawDocError(f"not well-formed XML: {e}") from e
+    except ValueError as e:
+        # expat raises a bare ValueError for an encoding it will not handle
+        # ("multi-byte encodings are not supported"). A refusal, not a crash.
+        raise RawDocError(f"XML this parser cannot read: {e}") from e
 
     if ancestors is None:
         # No wanted element anywhere, so there is no container path to record.

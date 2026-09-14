@@ -136,11 +136,44 @@ def test_a_close_tag_is_cut_from_the_source_not_assembled_in_ascii():
     assert "</Cañón>" in out.decode("iso-8859-1")
 
 
-def test_an_encoding_that_cannot_be_rebuilt_safely_is_refused():
-    data = '<?xml version="1.0" encoding="UTF-16"?><C><V id="1"/></C>'.encode("utf-8")
+@pytest.mark.parametrize("data,why", [
+    ('<?xml version="1.0" encoding="UTF-16"?><C><V id="1"/></C>'.encode("utf-16"),
+     "real UTF-16 with a BOM"),
+    ('<?xml version="1.0"?><C><V id="1"/></C>'.encode("utf-16-be"),
+     "real UTF-16 with no BOM at all"),
+    ('<?xml version="1.0"?><C><V id="1"/></C>'.encode("utf-32"),
+     "real UTF-32"),
+    ('<?xml version="1.0" encoding="Shift_JIS"?><C><V id="1"/></C>'.encode("ascii"),
+     "an encoding expat refuses outright"),
+    ('<?xml version="1.0" encoding="UTF-16"?><C><V id="1"/></C>'.encode("utf-8"),
+     "ASCII bytes claiming to be UTF-16"),
+])
+def test_an_encoding_that_cannot_be_rebuilt_safely_is_refused(data, why):
+    """The encoding is read from the bytes, not from the declaration: a real
+    UTF-16 document's declaration is not readable until you already know the
+    encoding, so a check that needs an ASCII ``<?xml`` at byte 0 fires only on
+    the one case that was never dangerous."""
     with pytest.raises(RawDocError) as e:
         rawdoc.xml_container(data, ["V"])
-    assert "ASCII-compatible" in str(e.value)
+    assert "cannot be subset safely" in str(e.value), why
+
+
+@pytest.mark.parametrize("data", [
+    b'<?xml version="1.0" encoding="UTF-8"?><C><V id="1"/></C>',
+    '<?xml version="1.0" encoding="UTF-8"?><C><V id="1"/></C>'.encode("utf-8-sig"),
+    b'<C><V id="1"/></C>',
+    '<?xml version="1.0" encoding="iso-8859-1"?><C><V id="1"/></C>'.encode("iso-8859-1"),
+])
+def test_an_ascii_compatible_document_is_not_refused(data):
+    assert len(rawdoc.xml_container(data, ["V"]).elements) == 1
+
+
+def test_a_refused_encoding_never_reaches_the_parser_as_a_crash():
+    """expat raises a bare ValueError for a multi-byte encoding. Whatever the
+    route, the caller sees a RawDocError, never a traceback."""
+    data = '<?xml version="1.0" encoding="euc-jp"?><C><V id="1"/></C>'.encode("ascii")
+    with pytest.raises(RawDocError):
+        rawdoc.xml_container(data, ["V"])
 
 
 def test_malformed_xml_is_refused_not_guessed_at():
