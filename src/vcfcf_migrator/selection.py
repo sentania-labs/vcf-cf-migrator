@@ -46,6 +46,9 @@ class Selection:
     picked: List[str] = field(default_factory=list)        # what the file named
     added: List[Addition] = field(default_factory=list)    # what closure added
     missing: List[MissingEdge] = field(default_factory=list)
+    # By-name references in the closure that several objects answer to. The
+    # command that writes the bundle has to say this, not only ``tree``.
+    ambiguous: List[str] = field(default_factory=list)
     lines: int = 0
 
     def counts(self, graph: Graph) -> Dict[str, int]:
@@ -143,12 +146,14 @@ def close(graph: Graph, keys: Sequence[str]) -> Selection:
             if child is None:
                 continue
             selection.added.append(Addition(
-                target, f"{child.kind} {child.name} added: required by "
-                        f"{node.kind} {node.name}"))
+                target, f"{child.label()} added: required by {node.label()}"))
             queue.append(target)
         for gap in graph.missing_for(key):
             if gap not in selection.missing:
                 selection.missing.append(gap)
+        for note in graph.ambiguous:
+            if note.startswith(node.label()) and note not in selection.ambiguous:
+                selection.ambiguous.append(note)
     selection.keys = seen
     return selection
 
@@ -169,6 +174,11 @@ def render(graph: Graph, selection: Selection) -> str:
         lines.append(f"pulled in by dependency: {len(selection.added)}")
         for add in selection.added:
             lines.append(f"  {add.reason}")
+    if selection.ambiguous:
+        lines.append(f"references by name that several objects answer to: "
+                     f"{len(selection.ambiguous)}")
+        for note in selection.ambiguous:
+            lines.append(f"  {note}")
     if selection.missing:
         lines.append(f"referenced but not in this export: {len(selection.missing)}")
         for gap in selection.missing:
@@ -185,6 +195,7 @@ def as_dict(graph: Graph, selection: Selection) -> dict:
         "keys": list(selection.keys),
         "counts": selection.counts(graph),
         "added": [{"key": a.key, "reason": a.reason} for a in selection.added],
+        "ambiguous": list(selection.ambiguous),
         "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via}
                     for m in selection.missing],
     }
