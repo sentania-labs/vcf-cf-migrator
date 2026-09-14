@@ -45,6 +45,7 @@ ABSENT_SM_NAME = "[Fixture] SM Nowhere"
 ABSENT_GROUP_NAME = "[Fixture] Other Clusters"
 GROUP_NAME = "[Fixture] Prod Clusters"
 GROUP_NAME_2 = "[Fixture] Web Tier"
+GROUP_NAME_3 = "[Fixture] Edge Nodes"
 # A custom group's policy lives in policies.xml, which this tool never
 # carries, so a carried group always points at a policy that will be absent.
 GROUP_POLICY_ID = "9f1e2d3c-4b5a-4968-8777-6a5b4c3d2e1f"
@@ -67,6 +68,7 @@ EXPECTED_ITEMS = {
     ("supermetric", "[Fixture] SM 3", SM_IDS[2]),
     ("customgroup", GROUP_NAME, ""),
     ("customgroup", GROUP_NAME_2, ""),
+    ("customgroup", GROUP_NAME_3, ""),
     ("symptom", "[Fixture] CPU high", "SymptomDefinition-VMWARE-Fixture_CPU_high"),
     ("alert", "[Fixture] Cluster CPU alert", "AlertDefinition-VMWARE-Fixture_Cluster_CPU"),
     ("recommendation", "Add hosts to the cluster", "Recommendation-df-VMWARE-Fixture_Add_hosts"),
@@ -177,16 +179,28 @@ def _cluster_overview() -> dict:
 
 
 def _vm_overview() -> dict:
-    # The widget is scoped to a custom group, which an export writes as a
-    # resource binding by name with a Container resource kind.
+    # Three shapes of the same binding, one per widget: the object with a
+    # Container resource kind, the object with no resource kind at all (which
+    # is why the kind is a negative filter and not a requirement), and the
+    # per-dashboard entryKeys list.
     return {
         "id": DASHBOARD_ID_2,
         "name": "[Fixture] VM Overview",
-        "widgets": [{"type": "View", "gridsterCoords": {},
-                     "config": {"viewDefinitionId": VIEW_IDS[1],
-                                "resource": {"resourceId": "resource:id:0_::_",
-                                             "resourceName": GROUP_NAME,
-                                             "resourceKindId": "002009ContainerEnvironment"}}}],
+        "widgets": [
+            {"type": "View", "gridsterCoords": {},
+             "config": {"viewDefinitionId": VIEW_IDS[1],
+                        "resource": {"resourceId": "resource:id:0_::_",
+                                     "resourceName": GROUP_NAME,
+                                     "resourceKindId": "002009ContainerEnvironment"}}},
+            {"type": "ProblemAlertsList", "gridsterCoords": {},
+             "config": {"resource": {"resourceId": "resource:id:1_::_",
+                                     "resourceName": GROUP_NAME_3}}},
+        ],
+        "entryKeys": {"uuid": DASHBOARD_ID_2, "resourceKind": [],
+                      "resource": [{"resourceKindKey": "Function",
+                                    "internalId": "resource:id:2_::_",
+                                    "adapterKindKey": "Container",
+                                    "identifiers": [], "name": GROUP_NAME_2}]},
         "widgetInteractions": [],
     }
 
@@ -257,6 +271,10 @@ def build_export_zip(without=()) -> bytes:
             ],
         }]},
     }, {
+        "name": GROUP_NAME_3, "description": "", "adapterKind": "Container",
+        "resourceKind": "Function", "autoResolveMembership": True, "started": True,
+        "membershipDefinition": {"ruleGroups": []},
+    }, {
         "name": GROUP_NAME_2, "description": "", "adapterKind": "Container",
         "resourceKind": "Function", "autoResolveMembership": True, "started": True,
         "membershipDefinition": {"ruleGroups": [{
@@ -313,7 +331,7 @@ def build_export_zip(without=()) -> bytes:
         "pluginType": "StandardEmailPlugin",
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
     }]}
-    manifest = {"dashboards": 3, "views": 2, "superMetrics": 3, "customGroups": 2, "reports": 1,
+    manifest = {"dashboards": 3, "views": 2, "superMetrics": 3, "customGroups": 3, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
                 "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 2}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'

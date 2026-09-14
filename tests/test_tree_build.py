@@ -20,6 +20,7 @@ from make_export_fixture import (
     ABSENT_SM_NAME,
     GROUP_NAME,
     GROUP_NAME_2,
+    GROUP_NAME_3,
     GROUP_POLICY_ID,
     DASHBOARD_ID,
     DASHBOARD_ID_2,
@@ -131,14 +132,14 @@ def test_two_super_metrics_sharing_a_name_are_both_carried(tmp_path):
     assert _edge_idents(graph, f"supermetric:{SM_IDS[1]}", "supermetric") == {SM_IDS[2], twin}
     # Exactly one ambiguity, and it names both uuids so they can be told apart.
     assert len(graph.ambiguous) == 1
-    assert "2 different objects answer to" in graph.ambiguous[0]
-    assert SM_IDS[2] in graph.ambiguous[0] and twin in graph.ambiguous[0]
+    assert "2 different objects answer to" in graph.ambiguous[0].text
+    assert SM_IDS[2] in graph.ambiguous[0].text and twin in graph.ambiguous[0].text
     assert "references by name that several objects answer to" in _graph.render_tree(graph)
     # The command that writes the bundle says it too, not only tree.
     picked = _selection.close(graph, [f"supermetric:{SM_IDS[1]}"])
-    assert picked.ambiguous == graph.ambiguous
+    assert picked.ambiguous == [n.text for n in graph.ambiguous]
     assert "references by name that several objects answer to" in _selection.render(graph, picked)
-    assert _selection.as_dict(graph, picked)["ambiguous"] == graph.ambiguous
+    assert _selection.as_dict(graph, picked)["ambiguous"] == picked.ambiguous
 
 
 def test_a_dashboard_under_two_owners_is_not_an_ambiguity(graph):
@@ -156,7 +157,24 @@ def test_a_dashboard_scoped_to_a_custom_group_reaches_it_by_name(graph):
     is. The object shape carries it as resourceName next to a Container
     resource kind."""
     key = f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"
-    assert _edge_idents(graph, key, "customgroup") == {GROUP_NAME}
+    assert GROUP_NAME in _edge_idents(graph, key, "customgroup")
+
+
+def test_an_object_scope_with_no_resource_kind_reaches_the_group_too(graph):
+    """The third object shape: resourceId and resourceName, no resource kind
+    at all. It is why the Container marker is a negative filter and not a
+    requirement, and re-tightening the filter has to fail here."""
+    key = f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"
+    assert GROUP_NAME_3 in _edge_idents(graph, key, "customgroup")
+
+
+def test_a_per_dashboard_entrykeys_scope_reaches_the_group_too(graph):
+    """entryKeys.resource is the same binding in a third shape, per dashboard.
+    On this corpus its ten values are all worlds and adapter instances, but a
+    dashboard scoping a group there and not in a widget would be missed the
+    way one already was."""
+    key = f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"
+    assert GROUP_NAME_2 in _edge_idents(graph, key, "customgroup")
 
 
 def test_a_list_shaped_resource_scope_reaches_the_group_too(graph):
@@ -206,6 +224,102 @@ def test_a_notification_rule_resource_condition_reaches_a_group_by_name(graph):
     assert _edge_idents(graph, other.key, "customgroup") == {GROUP_NAME}
 
 
+@pytest.mark.parametrize("scope,expected", [
+    ({"resourceName": "G", "resourceKindId": "002009ContainerFunction"}, ["G"]),
+    ({"resourceId": "r", "resourceName": "G"}, ["G"]),
+    ([{"name": "G", "id": "r"}], ["G"]),
+    ({"resourceKindKey": "Function", "adapterKindKey": "Container", "name": "G"}, ["G"]),
+    ("G", ["G"]),
+    (["G"], ["G"]),
+    (None, []),
+    ([], []),
+    ({"resourceName": "G", "resourceKindId": "002006FixtureAdapterFixtureKind"}, []),
+    ({"adapterKindKey": "FixtureAdapter", "name": "G"}, []),
+])
+def test_every_resource_scope_shape_reads_the_same_way(scope, expected):
+    """One reader for one binding. A shape that is handled resolves; a shape
+    whose resource kind says it is an ordinary resource does not; and neither
+    leaves a note, because both are shapes this tool knows."""
+    notes = []
+    assert _graph._resource_names(scope, "test", notes) == expected
+    assert notes == []
+
+
+@pytest.mark.parametrize("scope", [7, {"resources": [{"name": "G"}]}, [7]])
+def test_a_resource_scope_shape_nobody_has_seen_says_so(scope):
+    """The claim the method rests on: an unhandled shape announces itself. A
+    shape that resolves to nothing quietly is indistinguishable from a scope
+    that is genuinely empty, of which the corpus has 701."""
+    notes = []
+    assert _graph._resource_names(scope, "test", notes) == []
+    assert len(notes) == 1 and "does not read" in notes[0] or "no resourceName" in notes[0]
+
+
+@pytest.mark.parametrize("doc,note", [
+    ({"id": "d", "name": "D", "widgets": {"a": {}}}, "widgets written as dict"),
+    ({"id": "d", "name": "D", "tabs": []}, "no widgets key"),
+    ({"id": "d", "name": "D", "widgets": [{"config": {"resource": 7}}]}, "does not read"),
+])
+def test_a_dashboard_shape_nobody_has_seen_says_so(doc, note):
+    notes = []
+    assert _graph._dashboard_refs(json.dumps(doc).encode(), notes) == []
+    assert any(note in n for n in notes), notes
+
+
+def test_widgets_nest_and_the_walk_goes_with_them(graph):
+    """A tab widget holds widgets of its own, inline or as bare widget ids
+    naming siblings. Reading one level and trusting it stays one level is the
+    same mistake as reading one shape."""
+    doc = {"id": "d", "name": "D", "widgets": [
+        {"config": {"widgets": [{"config": {"viewDefinitionId": "V1"}}, "some-widget-id"]}}]}
+    notes = []
+    refs = _graph._dashboard_refs(json.dumps(doc).encode(), notes)
+    assert [(r.kind, r.ident) for r in refs] == [("view", "V1")]
+    assert notes == []
+
+
+def test_an_unhandled_shape_reaches_both_reports(tmp_path, export_zip):
+    """Not only tree: the command that writes the bundle says it too."""
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name in src.namelist():
+            data = src.read(name)
+            if name.startswith("dashboards/"):
+                inner = zipfile.ZipFile(io.BytesIO(data))
+                doc = json.loads(inner.read("dashboard/dashboard.json"))
+                doc["dashboards"][0]["widgets"][0]["config"]["resource"] = {"unknown": 1}
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as iz:
+                    iz.writestr("dashboard/dashboard.json", json.dumps(doc))
+                data = buf.getvalue()
+            z.writestr(name, data)
+    path = tmp_path / "odd.zip"
+    path.write_bytes(out.getvalue())
+    graph = _graph.build_graph(read_members(path).data)
+    assert graph.unhandled and "no resourceName or name key" in graph.unhandled[0].text
+    assert "field values in a shape this tool does not read" in _graph.render_tree(graph)
+    picked = _selection.close(graph, [graph.unhandled[0].source_key])
+    assert picked.unhandled == [graph.unhandled[0].text]
+    assert "field values in a shape this tool does not read" in _selection.render(graph, picked)
+    assert _selection.as_dict(graph, picked)["unhandled_shapes"] == picked.unhandled
+
+
+def test_a_rule_resource_scope_uses_the_same_reader_as_a_widget(graph):
+    """Same binding, same reader. Reading it with a weaker rule on one side is
+    the asymmetry that hid a shape for three rounds."""
+    doc = {"id": "r", "Name": "R", "entry": [
+        {"ConditionType": "RESOURCE_AND_CHILD",
+         "NotificationRuleResourcesCondition": {"ResourceItems": [
+             {"NotificationRuleResourceItem": [{"ResourceID": [{"name": "G", "id": "x"}]}]}]}}]}
+    notes = []
+    refs = _graph._rule_refs(json.dumps(doc).encode(), notes)
+    # The list shape, which the widget path reads and the old key-name match
+    # did not.
+    assert ("customgroup", "G") in [(r.kind, r.ident) for r in refs]
+    assert notes == []
+
+
 def test_alert_reaches_its_symptom_and_recommendation(graph):
     key = next(k for k in graph.nodes if k.startswith("alert:"))
     assert _edge_idents(graph, key, "symptom")
@@ -242,7 +356,11 @@ def test_an_edge_out_of_the_export_is_named_and_counted_not_an_error(graph):
     assert f"MISSING supermetric [{ABSENT_SM_ID}]" in text
     assert ("supermetric", ABSENT_SM_NAME) in idents
     assert f'MISSING supermetric [{ABSENT_SM_NAME}]' in text
-    assert "edges to objects this export does not carry: 5" in text
+    assert "edges to objects a bundle cannot carry: 5" in text
+    # A policy is in the export; it is the bundle that will not hold it, and
+    # the line has to say which of the two is true.
+    assert "policies.xml is in the export but is a member this tool never carries" in text
+    assert "it is not in this export" in text
     # A membership rule naming no group in this export is normal, not missing.
     assert ABSENT_GROUP_NAME not in text
 

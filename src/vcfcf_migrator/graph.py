@@ -23,8 +23,8 @@ The edges, with how the export writes each:
 From and to                   Spelling       Where it is read
 ============================  =============  =====================================
 dashboard to view             uuid           widget ``config.viewDefinitionId``
-dashboard to supermetric      uuid and name  any widget string value
-dashboard to customgroup      name           widget ``config.resource`` scope
+dashboard to supermetric      uuid and name  any string in the widget subtree
+dashboard to customgroup      name           widget scope, ``entryKeys.resource``
 view to supermetric           uuid and name  any attribute or text value
 supermetric to supermetric    uuid and name  the ``formula`` field
 symptom to supermetric        uuid and name  any attribute or text value
@@ -44,7 +44,18 @@ corpus carries them, and leaving one out lets a closed selection still produce
 a bundle referencing something it does not carry, which is the one failure
 mode subsetting can introduce on its own.
 
-Three deliberate exclusions, each a decision rather than an oversight:
+Four deliberate exclusions, each a decision rather than an oversight:
+
+* **The container's own ``entries.resource``.** The dashboard container writes
+  the same binding in two more places than a widget does: ``entries.resource``
+  at the top of the owner's file, and ``entryKeys.resource`` on each dashboard.
+  The per-dashboard one is read. The container-level one is not: it sits
+  outside every dashboard document, shared by all of that owner's dashboards,
+  so attributing its names to any one of them would carry a group into a
+  bundle that does not use it. Safe because all six group names it carries
+  across the corpus are also bound by a widget scope in the same container,
+  which is followed, and the block is copied verbatim into the rebuilt inner
+  zip either way.
 
 * **Prose.** ``PROSE_KEYS`` is skipped for every kind, not only for super
   metrics: these exports quote another object's uuid in a description
@@ -170,6 +181,21 @@ class Node:
 
 
 @dataclass
+class Note:
+    """Something the admin is told, attributed to the node that caused it.
+
+    Two channels use this. An *ambiguity* is a by-name reference several
+    different objects answer to. An *unhandled shape* is a field whose value is
+    a shape this tool has never seen, which is the one thing a structural walk
+    must not do silently: the whole reason for walking the parsed document
+    rather than matching its text is that a shape nobody enumerated announces
+    itself instead of resolving to nothing.
+    """
+    source_key: str
+    text: str
+
+
+@dataclass
 class MissingEdge:
     """An edge whose target is not in the export. Information, not an error:
     the target instance may well already have the object."""
@@ -185,9 +211,11 @@ class Graph:
     containers: List[Container] = field(default_factory=list)
     unknown_members: List[str] = field(default_factory=list)
     missing: List[MissingEdge] = field(default_factory=list)
-    # By-name references that several different objects answer to; every match is
-    # carried, and the admin is told rather than left to find out.
-    ambiguous: List[str] = field(default_factory=list)
+    # By-name references that several different objects answer to; every match
+    # is carried, and the admin is told rather than left to find out.
+    ambiguous: List[Note] = field(default_factory=list)
+    # Field values in a shape this tool does not handle. Never silent.
+    unhandled: List[Note] = field(default_factory=list)
     # node key -> resolved target keys, in the order the references appear
     edges: Dict[str, List[str]] = field(default_factory=dict)
 
@@ -213,6 +241,9 @@ class Graph:
 
     def missing_for(self, key: str) -> List[MissingEdge]:
         return [m for m in self.missing if m.source_key == key]
+
+    def notes_for(self, key: str) -> List[Note]:
+        return [n for n in self.ambiguous + self.unhandled if n.source_key == key]
 
 
 def _resolve_index(nodes: Dict[str, Node]) -> Dict[Tuple[str, str], List[str]]:
@@ -276,6 +307,19 @@ def _json_strings(node, key: str = "", skip_prose: bool = True):
             yield from _json_strings(item, key, skip_prose)
 
 
+def _json_values(node, wanted_key: str):
+    """Every value stored under *wanted_key*, at any depth of a parsed value."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == wanted_key:
+                yield value
+            else:
+                yield from _json_values(value, wanted_key)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _json_values(item, wanted_key)
+
+
 def _xml_strings(el, skip_prose: bool = True):
     """Every attribute value and text node of an element tree, same idea.
 
@@ -322,57 +366,141 @@ def _sm_refs_in(values, where: str, skip_ident: str = "", skip_name: str = "") -
     return out
 
 
-def _resource_names(node) -> List[str]:
-    """The names a widget's or a condition's resource scope is written with.
+def _resource_names(node, where: str, unhandled: List[str]) -> List[str]:
+    """The names a resource scope is written with, in every shape it takes.
 
-    Every shape the corpus carries, read structurally: an object
-    (``{"resourceName": ...}``, with or without a resource kind), a list of
-    objects (``[{"name": ..., "id": ...}]``), null, an empty list, or the key
-    absent altogether. A shape not in that list still lands here if it spells
-    the name with either key, which a regex for one of them would not.
+    One reader for one binding, used by every field that carries it: a widget's
+    ``config.resource``, a dashboard's ``entryKeys.resource``, a notification
+    rule's ``ResourceID``. Reading the same thing two ways in two places is the
+    asymmetry that produced the shape this function exists to stop missing.
+
+    Shapes handled: an object, with a resource kind or without one; a list of
+    objects; a bare string, and a list of bare strings, which no corpus export
+    writes but which cost one branch against another silent drop; null; an
+    empty list; the key absent. Anything else is appended to *unhandled* and
+    reaches the report, because a shape that resolves to nothing quietly is
+    indistinguishable from a scope that is genuinely empty.
     """
     out: List[str] = []
-    for item in node if isinstance(node, list) else [node]:
+    if node is None:
+        return out
+    items = node if isinstance(node, list) else [node]
+    for item in items:
+        if isinstance(item, str):
+            if item:
+                out.append(item)
+            continue
         if not isinstance(item, dict):
+            unhandled.append(f"{where}: a resource scope written as "
+                             f"{type(item).__name__}, which this tool does not read")
             continue
         # A resource kind that is present and is not a Container is positive
         # evidence this is an ordinary resource, not a group. Absent is not
-        # evidence either way: two of the three shapes never carry one.
-        kind_id = item.get("resourceKindId")
-        if isinstance(kind_id, str) and "Container" not in kind_id:
-            continue
-        for key in RESOURCE_NAME_KEYS:
-            value = item.get(key)
-            if isinstance(value, str) and value:
-                out.append(value)
+        # evidence either way: two of the corpus shapes never carry one.
+        for kind_key in ("resourceKindId", "adapterKindKey"):
+            kind = item.get(kind_key)
+            if isinstance(kind, str) and "Container" not in kind:
                 break
+        else:
+            for key in RESOURCE_NAME_KEYS:
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    out.append(value)
+                    break
+            else:
+                unhandled.append(f"{where}: a resource scope object with no "
+                                 f"{' or '.join(RESOURCE_NAME_KEYS)} key "
+                                 f"({', '.join(sorted(item)) or 'no keys'})")
     return out
 
 
-def _dashboard_refs(raw: bytes) -> List[Ref]:
+def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
+    """A dashboard's views, super metrics and custom group scopes.
+
+    ``widgets`` nests: a widget's ``config`` can hold ``widgets`` of its own,
+    either inline objects (36 such on this corpus, none carrying a reference
+    today) or bare widget ids naming siblings in the same document, so the walk
+    recurses rather than reading one level and trusting it stays one.
+
+    ``entryKeys.resource`` is read too. It is per dashboard and carries the
+    same binding in a third shape (``{resourceKindKey, internalId,
+    adapterKindKey, identifiers, name}``); on this corpus its ten values are
+    all worlds and adapter instances, but a dashboard that scoped a group
+    there and not in a widget would be missed exactly as one was before.
+
+    The container's own ``entries.resource`` is deliberately *not* read. It
+    sits outside every dashboard document, in the owner's file, shared by all
+    of that owner's dashboards, so attributing its names to any one of them
+    would carry a group into a bundle that does not use it. Safe because every
+    one of the six group names it carries across the corpus is also bound by a
+    widget scope in the same container, which is followed; and the block is
+    copied verbatim into the rebuilt inner zip either way.
+    """
     doc = _json(raw)
     if not isinstance(doc, dict):
+        unhandled.append("dashboard: a document that is not a JSON object")
         return []
     out: List[Ref] = []
     seen_views, seen_groups = set(), set()
-    widgets = doc.get("widgets")
-    for widget in widgets if isinstance(widgets, list) else []:
-        config = widget.get("config") if isinstance(widget, dict) else None
-        config = config if isinstance(config, dict) else {}
-        view_id = config.get("viewDefinitionId")
-        if isinstance(view_id, str) and view_id and view_id not in seen_views:
-            seen_views.add(view_id)
-            out.append(Ref("view", view_id, "widget viewDefinitionId"))
-        for name in _resource_names(config.get("resource")):
-            if name not in seen_groups:
-                seen_groups.add(name)
-                out.append(Ref("customgroup", name, "widget resource scope, by name",
-                               optional=True))
+    metric_values: List[str] = []
+
+    def add_group(name: str, where: str) -> None:
+        if name not in seen_groups:
+            seen_groups.add(name)
+            out.append(Ref("customgroup", name, where, optional=True))
+
+    def walk(widgets, depth: int) -> None:
+        if widgets is None:
+            return
+        if not isinstance(widgets, list):
+            unhandled.append(f"dashboard: widgets written as "
+                             f"{type(widgets).__name__}, which this tool does not read")
+            return
+        for widget in widgets:
+            if isinstance(widget, str):
+                # A tab or group widget lists its members by widget id rather
+                # than inline. Those ids are siblings on this same dashboard,
+                # not references to content: all 36 on this corpus resolve to
+                # a widget id in the same document. Nothing to follow.
+                continue
+            if not isinstance(widget, dict):
+                unhandled.append("dashboard: a widget that is neither an object "
+                                 "nor a widget id")
+                continue
+            config = widget.get("config")
+            if config is not None and not isinstance(config, dict):
+                unhandled.append("dashboard: a widget config that is not an object")
+                config = None
+            config = config or {}
+            view_id = config.get("viewDefinitionId")
+            if isinstance(view_id, str) and view_id and view_id not in seen_views:
+                seen_views.add(view_id)
+                out.append(Ref("view", view_id, "widget viewDefinitionId"))
+            for name in _resource_names(config.get("resource"),
+                                        "dashboard widget config.resource", unhandled):
+                add_group(name, "widget resource scope, by name")
+            metric_values.extend(v for _k, v in _json_strings(widget))
+            walk(config.get("widgets"), depth + 1)
+
+    if "widgets" not in doc:
+        unhandled.append("dashboard: a document with no widgets key")
+    walk(doc.get("widgets"), 0)
+    for dash_entry in [doc.get("entryKeys")]:
+        if dash_entry is None:
+            continue
+        if not isinstance(dash_entry, dict):
+            unhandled.append("dashboard: entryKeys written as "
+                             f"{type(dash_entry).__name__}, which this tool does not read")
+            continue
+        for name in _resource_names(dash_entry.get("resource"),
+                                    "dashboard entryKeys.resource", unhandled):
+            add_group(name, "dashboard entryKeys resource, by name")
     # A super metric can be addressed from several widget config keys
     # (``metric``, ``metricKey``, ``configs`` all carry one in the corpus), so
-    # the metric-key regex runs over every string value rather than over a
-    # list of key names that would need extending each time one is found.
-    return out + _sm_refs_in([v for _k, v in _json_strings(doc)], "widget metric")
+    # the metric-key regex runs over every string value in the widget subtree
+    # rather than over a list of key names that would need extending each time
+    # a new one is found.
+    return out + _sm_refs_in(metric_values, "widget metric")
 
 
 def _view_refs(raw: bytes) -> List[Ref]:
@@ -401,7 +529,7 @@ def _supermetric_refs(raw: bytes, self_ident: str, self_name: str = "") -> List[
     return _sm_refs_in([formula], "formula", self_ident, self_name)
 
 
-def _customgroup_refs(raw: bytes) -> List[Ref]:
+def _customgroup_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
     """A membership RelationshipRule naming another group, and the policy.
 
     Custom groups carry no uuid in an export, so the group reference is by
@@ -414,12 +542,19 @@ def _customgroup_refs(raw: bytes) -> List[Ref]:
     """
     doc = _json(raw)
     if not isinstance(doc, dict):
+        unhandled.append("custom group: a document that is not a JSON object")
         return []
     out: List[Ref] = []
     seen = set()
     membership = doc.get("membershipDefinition")
+    if membership is not None and not isinstance(membership, dict):
+        unhandled.append("custom group: membershipDefinition written as "
+                         f"{type(membership).__name__}, which this tool does not read")
     membership = membership if isinstance(membership, dict) else {}
     rule_groups = membership.get("ruleGroups")
+    if rule_groups is not None and not isinstance(rule_groups, list):
+        unhandled.append("custom group: ruleGroups written as "
+                         f"{type(rule_groups).__name__}, which this tool does not read")
     # ``rules`` directly under membershipDefinition is a sibling shape of
     # ``ruleGroups[].rules``; neither corpus export uses it, and handling it
     # costs one line against another round of this same finding.
@@ -427,6 +562,9 @@ def _customgroup_refs(raw: bytes) -> List[Ref]:
     buckets.append(membership)
     for bucket in buckets:
         rules = bucket.get("rules") if isinstance(bucket, dict) else None
+        if rules is not None and not isinstance(rules, list):
+            unhandled.append("custom group: rules written as "
+                             f"{type(rules).__name__}, which this tool does not read")
         for rule in rules if isinstance(rules, list) else []:
             if not isinstance(rule, dict) or rule.get("ruleType") != GROUP_RULE_TYPE:
                 continue
@@ -481,33 +619,41 @@ def _report_refs(raw: bytes) -> List[Ref]:
     return out
 
 
-def _rule_refs(raw: bytes) -> List[Ref]:
+def _rule_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
     """A notification rule's conditions and its endpoint.
 
-    The conditions are walked structurally, so the alert ids come out
-    whichever nesting the version used, and a resource condition's scope is
-    read with the same ``resourceName`` spelling a widget uses: it is the same
-    binding in a different document, under a different key
-    (``ResourceID.resourceName``).
+    The conditions are walked structurally, so the alert ids come out whichever
+    nesting the version used. A resource condition's scope goes through
+    ``_resource_names``, the same reader the widget path uses: it is the same
+    binding in a different document under a different key, and reading it with
+    a weaker rule here than there is how a shape gets missed on one side only.
     """
     doc = _json(raw)
     if not isinstance(doc, dict):
+        unhandled.append("notification rule: a document that is not a JSON object")
         return []
     out: List[Ref] = []
     seen_alerts, seen_groups = set(), set()
     entries = doc.get("entry")
-    for entry in entries if isinstance(entries, list) else []:
+    if entries is not None and not isinstance(entries, list):
+        unhandled.append(f"notification rule: entry written as "
+                         f"{type(entries).__name__}, which this tool does not read")
+        entries = None
+    for entry in entries or []:
         if not isinstance(entry, dict):
+            unhandled.append("notification rule: a condition that is not an object")
             continue
         for key, value in _json_strings(entry):
             if key == "AlertDefinitionID" and value not in seen_alerts:
                 seen_alerts.add(value)
                 out.append(Ref("alert", value, "condition AlertDefinitionID"))
-            elif key in RESOURCE_NAME_KEYS and key == "resourceName" \
-                    and value not in seen_groups:
-                seen_groups.add(value)
-                out.append(Ref("customgroup", value,
-                               "condition resource scope, by name", optional=True))
+        for resource_id in _json_values(entry, "ResourceID"):
+            for name in _resource_names(resource_id,
+                                        "notification rule ResourceID", unhandled):
+                if name not in seen_groups:
+                    seen_groups.add(name)
+                    out.append(Ref("customgroup", name,
+                                   "condition resource scope, by name", optional=True))
     plugin = doc.get("PluginID")
     if isinstance(plugin, dict):
         ptype = plugin.get("@pluginType") or doc.get("PluginType")
@@ -518,16 +664,16 @@ def _rule_refs(raw: bytes) -> List[Ref]:
 
 
 _REF_EXTRACTORS = {
-    "dashboard": lambda entry: _dashboard_refs(entry.raw),
-    "view": lambda entry: _view_refs(entry.raw),
-    "supermetric": lambda entry: _supermetric_refs(entry.raw, entry.ident, entry.name),
-    "customgroup": lambda entry: _customgroup_refs(entry.raw),
+    "dashboard": lambda entry, notes: _dashboard_refs(entry.raw, notes),
+    "view": lambda entry, notes: _view_refs(entry.raw),
+    "supermetric": lambda entry, notes: _supermetric_refs(entry.raw, entry.ident, entry.name),
+    "customgroup": lambda entry, notes: _customgroup_refs(entry.raw, notes),
     # A symptom's threshold can be on a super metric attribute:
     # <Condition key="Super Metric|sm_<uuid>" type="metric" .../>.
-    "symptom": lambda entry: _symptom_refs(entry.raw),
-    "alert": lambda entry: _alert_refs(entry.raw),
-    "report": lambda entry: _report_refs(entry.raw),
-    "notificationrule": lambda entry: _rule_refs(entry.raw),
+    "symptom": lambda entry, notes: _symptom_refs(entry.raw),
+    "alert": lambda entry, notes: _alert_refs(entry.raw),
+    "report": lambda entry, notes: _report_refs(entry.raw),
+    "notificationrule": lambda entry, notes: _rule_refs(entry.raw, notes),
 }
 
 
@@ -545,7 +691,13 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
             node = Node(kind=entry.kind, ident=entry.ident, name=entry.name,
                         uuid=entry.uuid, member=container.member, index=entry.index,
                         owner=entry.owner)
-            node.refs = list(_REF_EXTRACTORS.get(entry.kind, lambda _e: [])(entry))
+            shapes: List[str] = []
+            node.refs = list(
+                _REF_EXTRACTORS.get(entry.kind, lambda _e, _n: [])(entry, shapes))
+            for text in shapes:
+                note = Note(node.key, f"{node.label()}: {text}")
+                if note not in graph.unhandled:
+                    graph.unhandled.append(note)
             if node.key in graph.nodes:
                 # The same object in two members (a full export writes the
                 # notification templates into both notificationrules.json and
@@ -573,10 +725,11 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
             # because a dashboard key ends in ``uuid@owner`` and never equals
             # the bare uuid a reference carries.
             if len({graph.nodes[h].ident for h in hits}) > 1:
-                note = (f"{node.label()} names {ref.kind} {ref.ident!r}, which "
-                        f"{len(hits)} different objects answer to; all are carried ("
-                        + ", ".join(sorted(graph.nodes[h].uuid or graph.nodes[h].ident
-                                           for h in hits)) + ")")
+                note = Note(node.key, (
+                    f"{node.label()} names {ref.kind} {ref.ident!r}, which "
+                    f"{len(hits)} different objects answer to; all are carried ("
+                    + ", ".join(sorted(graph.nodes[h].uuid or graph.nodes[h].ident
+                                       for h in hits)) + ")"))
                 if note not in graph.ambiguous:
                     graph.ambiguous.append(note)
             for hit in hits:
@@ -661,21 +814,42 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
             lines.append("  " + node.label())
     if graph.missing:
         lines.append("")
-        lines.append(f"edges to objects this export does not carry: {len(graph.missing)}")
+        lines.append(f"edges to objects a bundle cannot carry: {len(graph.missing)}")
         for gap in graph.missing:
             source = graph.nodes.get(gap.source_key)
             lines.append(f"  {gap.kind} [{gap.ident}] wanted by "
-                         f"{source.label() if source else gap.source_key} (via {gap.via})")
+                         f"{source.label() if source else gap.source_key} "
+                         f"(via {gap.via}); {missing_reason(gap)}")
     if graph.ambiguous:
         lines.append("")
         lines.append(f"references by name that several objects answer to: {len(graph.ambiguous)}")
         for note in graph.ambiguous:
-            lines.append(f"  {note}")
+            lines.append(f"  {note.text}")
+    if graph.unhandled:
+        lines.append("")
+        lines.append(f"field values in a shape this tool does not read: {len(graph.unhandled)}")
+        for note in graph.unhandled:
+            lines.append(f"  {note.text}")
     if graph.unknown_members:
         lines.append("")
         lines.append("members this tool does not understand (never carried unless selected, "
                      "and they cannot be selected): " + ", ".join(graph.unknown_members))
     return "\n".join(lines) + "\n"
+
+
+def missing_reason(gap: MissingEdge) -> str:
+    """Why the bundle will not hold this, in the words that are true of it.
+
+    Most of these are objects the export itself does not carry, usually
+    out-of-the-box content the target already has. A policy is the other case:
+    ``policies.xml`` is right there in the export, and is a member this tool
+    does not understand and never carries into a bundle. Printing both under
+    "not in this export" would be wrong about the second.
+    """
+    if gap.kind == "policy":
+        return ("policies.xml is in the export but is a member this tool never "
+                "carries into a bundle")
+    return "it is not in this export"
 
 
 def _reachable(graph: Graph, starts: Sequence[Node]) -> set:
@@ -699,6 +873,7 @@ def as_dict(graph: Graph) -> dict:
         "roots": [n.key for n in graph.roots()],
         "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via}
                     for m in graph.missing],
-        "ambiguous": list(graph.ambiguous),
+        "ambiguous": [n.text for n in graph.ambiguous],
+        "unhandled_shapes": [n.text for n in graph.unhandled],
         "unknown_members": list(graph.unknown_members),
     }

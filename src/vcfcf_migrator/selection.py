@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from vcfcf_migrator.graph import Graph, MissingEdge, Node
+from vcfcf_migrator.graph import Graph, MissingEdge, Node, missing_reason
 
 
 class BadSelection(Exception):
@@ -46,9 +46,11 @@ class Selection:
     picked: List[str] = field(default_factory=list)        # what the file named
     added: List[Addition] = field(default_factory=list)    # what closure added
     missing: List[MissingEdge] = field(default_factory=list)
-    # By-name references in the closure that several objects answer to. The
-    # command that writes the bundle has to say this, not only ``tree``.
+    # By-name references in the closure that several objects answer to, and
+    # field values in a shape the tool does not read. The command that writes
+    # the bundle has to say both, not only ``tree``.
     ambiguous: List[str] = field(default_factory=list)
+    unhandled: List[str] = field(default_factory=list)
     lines: int = 0
 
     def counts(self, graph: Graph) -> Dict[str, int]:
@@ -151,9 +153,13 @@ def close(graph: Graph, keys: Sequence[str]) -> Selection:
         for gap in graph.missing_for(key):
             if gap not in selection.missing:
                 selection.missing.append(gap)
+        # Matched on the node, not on the wording of a string built elsewhere.
         for note in graph.ambiguous:
-            if note.startswith(node.label()) and note not in selection.ambiguous:
-                selection.ambiguous.append(note)
+            if note.source_key == key and note.text not in selection.ambiguous:
+                selection.ambiguous.append(note.text)
+        for note in graph.unhandled:
+            if note.source_key == key and note.text not in selection.unhandled:
+                selection.unhandled.append(note.text)
     selection.keys = seen
     return selection
 
@@ -179,13 +185,19 @@ def render(graph: Graph, selection: Selection) -> str:
                      f"{len(selection.ambiguous)}")
         for note in selection.ambiguous:
             lines.append(f"  {note}")
+    if selection.unhandled:
+        lines.append(f"field values in a shape this tool does not read: "
+                     f"{len(selection.unhandled)}")
+        for note in selection.unhandled:
+            lines.append(f"  {note}")
     if selection.missing:
-        lines.append(f"referenced but not in this export: {len(selection.missing)}")
+        lines.append(f"referenced but not carried: {len(selection.missing)}")
         for gap in selection.missing:
             source = graph.nodes.get(gap.source_key)
             lines.append(f"  {gap.kind} [{gap.ident}] wanted by "
                          f"{source.label() if source else gap.source_key} (via {gap.via}); "
-                         "it will be missing on import unless the target already has it")
+                         f"{missing_reason(gap)}, so it will be missing on import "
+                         "unless the target already has it")
     return "\n".join(lines) + "\n"
 
 
@@ -196,6 +208,7 @@ def as_dict(graph: Graph, selection: Selection) -> dict:
         "counts": selection.counts(graph),
         "added": [{"key": a.key, "reason": a.reason} for a in selection.added],
         "ambiguous": list(selection.ambiguous),
+        "unhandled_shapes": list(selection.unhandled),
         "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via}
                     for m in selection.missing],
     }

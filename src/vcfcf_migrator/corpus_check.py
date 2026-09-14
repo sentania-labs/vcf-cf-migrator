@@ -118,7 +118,7 @@ def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
         return (f"error    {path.name}: the bundle does not carry what the export did: "
                 f"{_fmt(rebuilt.counts())} against {_fmt(inspect_counts)}")
     missing = len(graph.missing)
-    tail = f", {missing} edge(s) to objects this export does not carry" if missing else ""
+    tail = f", {missing} edge(s) to objects a bundle cannot carry" if missing else ""
     return (f"ok       {path.name}: {_fmt(inspect_counts)}; select-all bundle round trips, "
             f"{len(result.members)} members, {len(source_docs)} documents byte-identical, "
             f"{len(bundle_shapes)} containers unchanged{tail}")
