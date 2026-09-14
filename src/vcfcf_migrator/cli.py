@@ -1,11 +1,10 @@
 """``vcfcf-migrator`` command line.
 
 Commands: ``version``, ``inspect``, ``tree``, ``build``, ``corpus-check``,
-``ui``. In M3 only ``version``, ``inspect`` and ``ui`` do work; the rest exit
-2 with a message pointing at the spec. Every option here has a control on
-the ``ui`` page (house rule: every setting has a GUI option).
+``ui``. Every option here has a control on the ``ui`` page (house rule:
+every setting has a GUI option).
 
-Exit codes: 0 ok, 1 refused or unreadable input, 2 usage or not implemented.
+Exit codes: 0 ok, 1 refused or unreadable input, 2 usage.
 """
 from __future__ import annotations
 
@@ -17,18 +16,22 @@ from typing import List, Optional
 import vcfcf_core
 
 from vcfcf_migrator import __version__
+from vcfcf_migrator import bundle as _bundle
+from vcfcf_migrator import graph as _graph
+from vcfcf_migrator import selection as _selection
 from vcfcf_migrator import settings as _settings
+from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator.export_reader import (
     VERSION_FLOOR_TEXT,
     BadSourceVersion,
     NotAnExport,
     UnsupportedExport,
     read_export,
+    read_members,
     render_text,
 )
 
 SPEC_POINTER = "knowledge/designs/content-migrator-v1.md in the factory repo"
-NOT_IMPLEMENTED = {"tree", "build", "corpus-check"}
 
 
 def version_lines() -> List[str]:
@@ -57,15 +60,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("zip", help="path to the content export zip")
     sp.add_argument("--json", action="store_true", help="emit the listing as JSON")
 
-    sp = sub.add_parser("tree", help="show the dependency tree of an export (M4)")
-    sp.add_argument("zip", nargs="?", help="path to the content export zip")
+    sp = sub.add_parser("tree", help="show the dependency tree over the export's own documents")
+    sp.add_argument("zip", help="path to the content export zip")
+    sp.add_argument("--json", action="store_true", help="emit the tree as JSON")
 
-    sp = sub.add_parser("build", help="write an import bundle from a selection (M4)")
-    sp.add_argument("zip", nargs="?", help="path to the content export zip")
-    sp.add_argument("--select", metavar="FILE", help="selection file")
-    sp.add_argument("--out", metavar="BUNDLE", help="bundle zip to write")
+    sp = sub.add_parser("build", help="write an import bundle carrying only the closed selection")
+    sp.add_argument("zip", help="path to the content export zip")
+    sp.add_argument("--select", metavar="FILE",
+                    help="selection file: one uuid or kind:uuid per line, # comments allowed")
+    sp.add_argument("--select-all", action="store_true",
+                    help="carry every content object the export holds")
+    sp.add_argument("--out", metavar="BUNDLE", required=True, help="bundle zip to write")
+    sp.add_argument("--json", action="store_true", help="emit the build report as JSON")
 
-    sub.add_parser("corpus-check", help="run inspect, tree and build over every zip in the corpus (M5)")
+    sp = sub.add_parser("corpus-check",
+                        help="run inspect, tree and a select-all build over every zip in a directory")
+    sp.add_argument("dir", nargs="?", help="corpus directory (default: the corpus setting)")
 
     sp = sub.add_parser("ui", help="serve the local page on 127.0.0.1 and open the browser")
     sp.add_argument("zip", nargs="?", help="export zip to show on the page")
@@ -96,9 +106,80 @@ def cmd_inspect(args) -> int:
     return 0
 
 
-def cmd_not_implemented(args) -> int:
-    print(f"vcfcf-migrator {args.command}: not implemented in M3, see spec ({SPEC_POINTER})", file=sys.stderr)
-    return 2
+def _load_graph(zip_path, declared):
+    """The export's members and the graph over them, read once."""
+    members = read_members(zip_path, source_version=declared)
+    return members, _graph.build_graph(members.data)
+
+
+def cmd_tree(args) -> int:
+    declared, _source = _settings.source_version(args.source_version)
+    try:
+        _members, graph = _load_graph(args.zip, declared)
+    except BadSourceVersion as e:
+        print(f"vcfcf-migrator tree: {e}", file=sys.stderr)
+        return 2
+    except (NotAnExport, UnsupportedExport, RawDocError) as e:
+        print(f"vcfcf-migrator tree: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(_graph.as_dict(graph), indent=2))
+    else:
+        sys.stdout.write(_graph.render_tree(graph))
+    return 0
+
+
+def cmd_build(args) -> int:
+    declared, _source = _settings.source_version(args.source_version)
+    if bool(args.select) == bool(args.select_all):
+        print("vcfcf-migrator build: pass exactly one of --select FILE or --select-all",
+              file=sys.stderr)
+        return 2
+    if declared is None:
+        print("vcfcf-migrator build: refused, no source version declared. An export carries "
+              f"none, so declare it with --source-version (floor {VERSION_FLOOR_TEXT})",
+              file=sys.stderr)
+        return 1
+    try:
+        members, graph = _load_graph(args.zip, declared)
+    except BadSourceVersion as e:
+        print(f"vcfcf-migrator build: {e}", file=sys.stderr)
+        return 2
+    except (NotAnExport, UnsupportedExport, RawDocError) as e:
+        print(f"vcfcf-migrator build: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        if args.select_all:
+            picked = _selection.select_all(graph)
+        else:
+            lines = _selection.parse_selection_file(args.select)
+            picked = _selection.close(graph, _selection.resolve(graph, lines))
+    except _selection.BadSelection as e:
+        print(f"vcfcf-migrator build: {e}", file=sys.stderr)
+        print("vcfcf-migrator build: no bundle written", file=sys.stderr)
+        return 1
+    if not picked.keys:
+        print("vcfcf-migrator build: the selection is empty, no bundle written", file=sys.stderr)
+        return 1
+
+    result = _bundle.build_bundle(members.data, members.order, graph, picked,
+                                  args.out, marker=members.marker)
+    if args.json:
+        print(json.dumps({"selection": _selection.as_dict(graph, picked),
+                          "build": result.as_dict()}, indent=2))
+    else:
+        sys.stdout.write(_selection.render(graph, picked))
+        sys.stdout.write(_bundle.render(result))
+    return 0
+
+
+def cmd_corpus_check(args) -> int:
+    from vcfcf_migrator.corpus_check import run
+
+    directory, source = _settings.corpus_dir(args.dir or args.corpus)
+    declared, _src = _settings.source_version(args.source_version)
+    return run(directory, source, declared, sys.stdout)
 
 
 def cmd_ui(args) -> int:
@@ -118,10 +199,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_version(args)
     if args.command == "inspect":
         return cmd_inspect(args)
+    if args.command == "tree":
+        return cmd_tree(args)
+    if args.command == "build":
+        return cmd_build(args)
+    if args.command == "corpus-check":
+        return cmd_corpus_check(args)
     if args.command == "ui":
         return cmd_ui(args)
-    if args.command in NOT_IMPLEMENTED:
-        return cmd_not_implemented(args)
     parser.print_help()
     return 2
 
