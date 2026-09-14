@@ -37,10 +37,72 @@ First run of a downloaded binary:
 |---|---|
 | `vcfcf-migrator version` | Print the tool and core library versions. |
 | `vcfcf-migrator inspect <export.zip> [--json]` | List every content item in the export by type, uuid and name; anything unrecognised is listed as carried, not inspected. |
-| `vcfcf-migrator tree <export.zip>` | Dependency tree (M4, not implemented yet). |
-| `vcfcf-migrator build <export.zip> --select <file> --out <bundle.zip>` | Write an import bundle from a selection (M4, not implemented yet). |
-| `vcfcf-migrator corpus-check` | Run inspect, tree and build over every zip in the corpus directory (M5, not implemented yet). |
+| `vcfcf-migrator tree <export.zip> [--json]` | The dependency tree over the export's own documents. An edge pointing at something the export does not carry is shown as missing, named and counted; that is information, not an error. |
+| `vcfcf-migrator build <export.zip> (--select <file> \| --select-all) --out <bundle.zip> [--json]` | Write an import bundle carrying only the closed selection. Needs a declared source version. |
+| `vcfcf-migrator corpus-check [DIR]` | Run inspect, tree and a select-all build over every zip in the corpus directory, then read the bundle back and check both halves of the contract: every document byte-identical, every rebuilt container unchanged. One line per zip. Never writes into that directory. |
 | `vcfcf-migrator ui [export.zip]` | Serve one local page on 127.0.0.1, open the browser. Every setting has a control on it; launch options (`--port`, `--no-browser`) are command line only. Ctrl-C stops it. |
+
+## A worked example
+
+Start with the tree. Every node shows its kind, name and uuid, and each
+node's dependencies are indented under it:
+
+```
+$ vcfcf-migrator tree export.zip
+items: dashboard=66, view=181, supermetric=99, customgroup=13, ...
+dashboard Acme Capacity Overview [aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa] owner 11111111-...
+  view Acme Cluster List [bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb]
+    supermetric Acme Headroom After One Host Failure [cccccccc-3333-4333-8333-cccccccccccc]
+      supermetric Acme Spare CPU [dddddddd-4444-4444-8444-dddddddddddd]
+  view Acme Host List [eeeeeeee-5555-4555-8555-eeeeeeeeeeee]
+...
+edges to objects this export does not carry: 197
+  alert [AlertDefinition-VMWARE-SomeBuiltInAlert] wanted by notificationrule ...
+```
+
+The names and uuids above are made up. The counts are from a real 9.0.2
+export: 430 objects, and one dashboard out of it needs 11.
+
+Then pick what you want. A selection file is one object per line, `#`
+comments and blank lines allowed. A bare uuid takes any object with that
+uuid; `kind:uuid` narrows it; `kind:uuid@owner` picks one owner's copy of
+a dashboard that two owners share. Objects the export gives no uuid
+(custom groups, outbound settings) are named:
+
+```
+# one dashboard is enough; its views and their super metrics follow
+dashboard:aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+customgroup:Acme Prod Clusters
+```
+
+The build closes that selection and says what it added and why:
+
+```
+$ vcfcf-migrator --source-version 9.0.2 build export.zip \
+      --select picks.txt --out bundle.zip
+selected: 1 named, 11 after closure
+carrying: dashboard=1, supermetric=8, view=2
+pulled in by dependency: 10
+  view Acme Cluster List added: required by dashboard Acme Capacity Overview
+  supermetric Acme Headroom After One Host Failure added: required by view Acme Cluster List
+  ...
+bundle: bundle.zip
+```
+
+`vcfcf-migrator inspect bundle.zip` lists exactly those 11 items. Import
+the bundle into the target the way you would import any content export.
+
+The edges the tree follows: dashboard to view and to super metric, view to
+super metric, super metric to super metric, symptom to super metric, alert
+to symptom and to recommendation, notification rule to alert, to outbound
+endpoint and to notification template, report to view and to dashboard.
+
+Two things worth knowing about what comes out. Each object's document is
+copied into the bundle as the bytes the export held, never re-rendered
+from a parsed model, so a field this tool has never heard of cannot be
+dropped. And a member whose content the tool does not understand
+(policies, users, roles, cost drivers) is never carried: it cannot be
+selected, and the build report names every one it left behind.
 
 ## Settings
 
