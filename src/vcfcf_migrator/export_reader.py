@@ -446,6 +446,46 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
     return export
 
 
+@dataclass
+class Members:
+    """An export's members in memory: the bytes, the order the zip wrote them
+    in, and the marker's name. ``tree`` and ``build`` work from this, so both
+    read the zip exactly once."""
+    path: str
+    data: dict = field(default_factory=dict)
+    order: List[str] = field(default_factory=list)
+    marker: Optional[str] = None
+
+
+def read_members(path, source_version: Optional[str] = None) -> Members:
+    """Load every member of the export at *path*.
+
+    Same refusals as ``read_export``: not a zip, no marker and no
+    ``configuration.json``, a declared version below the floor.
+    """
+    check_source_version(source_version)
+    path = Path(path)
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        raise NotAnExport(f"cannot read {path}: {e}") from e
+    if not zipfile.is_zipfile(io.BytesIO(raw)):
+        raise NotAnExport(f"{path} is not a zip file")
+    members = Members(path=str(path))
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        for name in zf.namelist():
+            if name.endswith("/") or name.startswith("__MACOSX/"):
+                continue
+            members.data[name] = zf.read(name)
+            members.order.append(name)
+            if "/" not in name and _MARKER_RE.match(Path(name).name):
+                members.marker = name
+    if members.marker is None and "configuration.json" not in members.data:
+        raise NotAnExport(
+            f"{path} is not a content export: no <digits>L.v1 marker and no configuration.json")
+    return members
+
+
 def _wrap_dashboard_json(dashboard_json: bytes) -> bytes:
     """A bare ``dashboard/dashboard.json`` at the top of the zip, wrapped as
     the inner zip the core reader expects."""
