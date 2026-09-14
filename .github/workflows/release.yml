@@ -6,7 +6,7 @@
 # be built on Windows and a macOS binary on macOS.
 #
 # Order, each job a gate for the next: refuse a bad tag and run the suite;
-# build one binary per OS and smoke it (version, inspect on a generated
+# build one binary per OS (two for macOS) and smoke it (version, inspect on a generated
 # fixture) from a directory holding nothing but the binary; then build the
 # wheel and publish the GitHub Release, idempotently per tag.
 
@@ -19,7 +19,7 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
-  contents: write   # gh release create / upload
+  contents: read   # the publish job alone gets write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -36,14 +36,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Refuse a tag that is not vMAJOR.MINOR.PATCH
-        run: |
-          case "$GITHUB_REF_NAME" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::$GITHUB_REF_NAME is not a vMAJOR.MINOR.PATCH tag"; exit 1 ;;
-          esac
-          echo "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::$GITHUB_REF_NAME is not strict semver"; exit 1; }
-
+      # The on.push.tags glob already admits only v<digits>.<digits>.<digits>;
+      # the ancestor check below is the real gate.
       - name: Refuse a tag that is not on main
         run: |
           git fetch origin main
@@ -79,8 +73,13 @@ jobs:
           - os: windows-latest
             name: windows
             ext: ".exe"
+          # macos-latest is Apple Silicon; macos-15-intel is the current Intel image
+          # (macos-13 is retired and an unknown label queues silently).
           - os: macos-latest
-            name: macos
+            name: macos-arm64
+            ext: ""
+          - os: macos-15-intel
+            name: macos-x86_64
             ext: ""
     runs-on: ${{ matrix.os }}
     steps:
@@ -104,6 +103,11 @@ jobs:
         run: |
           # copy-metadata: without it the binary has no dist-info and both
           # version strings read 0.0.0.
+          # PyInstaller bundles only what is imported statically from
+          # vcfcf_migrator; today that is the inspect path (8 of 36 core
+          # modules). When a later milestone adds tree/build/preview, keep
+          # those core imports static (or add --hidden-import) and extend the
+          # smoke below to run every subcommand the binary claims.
           python -m PyInstaller --onefile --clean --noconfirm \
             --name "vcfcf-migrator-${{ matrix.name }}" \
             --copy-metadata vcf-cf-migrator --copy-metadata vcf-cf-tooling-core \
@@ -132,6 +136,8 @@ jobs:
   publish:
     needs: binaries
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # gh release create / upload
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -159,10 +165,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          chmod +x binaries/vcfcf-migrator-linux binaries/vcfcf-migrator-macos
+          chmod +x binaries/vcfcf-migrator-linux binaries/vcfcf-migrator-macos-arm64 binaries/vcfcf-migrator-macos-x86_64
           ls -l binaries/
           TAG="$GITHUB_REF_NAME"
-          ASSETS="dist/*.whl binaries/vcfcf-migrator-linux binaries/vcfcf-migrator-macos binaries/vcfcf-migrator-windows.exe"
+          ASSETS="dist/*.whl binaries/vcfcf-migrator-linux binaries/vcfcf-migrator-macos-arm64 binaries/vcfcf-migrator-macos-x86_64 binaries/vcfcf-migrator-windows.exe"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # shellcheck disable=SC2086
             gh release upload "$TAG" $ASSETS --clobber --repo "$GITHUB_REPOSITORY"
@@ -171,5 +177,5 @@ jobs:
             gh release create "$TAG" $ASSETS \
               --repo "$GITHUB_REPOSITORY" \
               --title "vcf-cf-migrator $TAG" \
-              --notes "Binaries for Linux, macOS and Windows plus the Python wheel. Install: download the binary for your OS, or pip install the wheel URL. See README.md."
+              --notes "Binaries for Linux, macOS (arm64 and x86_64) and Windows plus the Python wheel. Install: download the binary for your OS, or pip install the wheel URL. See README.md."
           fi
