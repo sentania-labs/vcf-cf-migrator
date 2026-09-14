@@ -160,6 +160,37 @@ def test_the_same_template_in_two_members_is_listed_once(tmp_path, capsys):
     assert doc["counts"]["notificationtemplate"] == 1
 
 
+def test_notification_rules_read_both_nestings(tmp_path, capsys):
+    """9.1.1 puts the list of rules under one NotificationRule key (the
+    fixture's shape); 8.x carries one rule dict per entry. Both list every
+    rule."""
+    import io
+    import zipfile
+
+    from make_export_fixture import RULE_ID, RULE_ID_2
+
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for n in src.namelist():
+            data = src.read(n)
+            if n == "notificationrules.json":
+                doc = json.loads(data)
+                rules = doc["NotificationRules"]["notificationRules"][0]["NotificationRule"]
+                doc["NotificationRules"]["notificationRules"] = [{"NotificationRule": r} for r in rules]
+                data = json.dumps(doc).encode()
+            z.writestr(n, data)
+    path = tmp_path / "eightx.zip"
+    path.write_bytes(out.getvalue())
+    for zip_path in (path, tmp_path / "fixture-export.zip"):
+        if not zip_path.exists():
+            zip_path.write_bytes(build_export_zip())
+        assert main(["inspect", "--json", str(zip_path)]) == 0
+        doc = json.loads(capsys.readouterr().out)
+        got = {(i["name"], i["uuid"]) for i in doc["items"] if i["kind"] == "notificationrule"}
+        assert got == {("[Fixture] Cluster rule", RULE_ID), ("[Fixture] Host rule", RULE_ID_2)}, zip_path
+
+
 def test_inspect_refuses_a_zip_that_is_not_a_content_export(tmp_path, capsys):
     """Review N5: no marker and no configuration.json is not an export."""
     import io

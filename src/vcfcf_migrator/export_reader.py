@@ -227,10 +227,15 @@ def _items_from_notifications(doc: dict, source: str) -> List[Item]:
     if not isinstance(block, dict):
         return out
     for entry in block.get("notificationRules") or []:
-        rule = entry.get("NotificationRule") if isinstance(entry, dict) else None
-        if isinstance(rule, dict):
-            out.append(Item("notificationrule", str(rule.get("Name") or rule.get("name") or "(unnamed)"),
-                            _id_text(rule.get("id")), source))
+        # 8.x: one rule per entry ({"NotificationRule": {...}}). 9.1.1: one
+        # entry whose NotificationRule key holds the list of rules.
+        rules = entry.get("NotificationRule") if isinstance(entry, dict) else None
+        if isinstance(rules, dict):
+            rules = [rules]
+        for rule in rules or []:
+            if isinstance(rule, dict):
+                out.append(Item("notificationrule", str(rule.get("Name") or rule.get("name") or "(unnamed)"),
+                                _id_text(rule.get("id")), source))
     for entry in block.get("notificationTemplateDataSet") or []:
         tpl = entry.get("NotificationTemplateData") if isinstance(entry, dict) else None
         if isinstance(tpl, dict):

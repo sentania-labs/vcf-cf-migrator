@@ -9,7 +9,8 @@ message the CLI prints. Ctrl-C stops the process and with it the page.
 
 Nothing here listens on any other interface, and a POST is accepted only
 when its Origin (or Host, when the browser sends no Origin) is this
-server's own http://127.0.0.1:<port>: any other web page the admin has open
+server's own http://127.0.0.1:<port> or http://localhost:<port> (admins
+type localhost): any other web page the admin has open
 could otherwise post to the loopback port and rewrite settings or make the
 process read a local path. Such a request gets 403.
 """
@@ -55,7 +56,7 @@ class PageState:
         self.zip_path = zip_path or ""
         self.corpus_cli = corpus_cli
         self.source_version_cli = source_version_cli
-        self.origin = ""  # set once the server is bound
+        self.origins = ()  # set once the server is bound: 127.0.0.1 and localhost on this port
         self.message = ""
         self.error = ""
         self.listing = ""
@@ -170,13 +171,14 @@ def _handler_for(state: PageState):
         def _same_origin(self) -> bool:
             origin = self.headers.get("Origin")
             if origin is not None:
-                return origin.rstrip("/") == state.origin
+                return origin.rstrip("/") in state.origins
             host = self.headers.get("Host") or ""
-            return f"http://{host}" == state.origin
+            return f"http://{host}" in state.origins
 
         def do_POST(self):  # noqa: N802
             if not self._same_origin():
-                body = b"403: cross-origin POST refused; only this page may post here\n"
+                body = ("403: cross-origin POST refused; only this page may post here "
+                        f"(accepted origins: {', '.join(state.origins)})\n").encode("utf-8")
                 self.send_response(403)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -234,7 +236,8 @@ def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optio
     state = PageState(zip_path, corpus_cli, source_version_cli)
     server = ThreadingHTTPServer(("127.0.0.1", port), _handler_for(state))
     server.daemon_threads = True
-    state.origin = f"http://127.0.0.1:{server.server_address[1]}"
+    port = server.server_address[1]
+    state.origins = (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
     return server
 
 

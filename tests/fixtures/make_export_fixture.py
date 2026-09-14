@@ -30,6 +30,7 @@ VIEW_IDS = ("6e8310ed-1753-45a4-aacc-7f1025c03d11", "9a1b2c3d-4e5f-4a6b-8c7d-0e1
 SM_IDS = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 REPORT_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f"
 RULE_ID = "5e9c97aa-a5b0-473e-b51f-a581b2535f59"
+RULE_ID_2 = "7f0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
 TEMPLATE_ID = "b97f2879-57ef-4317-880c-a1a0a1f3ecab"
 
 EXPECTED_ITEMS = {
@@ -44,6 +45,7 @@ EXPECTED_ITEMS = {
     ("recommendation", "Add hosts to the cluster", "Recommendation-df-VMWARE-Fixture_Add_hosts"),
     ("report", "[Fixture] Cluster Report", REPORT_ID),
     ("notificationrule", "[Fixture] Cluster rule", RULE_ID),
+    ("notificationrule", "[Fixture] Host rule", RULE_ID_2),
     ("notificationtemplate", "[Fixture] Cluster template", TEMPLATE_ID),
     ("outboundsetting", "[Fixture] Mail relay (StandardEmailPlugin)", ""),
 }
@@ -145,11 +147,17 @@ def build_export_zip(without=()) -> bytes:
         "resourceKind": "Environment", "autoResolveMembership": True, "started": True,
         "membershipDefinition": {"rules": []},
     }], "customGroupTypes": []}
+    # 9.1.1 nesting: one entry whose NotificationRule key holds the list of
+    # rules (8.x carries one dict per entry; the reader takes both).
     rules = {"NotificationRules": {
-        "notificationRules": [{"NotificationRule": {
-            "id": RULE_ID, "Name": "[Fixture] Cluster rule", "Description": "", "PluginType": "WebhookPlugin",
-            "Disabled": "False", "RuleType": "GENERAL_RULE",
-        }}],
+        "notificationRules": [{"NotificationRule": [
+            {"id": RULE_ID, "Name": "[Fixture] Cluster rule", "Description": "", "PluginType": "WebhookPlugin",
+             "PluginID": {"@pluginType": "WebhookPlugin", "@pluginName": "fixture"},
+             "Disabled": "False", "RuleType": "GENERAL_RULE", "entry": []},
+            {"id": RULE_ID_2, "Name": "[Fixture] Host rule", "Description": "", "PluginType": "StandardEmailPlugin",
+             "PluginID": {"@pluginType": "StandardEmailPlugin", "@pluginName": "fixture"},
+             "Disabled": "False", "RuleType": "GENERAL_RULE", "entry": []},
+        ]}],
         "ruleNameToTemplateNameMap": [],
     }}
     templates = {"NotificationTemplate": {"notificationTemplateData": [{

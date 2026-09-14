@@ -53,6 +53,6 @@ jobs:
           cd "$RUNNER_TEMP"
           vcfcf-migrator version
           vcfcf-migrator inspect fixture.zip
-          vcfcf-migrator --source-version 8.18.7 inspect fixture.zip | head -3
+          vcfcf-migrator --source-version 8.18.7 inspect fixture.zip
           if vcfcf-migrator --source-version 8.9.0 inspect fixture.zip; then echo "::error::8.9.0 must be refused"; exit 1; fi
-          vcfcf-migrator inspect --json fixture.zip | python -c 'import json,sys; d=json.load(sys.stdin); assert len(d["items"]) == 13, d["counts"]; print("items ok:", d["counts"])'
+          vcfcf-migrator inspect --json fixture.zip | python -c 'import json,sys; d=json.load(sys.stdin); assert len(d["items"]) == 14, d["counts"]; print("items ok:", d["counts"])'

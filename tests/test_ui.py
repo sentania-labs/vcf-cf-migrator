@@ -95,17 +95,24 @@ def test_saving_a_source_version_below_the_floor_is_refused_and_not_saved(server
 
 def test_foreign_origin_post_is_refused_with_403(server, config_dir):
     """Review W2: a page on another origin must not be able to post here."""
+    port = server.server_address[1]
     for headers in ({"Origin": "http://evil.example"},
                     {"Origin": "http://127.0.0.1:1"},
+                    {"Origin": f"http://localhost:{port + 1}"},
                     {"Origin": "null"},
                     {"Host": "evil.example"}):
         with pytest.raises(urllib.error.HTTPError) as e:
             _post(server, "/settings", {"corpus_dir": "/pwned"}, headers=headers)
         assert e.value.code == 403, headers
+        assert f"http://127.0.0.1:{port}, http://localhost:{port}" in e.value.read().decode()
     assert not (config_dir / "settings.json").exists()
-    # The page's own origin, and a bare same-host request with no Origin, pass.
-    port = server.server_address[1]
+    # The page's own origin (127.0.0.1 or localhost), and a bare same-host
+    # request with no Origin, pass.
     status, _ = _post(server, "/settings", {"corpus_dir": "/ok"}, headers={"Origin": f"http://127.0.0.1:{port}"})
+    assert status == 200
+    status, _ = _post(server, "/settings", {"corpus_dir": "/ok-localhost"}, headers={"Origin": f"http://localhost:{port}"})
+    assert status == 200
+    status, _ = _post(server, "/settings", {"corpus_dir": "/ok-host"}, headers={"Host": f"localhost:{port}"})
     assert status == 200
     status, _ = _post(server, "/settings", {"corpus_dir": "/ok2"})
     assert status == 200
