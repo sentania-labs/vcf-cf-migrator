@@ -1,40 +1,53 @@
 """The dependency graph over an export's own documents.
 
-Edges, from the spec's scope section: dashboard to view, view to super
-metric, super metric to super metric, alert to symptom and to
-recommendation, notification rule to alert, report to view and to dashboard.
-Three more are extracted because the corpus carries them and leaving them out
-would let a closed selection still produce a bundle referencing something it
-does not carry, which is the one failure mode subsetting can introduce on its
-own:
+An export writes a reference in one of two spellings, and both have to be
+followed. **By uuid** is the 9.x norm: ``sm_<uuid>``, ``viewDefinitionId``,
+``ref="SymptomDefinition-<uuid>"``. **By name** is not a fallback, it is the
+only spelling available in places: an 8.x super metric formula names another
+by ``Super Metric|@supermetric:"<Name>"``, and a custom group has no uuid in
+an export at all, so everything that reaches one reaches it by name. An audit
+that resolves uuid-shaped identifiers is blind to the second class by
+construction, which is how the by-name super metric edge was missed once
+already.
 
-* dashboard to super metric. Widgets address a super metric directly as
-  ``sm_<uuid>`` without going through a view; 53 such references on one
-  corpus export.
-* notification rule to outbound setting, by ``PluginID``
-  (``@pluginType``/``@pluginName``), which is the spec's "rule to endpoint".
-* notification rule to notification template, via the container's
-  ``ruleNameToTemplateNameMap``.
-* symptom to super metric. A symptom's threshold can sit on a super metric
-  attribute (``<Condition key="Super Metric|sm_<uuid>" type="metric"/>``); on
-  three of the five corpus exports a symptom does exactly that, to a super
-  metric the same export carries.
+The edges, with how the export writes each:
 
-The list is not guesswork. Every document of every kind in all five corpus
-exports was scanned for any identifier that resolves to another object in the
-same export; the only hits not already an edge were the symptom one above and
-super metric uuids quoted inside a description's prose, which are not
-references and are deliberately not followed.
+===========================  =================  ==================================
+From and to                  Spelling           Where it is read
+===========================  =================  ==================================
+dashboard to view            uuid               widget ``viewDefinitionId``
+dashboard to supermetric     uuid and name      widget metric key
+dashboard to customgroup     name               widget resource binding
+view to supermetric          uuid and name      column ``attributeKey`` Property
+supermetric to supermetric   uuid and name      the ``formula`` field
+symptom to supermetric       uuid and name      ``<Condition key=...>``
+alert to symptom             uuid               ``<SymptomSet ref>``, ``<Symptom ref>``
+alert to recommendation      uuid               ``<Recommendation ref>``
+customgroup to customgroup   name               membership ``RelationshipRule``
+notificationrule to alert    uuid               condition ``AlertDefinitionID``
+notificationrule to outbound name               rule ``PluginID``
+notificationrule to template name               ``ruleNameToTemplateNameMap``
+report to view, dashboard    uuid               section ``ContentKey``
+===========================  =================  ==================================
 
-Reference extraction reads the raw document, not a re-parse into a factory
-model: the export's own spellings are what the edges are made of, and the
+Seven of those are named in the spec's scope section. The other six are here
+because the corpus carries them and leaving one out lets a closed selection
+still produce a bundle referencing something it does not carry, which is the
+one failure mode subsetting can introduce on its own.
+
+Two things are deliberately *not* followed. A super metric's description is
+prose and these exports quote another super metric's uuid in it, so super
+metric references are read from the ``formula`` field alone. And a by-name
+value that names no object in this export is not a missing dependency: most
+membership ``ruleStringValue``s name ordinary resources, and reporting each
+one would drown the report an admin reads to find out what will break.
+
+The wire spellings come from the format, and the by-name token from the
+factory's own ``vcfcf_core.supermetrics.crossref``, which defines it. The
 library's walker (``vcfcf_core.common.dep_walker``) resolves factory YAML
-models by *name*, which is a different graph over different inputs. The one
-piece that carries straight across is the wire spelling of a super metric
-reference, ``Super Metric|sm_<uuid>``, which
-``vcfcf_core.supermetrics.crossref`` documents and which is the same token
-here, in a view column, a dashboard widget and another super metric's
-formula.
+models by name within a project scope; an export has no projects, so the
+scope-based tie-break does not apply here and a name more than one object
+answers to carries every match instead (see ``_resolve_index``).
 
 A node is identified by ``kind:ident``. ``ident`` is the uuid where the
 export carries one; custom groups and outbound settings carry none, so their
@@ -50,6 +63,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from vcfcf_core.supermetrics.crossref import crossref_names
+
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator.containers import Container
 
@@ -58,6 +73,17 @@ from vcfcf_migrator.containers import Container
 SM_REF_RE = re.compile(rb"sm_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                        rb"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 VIEW_REF_RE = re.compile(rb'"viewDefinitionId"\s*:\s*"([^"]+)"')
+# A dashboard widget scoped to a custom group binds to it as a resource, by
+# name, with a Container resource kind: {"resource": {"resourceName": "<group
+# name>", "resourceKindId": "002009ContainerFunction"}}. The Container marker
+# is required, so a widget bound to an ordinary resource that happens to share
+# a group's name is not mistaken for a reference to the group.
+RESOURCE_BINDING_RE = re.compile(
+    rb'"resourceName"\s*:\s*"([^"]*)"[^{}]*?"resourceKindId"\s*:\s*"[^"]*Container[^"]*"'
+    rb'|"resourceKindId"\s*:\s*"[^"]*Container[^"]*"[^{}]*?"resourceName"\s*:\s*"([^"]*)"')
+# A custom group whose membership is defined relative to another group names
+# it in a RelationshipRule's ruleStringValue.
+GROUP_RULE_RE = re.compile(rb'"ruleStringValue"\s*:\s*"([^"]*)"')
 
 KIND_ORDER = [
     "dashboard", "view", "supermetric", "customgroup", "symptom", "alert",
@@ -68,10 +94,19 @@ KIND_ORDER = [
 
 @dataclass(frozen=True)
 class Ref:
-    """One edge out of a node: what it points at, and where it was found."""
+    """One edge out of a node: what it points at, and where it was found.
+
+    ``optional`` marks a reference whose target is only *sometimes* an object
+    in the export. A custom group's membership rule names resources, most of
+    which are ordinary VMs; a widget binds to a resource that may or may not
+    be a group. Failing to resolve one of those is normal and must not be
+    reported as a missing dependency, or the report that tells an admin what
+    will break on import fills up with things that will not.
+    """
     kind: str
     ident: str
     via: str
+    optional: bool = False
 
 
 @dataclass
@@ -122,6 +157,9 @@ class Graph:
     containers: List[Container] = field(default_factory=list)
     unknown_members: List[str] = field(default_factory=list)
     missing: List[MissingEdge] = field(default_factory=list)
+    # By-name references that more than one object answers to; every match is
+    # carried, and the admin is told rather than left to find out.
+    ambiguous: List[str] = field(default_factory=list)
     # node key -> resolved target keys, in the order the references appear
     edges: Dict[str, List[str]] = field(default_factory=dict)
 
@@ -150,14 +188,26 @@ class Graph:
 
 
 def _resolve_index(nodes: Dict[str, Node]) -> Dict[Tuple[str, str], List[str]]:
-    """(kind, ident) -> node keys. A dashboard uuid under two owners resolves
-    to both: a reference to it means both documents, and the admin who wants
-    only one says so with ``kind:uuid@owner``."""
+    """(kind, identifier) -> node keys, for every identifier an object can be
+    named by: its uuid, its export ident, and its display name.
+
+    Two nodes can answer to one identifier, and both cases are deliberate. A
+    dashboard uuid under two owners resolves to both, because a reference to
+    it means both documents and the admin who wants one says so with
+    ``kind:uuid@owner``. Two super metrics sharing a display name also resolve
+    to both: the factory picks one by project scope
+    (``dep_walker._pick_sm_by_name``), but an export has no projects to pick
+    by, and guessing wrong here means a bundle missing the super metric its
+    formula actually meant. Carrying both is the error that can be undone.
+    """
     index: Dict[Tuple[str, str], List[str]] = {}
     for node in nodes.values():
-        index.setdefault((node.kind, node.ident), []).append(node.key)
-        if node.uuid and node.uuid != node.ident:
-            index.setdefault((node.kind, node.uuid), []).append(node.key)
+        for identifier in (node.ident, node.uuid, node.name):
+            if not identifier:
+                continue
+            keys = index.setdefault((node.kind, identifier), [])
+            if node.key not in keys:
+                keys.append(node.key)
     return index
 
 
@@ -165,14 +215,29 @@ def _resolve_index(nodes: Dict[str, Node]) -> Dict[Tuple[str, str], List[str]]:
 # Reference extraction, per kind, from the raw document
 # ---------------------------------------------------------------------------
 
-def _sm_refs(raw: bytes, via: str, skip: str = "") -> List[Ref]:
+def _sm_refs(raw: bytes, where: str, skip: str = "") -> List[Ref]:
+    """Super metric references in *raw*, in both wire spellings.
+
+    ``Super Metric|sm_<uuid>`` is the resolved form. ``Super
+    Metric|@supermetric:"<Name>"`` is the by-name form, which an 8.x export
+    carries in super metric formulas, and which is invisible to any audit that
+    only resolves uuid-shaped identifiers. The token is found with the
+    factory's own ``vcfcf_core.supermetrics.crossref``, which is where that
+    spelling is defined, rather than with a second regex that could drift from
+    it: the token is matched case-insensitively, the quoted name exactly.
+    """
     out, seen = [], set()
     for match in SM_REF_RE.finditer(raw):
         ident = match.group(1).decode("ascii")
         if ident == skip or ident in seen:
             continue
         seen.add(ident)
-        out.append(Ref("supermetric", ident, via))
+        out.append(Ref("supermetric", ident, f"{where} Super Metric|sm_<uuid>"))
+    for name in crossref_names(raw.decode("utf-8", "replace")):
+        if name and name not in seen:
+            seen.add(name)
+            out.append(Ref("supermetric", name,
+                           f'{where} Super Metric|@supermetric:"<name>"'))
     return out
 
 
@@ -183,15 +248,60 @@ def _dashboard_refs(raw: bytes) -> List[Ref]:
         if ident and ident not in seen:
             seen.add(ident)
             out.append(Ref("view", ident, "widget viewDefinitionId"))
-    return out + _sm_refs(raw, "widget metric Super Metric|sm_")
+    groups = set()
+    for match in RESOURCE_BINDING_RE.finditer(raw):
+        name = (match.group(1) or match.group(2) or b"").decode("utf-8", "replace")
+        if name and name not in groups:
+            groups.add(name)
+            out.append(Ref("customgroup", name, "widget resource binding, by name",
+                           optional=True))
+    return out + _sm_refs(raw, "widget metric")
+
+
+def _customgroup_refs(raw: bytes) -> List[Ref]:
+    """A membership RelationshipRule naming another custom group.
+
+    Custom groups carry no uuid in an export, so this is a by-name reference
+    and stays one; the node's identity is its name for the same reason. A
+    value naming no group in this export resolves to nothing and is reported
+    as missing, which is right: most ruleStringValues name ordinary resources.
+    """
+    out, seen = [], set()
+    for match in GROUP_RULE_RE.finditer(raw):
+        name = match.group(1).decode("utf-8", "replace")
+        if name and name not in seen:
+            seen.add(name)
+            out.append(Ref("customgroup", name, "membership RelationshipRule, by name",
+                           optional=True))
+    return out
 
 
 def _view_refs(raw: bytes) -> List[Ref]:
-    return _sm_refs(raw, "column attributeKey Super Metric|sm_")
+    return _sm_refs(raw, "column attributeKey")
 
 
-def _supermetric_refs(raw: bytes, self_ident: str) -> List[Ref]:
-    return _sm_refs(raw, "formula Super Metric|sm_", skip=self_ident)
+def _supermetric_refs(raw: bytes, self_ident: str, self_name: str = "") -> List[Ref]:
+    """Read the formula, and only the formula.
+
+    A super metric's description is prose, and these exports quote another
+    super metric's uuid in it ("Companion to X (UUID ...)"). Scanning the
+    whole document turns that into a reference, which at best adds noise to
+    the one report telling an admin what will be missing on import, and at
+    worst over-carries. The formula is the only field a reference can live in,
+    so it is the only field read.
+    """
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        doc = None
+    formula = doc.get("formula") if isinstance(doc, dict) else None
+    if not isinstance(formula, str):
+        # Not the shape this tool knows; fall back to the whole document
+        # rather than silently finding no dependencies at all.
+        return [r for r in _sm_refs(raw, "formula", skip=self_ident)
+                if r.ident != self_name]
+    refs = _sm_refs(formula.encode("utf-8"), "formula", skip=self_ident)
+    return [r for r in refs if r.ident != self_name]
 
 
 def _alert_refs(raw: bytes) -> List[Ref]:
@@ -277,10 +387,11 @@ def _rule_refs(raw: bytes) -> List[Ref]:
 _REF_EXTRACTORS = {
     "dashboard": lambda entry: _dashboard_refs(entry.raw),
     "view": lambda entry: _view_refs(entry.raw),
-    "supermetric": lambda entry: _supermetric_refs(entry.raw, entry.ident),
+    "supermetric": lambda entry: _supermetric_refs(entry.raw, entry.ident, entry.name),
+    "customgroup": lambda entry: _customgroup_refs(entry.raw),
     # A symptom's threshold can be on a super metric attribute:
     # <Condition key="Super Metric|sm_<uuid>" type="metric" .../>.
-    "symptom": lambda entry: _sm_refs(entry.raw, "symptom Condition key Super Metric|sm_"),
+    "symptom": lambda entry: _sm_refs(entry.raw, "symptom Condition key"),
     "alert": lambda entry: _alert_refs(entry.raw),
     "report": lambda entry: _report_refs(entry.raw),
     "notificationrule": lambda entry: _rule_refs(entry.raw),
@@ -318,8 +429,14 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
         for ref in node.refs:
             hits = index.get((ref.kind, ref.ident))
             if not hits:
-                graph.missing.append(MissingEdge(node.key, ref.kind, ref.ident, ref.via))
+                if not ref.optional:
+                    graph.missing.append(MissingEdge(node.key, ref.kind, ref.ident, ref.via))
                 continue
+            if len(hits) > 1 and ref.ident not in (h.split(":", 1)[1] for h in hits):
+                note = (f"{node.label()} names {ref.kind} {ref.ident!r} and "
+                        f"{len(hits)} objects answer to that name; all are carried")
+                if note not in graph.ambiguous:
+                    graph.ambiguous.append(note)
             for hit in hits:
                 if hit != node.key and hit not in targets:
                     targets.append(hit)
@@ -407,6 +524,11 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
             source = graph.nodes.get(gap.source_key)
             lines.append(f"  {gap.kind} [{gap.ident}] wanted by "
                          f"{source.label() if source else gap.source_key} (via {gap.via})")
+    if graph.ambiguous:
+        lines.append("")
+        lines.append(f"references by name that more than one object answers to: {len(graph.ambiguous)}")
+        for note in graph.ambiguous:
+            lines.append(f"  {note}")
     if graph.unknown_members:
         lines.append("")
         lines.append("members this tool does not understand (never carried unless selected, "
@@ -435,5 +557,6 @@ def as_dict(graph: Graph) -> dict:
         "roots": [n.key for n in graph.roots()],
         "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via}
                     for m in graph.missing],
+        "ambiguous": list(graph.ambiguous),
         "unknown_members": list(graph.unknown_members),
     }
