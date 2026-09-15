@@ -412,21 +412,40 @@ def test_the_page_takes_the_log_level_from_the_command_line(tmp_path, export_zip
     state.log.close()
 
 
-def test_a_head_event_is_kept_once_and_the_newest_one_wins():
-    """The page hands the old log's events to the new one on every settings
-    save. Without a dedup the head grew by three per save and _trim never drops
-    from it, so a truncated session kept the first run header rather than the
-    one it was running under."""
+def test_the_header_the_page_keeps_is_the_one_the_run_is_using(tmp_path, export_zip,
+                                                               config_dir):
+    """Driven the way the page drives it, not by assigning a list by hand.
+
+    ``open_log`` carries the previous log's events into the new one and then
+    writes the new header. The earlier version of this test handed the buffer
+    two synthetic ``run.start`` events, which the page never produces, so it
+    passed while the real path kept the header from before the settings change:
+    after a truncation the log stated a source version the run was not using.
+    """
+    state = PageState(str(export_zip))
+    state.save_setting({"source_version": "9.0.2"})
+    state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
+    state.save_setting({"log_level": "debug"})       # a second open_log
+    state.run_tree()
+    state.log.event_cap = 5                          # force the truncation
+    for index in range(40):
+        state.log.detail("noise", index=index)
+    headers = [e for e in state.log.events if e["event"] == "run.start"]
+    assert len(headers) == 1, headers
+    assert headers[0]["source_version"] == "9.0.2", headers[0]
+    kept = {e["event"] for e in state.log.events}
+    for head in runlog.HEAD_EVENTS:
+        assert head in kept, (head, kept)
+    state.log.close()
+
+
+def test_a_head_event_written_twice_keeps_one_slot():
     log = runlog.Log(level="debug")
-    log.events = [{"event": "run.start", "tool": "old"},
-                  {"event": "noise"},
-                  {"event": "run.start", "tool": "new"},
-                  {"event": "input.fingerprint", "sha256": "a"},
-                  {"event": "input.fingerprint", "sha256": "b"}]
-    heads = [e for e in log.events if e["event"] in runlog.HEAD_EVENTS]
-    assert len(heads) == 2, heads
-    assert [e for e in heads if e["event"] == "run.start"][0]["tool"] == "new"
-    assert [e for e in heads if e["event"] == "input.fingerprint"][0]["sha256"] == "b"
+    log.events = []
+    log.info("run.start", tool="first")
+    log.info("run.start", tool="second")
+    headers = [e for e in log.events if e["event"] == "run.start"]
+    assert len(headers) == 1 and headers[0]["tool"] == "second"
 
 
 def test_the_page_has_a_control_for_the_log_file_and_the_level(state):

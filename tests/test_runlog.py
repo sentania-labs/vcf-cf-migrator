@@ -472,6 +472,22 @@ def test_each_event_reaches_the_file_before_the_next_one(tmp_path):
     log.close()
 
 
+def test_a_dropped_event_reaches_the_file_too(tmp_path, monkeypatch):
+    """The failure path flushes like the ordinary one. It is the line that says
+    an event was lost, so losing it in a buffer is the same defect twice."""
+    def explode(_self, _value, people=True):
+        raise RuntimeError("the redactor gave up")
+
+    path = tmp_path / "failed.jsonl"
+    log = runlog.open_log(str(path), level="debug")
+    monkeypatch.setattr(runlog.Redactor, "text", explode)
+    log.info("thing.happened", name="anything")
+    written = path.read_text(encoding="utf-8")
+    assert '"log.failed"' in written
+    assert "anything" not in written
+    log.close()
+
+
 def test_open_log_appends_so_two_runs_are_one_story(tmp_path):
     path = tmp_path / "logs" / "run.jsonl"
     for _ in range(2):

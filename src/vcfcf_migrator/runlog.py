@@ -541,9 +541,21 @@ class Log:
         """
         if self._tail is None:
             return
-        if event.get("event") in HEAD_EVENTS and not any(
-                e.get("event") == event.get("event") for e in self._head):
-            self._head.append(event)
+        name = event.get("event")
+        if name in HEAD_EVENTS:
+            # A head event replaces its slot rather than being turned away as a
+            # duplicate, which is the same last-one-wins rule the setter uses.
+            # The page carries the previous log's events into a new log and
+            # *then* writes the new header, so first-one-wins left the fresh
+            # run.start in the tail and kept a header describing the run before
+            # the setting changed: after a truncation the log stated a source
+            # version the run was not using.
+            for index, existing in enumerate(self._head):
+                if existing.get("event") == name:
+                    self._head[index] = event
+                    break
+            else:
+                self._head.append(event)
         else:
             self._tail.append(event)
         self._trim()
