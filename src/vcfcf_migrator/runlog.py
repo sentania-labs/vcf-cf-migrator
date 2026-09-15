@@ -154,6 +154,14 @@ PERSON_KEY_RE = re.compile(
 # An owner key is a person key whose value is pseudonymised rather than
 # dropped: multi-owner behaviour has to stay legible.
 OWNER_KEY_RE = re.compile(r"^owners?$|_owners?$|^owner_", re.I)
+# The keys whose value is a count even though the key names a credential class:
+# an export's configuration.json says how many auth sources and how many
+# certificates it holds. Named, because inferring "this is a count because it
+# is a number" let a numeric credential through.
+COUNT_FIELDS = frozenset({"authsources", "authsourcecount", "certificates",
+                          "certificatecount", "credentials", "credentialcount",
+                          "tokens", "tokencount", "keystores", "passwords"})
+
 VALUE_KEY_RE = re.compile(
     r"^(value|values|sample|samples|series|datapoint|datapoints|mock|mocks|"
     r"reading|readings|observation|observations)$", re.I)
@@ -397,10 +405,13 @@ class Redactor:
                 return [str(v) for v in value]
             return value if isinstance(value, (int, float, bool)) else str(value)
         if SECRET_KEY_RE.search(name):
-            # A number under such a key is a count, not a credential: an
-            # export's manifest counts its auth sources, and excluding the
-            # count says nothing about a secret and loses a fact.
-            if isinstance(value, int) and not isinstance(value, bool):
+            # The exception is for *named* counts, not for numbers. It used to
+            # be "an int under such a key is a count", which is a hole shaped
+            # like a type: ``password=1234`` and a numeric token were written
+            # verbatim. An export's manifest counts its auth sources, and those
+            # keys are known, so they are listed rather than inferred.
+            if name.lower() in COUNT_FIELDS and isinstance(value, int) \
+                    and not isinstance(value, bool):
                 return value
             return EXCLUDED_CREDENTIAL
         if VALUE_KEY_RE.match(name):
@@ -495,6 +506,7 @@ class Log:
         self.event_cap = 40000
         self.dropped = 0
         self._broken = 0
+        self.stream_failure: Optional[str] = None
 
     # -- state -------------------------------------------------------------
 
@@ -595,8 +607,20 @@ class Log:
             self._failed(level, code, failure)
 
     def _failed(self, level: str, code: str, failure: BaseException) -> None:
+        """Record that an event could not be written, without ever raising.
+
+        This is the path that runs when something is already wrong, so it is
+        the path that must be surest. The destination can go bad *after* it was
+        opened: a full disk, a broken pipe on stderr, a removed file. The write
+        here used to be unguarded, so a failing stream took the command down
+        through the very code written to stop that happening.
+
+        On a stream failure the stream is dropped, the in-memory record is
+        kept, and the command carries on. A log that stops is a diagnosis; a
+        command that stops because its log stopped is a defect.
+        """
         self._broken += 1
-        if self._broken > 50 or self.stream is None and self._tail is None:
+        if self._broken > 50 or (self.stream is None and self._tail is None):
             return
         event = {"t": round(self._clock() - self._t0, 4), "lvl": "error",
                  "phase": self._phases[-1].name if self._phases else "run",
@@ -605,12 +629,35 @@ class Log:
                  "reason": "this event could not be written safely, so it was dropped "
                            "rather than written unredacted; the failure is the log's, "
                            "not the command's"}
-        self._keep(event)
-        if self.stream is not None:
+        try:
+            self._keep(event)
+        except Exception:  # noqa: BLE001 - nothing here may reach the caller
+            pass
+        if self.stream is None:
+            return
+        try:
             line = (render_event(event) if self.fmt == "text"
                     else json.dumps(event, ensure_ascii=False))
             self.stream.write(line + "\n")
             self.stream.flush()
+        except Exception as second:  # noqa: BLE001 - the destination is gone
+            self._drop_stream(second)
+
+    def _drop_stream(self, failure: BaseException) -> None:
+        """Stop writing to a destination that has gone bad, and say so in the
+        events still held in memory, which is the one place left to say it."""
+        self.stream = None
+        self.stream_failure = type(failure).__name__
+        try:
+            self._keep({"t": round(self._clock() - self._t0, 4), "lvl": "error",
+                        "phase": self._phases[-1].name if self._phases else "run",
+                        "event": "log.destination_lost",
+                        "failure": type(failure).__name__,
+                        "reason": "the log's destination stopped accepting writes, so "
+                                  "the rest of this run is not in the file; the command "
+                                  "is unaffected"})
+        except Exception:  # noqa: BLE001
+            pass
 
     def _emit(self, level: str, code: str, /, **fields) -> None:
         event = {
@@ -630,12 +677,17 @@ class Log:
             return
         line = (render_event(event) if self.fmt == "text"
                 else json.dumps(event, ensure_ascii=False))
-        self.stream.write(line + "\n")
-        # Flushed per event, not per buffer. The page runs until someone stops
+        try:
+            self.stream.write(line + "\n")
+            # Flushed per event, not per buffer. The page runs until someone stops
         # it, usually with Ctrl-C, and a log whose last events are still in a
         # buffer when that happens loses exactly the part a support case is
-        # about. Measured at 0.007 ms per event, which a run does not notice.
-        self.stream.flush()
+            # about. Measured at 0.0012 ms per event, which a run does not
+            # notice, and the difference between a log that ends in run.end
+            # after a SIGKILL and one that ends mid-story.
+            self.stream.flush()
+        except Exception as failure:  # noqa: BLE001 - the destination is gone
+            self._drop_stream(failure)
 
     def _trim(self) -> None:
         """Hold the buffer at its cap, oldest first, but never the head.
@@ -762,6 +814,7 @@ class Log:
                   what=what or None, failed=(type(failed).__name__ if failed else None),
                   events=self._written, by_level=self.counts_by_level(),
                   dropped=self.dropped or None, broken=self._broken or None,
+                  destination_lost=self.stream_failure,
                   owners_seen=self.redactor.owners_seen())
 
     def close(self) -> None:

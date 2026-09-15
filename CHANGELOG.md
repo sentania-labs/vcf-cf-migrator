@@ -2,6 +2,19 @@
 
 ## v0.1.0 (2026-09-15)
 
+- Three from the external review, each on a guarantee this release makes.
+  A carried dashboard owner always gets a `dashboardsharings/<owner>` member
+  now, whatever the source held: a source member that is empty, unparseable,
+  or about dashboards the selection left behind narrows to nothing, and that
+  used to suppress the synthesis as surely as an absent member did, producing
+  a bundle the target refuses. A credential written as a number is excluded
+  like any other: the exception that let an export's manifest counts through
+  was "an int under a credential key", which is a hole shaped like a type, and
+  counts are now recognised by name. And a log destination that goes bad after
+  it was opened, a full disk or a broken pipe, no longer reaches the caller:
+  the stream is dropped, the loss is recorded in the events still held in
+  memory and in `run.end`, and the command carries on.
+
 - Logging, after the whole-branch review: the person pattern names its own
   replacement through named groups, so the match and the replacement come from
   one expression rather than from `re.I` and `str.lower()` agreeing by

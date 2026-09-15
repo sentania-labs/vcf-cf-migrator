@@ -205,6 +205,14 @@ def namelist_problems(source: Path, bundle: Path, unknown_members: Sequence[str]
             if not any(other != name and other.startswith(name) for other in got):
                 problems.append(f"the bundle declares the empty directory {name}")
             continue
+        if name.startswith("dashboards/"):
+            # Every carried owner has a sharing member beside its dashboards
+            # member, whatever the source held: a bundle without one is refused
+            # by the target, and the source can be empty, unparseable, or about
+            # dashboards this selection left behind.
+            sharing = "dashboardsharings/" + name.split("/", 1)[1]
+            if sharing not in got:
+                problems.append(f"the bundle carries {name} with no {sharing}")
         parent = name.rsplit("/", 1)[0] + "/" if "/" in name else ""
         if parent and parent not in got:
             problems.append(f"the bundle writes {name} with no {parent} entry")

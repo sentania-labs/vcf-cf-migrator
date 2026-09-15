@@ -271,42 +271,44 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
             runlog.warn("scaffolding.dropped", member="usermappings.json",
                         reason=runlog.prose("nothing in it matched the owners carried, or it did not "
                                "parse, so the bundle carries none of it"))
+    # One rule, one loop: **every carried owner gets a sharing member**,
+    # whatever the source held. It used to be two loops, one synthesizing where
+    # the source had no member at all and one narrowing where it did, and the
+    # gap between them was a real bundle the target refuses: a source member
+    # that is empty, that does not parse, or that names only dashboards this
+    # selection left behind narrows to nothing, and the old code had already
+    # skipped synthesis for that owner. An empty list shares with nobody, which
+    # imports the dashboards private to whoever imports them. Choosing who else
+    # may see an admin's content is not this tool's decision to make, so where
+    # it must write something it writes the smallest thing.
     for owner in owners:
         member = f"dashboardsharings/{owner}"
-        if member in members:
-            continue
-        # The target requires a sharing member beside every dashboards member:
-        # the 8.18.7 export carries the dashboardsharings/ directory and no
-        # file under it, and a bundle built from it has to have one. An empty
-        # list is "shared with nobody", which imports the dashboards private to
-        # whoever imports them. Choosing who else may see an admin's content is
-        # not this tool's decision to make, so it makes the smallest one.
-        written[member] = b"[]"
-        result.notes.append(
-            f"the source carried no {member}, and the target needs one beside every "
-            "dashboards member, so the bundle carries an empty sharing list: the "
-            "dashboards import private to whoever imports them, and sharing is set on "
-            "the target")
-        runlog.detail("scaffolding.synthesized", member=member,
-                      reason=runlog.prose("the source export carried no sharing member for this owner "
-                             "and the target requires one; an empty list shares with nobody"))
-    for name, data in members.items():
-        if not name.startswith("dashboardsharings/"):
-            continue
-        if name.split("/", 1)[1] not in owners:
-            runlog.detail("scaffolding.skipped", member=name,
-                          reason=runlog.prose("this owner has no dashboard in the bundle"))
-            continue
-        narrowed = _narrow_sharings(data, dashboard_uuids)
+        source = members.get(member)
+        narrowed = _narrow_sharings(source, dashboard_uuids) if source else None
         if narrowed is not None:
-            written[name] = narrowed
-            runlog.detail("scaffolding.narrowed", member=name, bytes=len(narrowed),
+            written[member] = narrowed
+            runlog.detail("scaffolding.narrowed", member=member, bytes=len(narrowed),
                           dashboards=len(dashboard_uuids),
                           reason=runlog.prose("narrowed to the dashboards the bundle carries"))
-        else:
-            runlog.warn("scaffolding.dropped", member=name,
-                        reason=runlog.prose("no sharing entry named a carried dashboard, or the member "
-                               "did not parse, so the bundle carries none of it"))
+            continue
+        written[member] = b"[]"
+        why = ("carried no sharing member for this owner" if source is None else
+               "carried a sharing member with nothing in it for the dashboards this "
+               "bundle holds, or one that did not parse")
+        result.notes.append(
+            f"the source {why}, and the target needs one beside every dashboards "
+            f"member, so the bundle carries an empty {member}: the dashboards import "
+            "private to whoever imports them, and sharing is set on the target")
+        runlog.detail("scaffolding.synthesized", member=member,
+                      had_source=source is not None,
+                      reason=runlog.prose(
+                          "every carried owner needs a sharing member beside its "
+                          "dashboards member; nothing in the source could be narrowed "
+                          "into one, so this is an empty list, which shares with nobody"))
+    for name in members:
+        if name.startswith("dashboardsharings/") and name.split("/", 1)[1] not in owners:
+            runlog.detail("scaffolding.skipped", member=name,
+                          reason=runlog.prose("this owner has no dashboard in the bundle"))
 
     counts = selection.counts(graph)
     manifest: Dict[str, object] = {"type": "CUSTOM"}

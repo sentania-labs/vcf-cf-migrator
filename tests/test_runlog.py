@@ -120,6 +120,84 @@ def test_a_credential_is_excluded_by_the_key_whatever_it_holds(log):
     assert body.count(runlog.EXCLUDED_CREDENTIAL) == 4
 
 
+def test_a_credential_written_as_a_number_is_still_a_credential(log):
+    """The exception for counts used to be "an int under such a key", which is
+    a hole shaped like a type: a numeric PIN or token went out verbatim."""
+    runlog.info("careless", password=1234, authToken=987654321,
+                apiKey=42, secret=0, passcode=-7)
+    body = text_of(log)
+    for number in ("1234", "987654321", "42", "-7"):
+        assert number not in body, number
+    assert body.count(runlog.EXCLUDED_CREDENTIAL) == 5
+
+
+def test_a_named_count_under_a_credential_key_survives(log):
+    """The fact an export's manifest carries, kept by naming the keys rather
+    than by trusting the type."""
+    runlog.info("input.fingerprint", authSources=12, certificates=3)
+    event = events(log)[0]
+    assert event["authSources"] == 12 and event["certificates"] == 3
+    assert set(runlog.COUNT_FIELDS) >= {"authsources", "certificates"}
+
+
+def test_a_destination_that_goes_bad_does_not_end_the_command(tmp_path):
+    """The path that runs when something is already wrong is the path that must
+    be surest: a full disk or a broken pipe used to propagate out of the very
+    code written to stop a logging failure ending a command."""
+    class Broken:
+        def __init__(self):
+            self.writes = 0
+
+        def write(self, _text):
+            self.writes += 1
+            if self.writes > 1:
+                raise OSError(28, "No space left on device")
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    stream = Broken()
+    log = runlog.Log(stream=stream, level="debug")
+    log.events = []
+    log.info("first", index=1)
+    log.info("second", index=2)      # the write that fails
+    log.info("third", index=3)       # must not raise, must not write
+    assert log.stream is None
+    assert log.stream_failure == "OSError"
+    kept = [e["event"] for e in log.events]
+    assert "log.destination_lost" in kept, kept
+    log.finish(0, what="test")
+    assert any(e["event"] == "run.end" and e.get("destination_lost") == "OSError"
+               for e in log.events)
+
+
+def test_a_failure_while_recording_a_failure_is_still_survivable(tmp_path, monkeypatch):
+    """Both writes gone: the redactor raises and the stream raises on the
+    record of it. The command carries on regardless."""
+    class Broken:
+        def write(self, _text):
+            raise BrokenPipeError("gone")
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    def explode(_self, _value, people=True):
+        raise RuntimeError("the redactor gave up")
+
+    log = runlog.Log(stream=Broken(), level="debug")
+    log.events = []
+    monkeypatch.setattr(runlog.Redactor, "text", explode)
+    log.info("thing.happened", name="anything")  # must not raise
+    assert log.stream is None
+    assert any(e["event"] in ("log.failed", "log.destination_lost") for e in log.events)
+
+
 def test_a_metric_value_is_excluded_by_the_key(log):
     runlog.info("careless", value=99.5, values=[1, 2, 3], samples=[4])
     assert "99.5" not in text_of(log)

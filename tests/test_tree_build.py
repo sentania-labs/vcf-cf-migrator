@@ -668,6 +668,44 @@ def test_an_export_with_no_sharing_member_gets_one_synthesized(tmp_path):
         assert "dashboardsharings/" in z.namelist()
 
 
+@pytest.mark.parametrize("sharing,why", [
+    (None, "the source has no sharing member at all"),
+    (b"[]", "the source's sharing member is an empty list"),
+    (b"not json at all", "the source's sharing member does not parse"),
+    (b'[{"groupName": "Everyone", "sourceType": "LOCAL", "dashboards": '
+     b'[{"dashboardId": "11111111-2222-4333-8444-555555555555", "edit": true}]}]',
+     "the source's sharing member names only dashboards this bundle leaves behind"),
+])
+def test_a_carried_owner_always_gets_a_sharing_member(tmp_path, sharing, why):
+    """The target refuses a bundle whose dashboards member has no sharing
+    member beside it. Narrowing can produce nothing from a source that is
+    empty, unparseable, or about other dashboards, and that used to suppress
+    the synthesis as surely as an absent member did."""
+    source = tmp_path / f"source-{abs(hash(why))}.zip"
+    raw = build_export_zip(without=[f"dashboardsharings/{OWNER}"]
+                           if sharing is None else [])
+    if sharing is not None:
+        rebuilt = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(raw)) as src, zipfile.ZipFile(rebuilt, "w") as out:
+            for info in src.infolist():
+                data = src.read(info.filename)
+                if info.filename == f"dashboardsharings/{OWNER}":
+                    data = sharing
+                out.writestr(info, data)
+        raw = rebuilt.getvalue()
+    source.write_bytes(raw)
+    out_path, code = _build(tmp_path, source, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
+    assert code == 0, why
+    with zipfile.ZipFile(out_path) as z:
+        names = z.namelist()
+        assert f"dashboards/{OWNER}" in names, why
+        assert f"dashboardsharings/{OWNER}" in names, why
+        assert "dashboardsharings/" in names, why
+        body = z.read(f"dashboardsharings/{OWNER}")
+    # Either narrowed to what the bundle carries, or the empty list.
+    assert body == b"[]" or DASHBOARD_ID.encode() in body, (why, body[:60])
+
+
 def test_dashboards_are_rebuilt_per_owner_inner_zip(tmp_path, export_zip):
     node = f"dashboard:{DASHBOARD_ID}@{OWNER}"
     out, code = _build(tmp_path, export_zip, [node])
