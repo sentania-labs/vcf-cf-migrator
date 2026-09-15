@@ -4,8 +4,9 @@ Serves on 127.0.0.1 on a free port (or ``--port``), opens the browser, and
 shows: the tool and library versions, the two settings (corpus directory and
 declared source version, editable, persisted through
 ``settings.save_settings``), an inspect form for an export zip, and buttons
-for the commands that are not implemented yet, which answer with the same
-message the CLI prints. Ctrl-C stops the process and with it the page.
+for the commands whose page control has not been built yet, which hand back
+the exact command line for what the page is set to. Ctrl-C stops the process
+and with it the page.
 
 Nothing here listens on any other interface, and a POST is accepted only
 when its Origin (or Host, when the browser sends no Origin) is this
@@ -25,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 from vcfcf_migrator import settings as _settings
-from vcfcf_migrator.cli import NOT_IMPLEMENTED, SPEC_POINTER, version_lines
+from vcfcf_migrator.cli import version_lines
 from vcfcf_migrator.export_reader import (
     VERSION_FLOOR_TEXT,
     BadSourceVersion,
@@ -35,6 +36,11 @@ from vcfcf_migrator.export_reader import (
     read_export,
     render_text,
 )
+
+# Commands the CLI runs today whose page control lands in the next PR. The
+# buttons for them do a real, small job in the meantime: they show the exact
+# command line for the export and settings currently on the page.
+PAGE_PENDING = ("tree", "build", "corpus-check")
 
 _STYLE = """
 body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; color: #222; }
@@ -46,6 +52,23 @@ form { margin: 0.5rem 0; } button { padding: 0.3rem 0.8rem; margin-right: 0.5rem
 .err { background: #fde8e8; padding: 0.6rem; border-left: 4px solid #c00; }
 small { color: #666; }
 """
+
+
+def _shell_quote(value: str) -> str:
+    """Quote a value so the command line reads as one argument.
+
+    Double quotes rather than ``shlex.quote``: this page runs on Windows too,
+    where the single quotes shlex emits are literal characters and the command
+    would fail in exactly the case the quoting exists for. Double quotes are
+    understood by cmd.exe, PowerShell and every POSIX shell. An embedded
+    double quote is backslash-escaped, which POSIX shells take and cmd.exe
+    cannot express at all; a path containing one is beyond what a copyable
+    line can promise.
+    """
+    text = str(value)
+    if text and not any(ch in text for ch in ' \t"\'\\&|<>^()$`'):
+        return text
+    return '"' + text.replace('"', '\\"') + '"'
 
 
 class PageState:
@@ -80,6 +103,30 @@ class PageState:
             self.error = str(e)
             return
         self.listing = json.dumps(export.as_dict(), indent=2) if as_json else render_text(export)
+
+    def command_line(self, cmd: str) -> str:
+        """The exact command for *cmd*, with whatever the page is set to.
+
+        Small, but real: it is the one useful thing a button can do for a
+        command whose page control has not been built yet, and it saves the
+        admin assembling the flags by hand. Which means it has to be a command
+        that runs: a path with a space in it, which is ordinary on every OS
+        this tool ships for, is two arguments unless it is quoted.
+        """
+        declared, _ = _settings.source_version(self.source_version_cli)
+        corpus, _src = _settings.corpus_dir(self.corpus_cli)
+        head = "vcfcf-migrator" + (f" --source-version {_shell_quote(declared)}"
+                                   if declared else "")
+        if cmd == "corpus-check":
+            return f"{head} corpus-check {_shell_quote(str(corpus))}"
+        target = _shell_quote(self.zip_path) if self.zip_path else "<export.zip>"
+        if cmd == "build":
+            if not declared:
+                return (f"vcfcf-migrator --source-version <X.Y.Z> build {target} "
+                        "--select <picks.txt> --out <bundle.zip>   "
+                        "(build refuses without a declared source version)")
+            return f"{head} build {target} --select <picks.txt> --out <bundle.zip>"
+        return f"{head} {cmd} {target}"
 
     def render(self) -> str:
         corpus, source = _settings.corpus_dir(self.corpus_cli)
@@ -124,12 +171,14 @@ class PageState:
         if self.listing:
             parts += ["<pre id='listing'>", e(self.listing), "</pre>"]
 
-        parts += ["<h2>Other commands</h2><p><small>tree, build and corpus-check land in later milestones; the buttons answer as the CLI does.</small></p>"]
-        for cmd in ("tree", "build", "corpus-check"):
+        parts += ["<h2>Other commands</h2><p><small>tree, build and corpus-check run on the "
+                  "command line today. These buttons show you the exact command for the export "
+                  "and settings above; their own page controls land in the next PR.</small></p>"]
+        for cmd in PAGE_PENDING:
             parts += [
-                f"<form method='post' action='/run' style='display:inline'>",
+                "<form method='post' action='/run' style='display:inline'>",
                 f"<input type='hidden' name='cmd' value='{cmd}'>",
-                f"<button type='submit'>{cmd}</button></form>",
+                f"<button type='submit'>Show the {cmd} command</button></form>",
             ]
         parts += ["<p><small>Stop the page with Ctrl-C in the terminal that started it.</small></p>",
                   "</body></html>"]
@@ -216,8 +265,8 @@ def _handler_for(state: PageState):
                 state.run_inspect(form.get("zip", "").strip(), as_json=form.get("json") == "1")
             elif path == "/run":
                 cmd = form.get("cmd", "")
-                if cmd in NOT_IMPLEMENTED:
-                    state.message = f"vcfcf-migrator {cmd}: not implemented in M3, see spec ({SPEC_POINTER})"
+                if cmd in PAGE_PENDING:
+                    state.message = state.command_line(cmd)
                 else:
                     state.error = f"unknown command {cmd}"
             else:

@@ -56,6 +56,7 @@ def test_page_shows_versions_settings_and_listing(server):
     assert "[Fixture] SM 2" in body
     for cmd in ("tree", "build", "corpus-check"):
         assert f"value='{cmd}'" in body
+        assert f"Show the {cmd} command" in body
     assert "id='zip'" in body
 
 
@@ -134,12 +135,48 @@ def test_inspect_form_and_json_toggle(server, export_zip):
     assert "is not a zip file" in body or "cannot read" in body
 
 
-def test_stub_buttons_answer_like_the_cli(server):
+def test_pending_buttons_hand_back_the_command_to_run(server, export_zip):
+    """tree, build and corpus-check run on the CLI today; their page controls
+    land in the next PR. Until then the buttons do the one useful thing they
+    can: hand back the exact command line for what the page is set to."""
+    _, body = _post(server, "/inspect", {"zip": str(export_zip)})
+    _, body = _post(server, "/run", {"cmd": "tree"})
+    assert f"vcfcf-migrator tree {export_zip}" in html.unescape(body)
     _, body = _post(server, "/run", {"cmd": "build"})
-    assert "vcfcf-migrator build: not implemented in M3, see spec" in body
+    assert "--select &lt;picks.txt&gt; --out &lt;bundle.zip&gt;" in body
+    assert "refuses without a declared source version" in body
+    _, body = _post(server, "/run", {"cmd": "corpus-check"})
+    assert "vcfcf-migrator corpus-check" in body
 
 
 def test_unknown_path_is_404(server):
     with pytest.raises(urllib.error.HTTPError) as e:
         _get(server, "/nope")
     assert e.value.code == 404
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("/tmp/plain.zip", "vcfcf-migrator tree /tmp/plain.zip"),
+    ("/tmp/My Export.zip", 'vcfcf-migrator tree "/tmp/My Export.zip"'),
+    (r"C:\Users\a b\export.zip", 'vcfcf-migrator tree "C:\\Users\\a b\\export.zip"'),
+])
+def test_the_command_the_page_hands_back_is_one_argument(path, expected):
+    """A path with a space in it is ordinary on every OS this ships for, and
+    unquoted it is two arguments, so the command the button offers does not
+    run. Double quotes rather than shlex, which emits single quotes that
+    Windows takes literally."""
+    from vcfcf_migrator.ui import PageState
+
+    state = PageState(path, corpus_cli=None, source_version_cli=None)
+    assert state.command_line("tree") == expected
+
+
+def test_a_quoted_command_survives_a_shell_split():
+    import shlex
+
+    from vcfcf_migrator.ui import PageState
+
+    state = PageState("/tmp/My Export.zip", corpus_cli=None, source_version_cli="9.0.2")
+    parts = shlex.split(state.command_line("build"))
+    assert "/tmp/My Export.zip" in parts
+    assert parts[:4] == ["vcfcf-migrator", "--source-version", "9.0.2", "build"]

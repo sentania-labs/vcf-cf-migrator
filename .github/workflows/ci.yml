@@ -48,11 +48,29 @@ jobs:
         run: python -m pytest -q
 
       - name: Drive the installed console script over a generated fixture
+        # This step owns no content number and no version number. The counts
+        # come from the fixture module's own expectations and the floor from
+        # the code that enforces it, both via tests/fixtures/ci_checks.py, so
+        # a fixture that grows cannot leave a hand-copied number behind here
+        # while the suite stays green.
         run: |
+          checks="$PWD/tests/fixtures/ci_checks.py"
+          ok="$(python "$checks" floor)"
+          bad="$(python "$checks" below-floor)"
           python tests/fixtures/make_export_fixture.py "$RUNNER_TEMP/fixture.zip"
           cd "$RUNNER_TEMP"
           vcfcf-migrator version
           vcfcf-migrator inspect fixture.zip
-          vcfcf-migrator --source-version 8.18.7 inspect fixture.zip
-          if vcfcf-migrator --source-version 8.9.0 inspect fixture.zip; then echo "::error::8.9.0 must be refused"; exit 1; fi
-          vcfcf-migrator inspect --json fixture.zip | python -c 'import json,sys; d=json.load(sys.stdin); assert len(d["items"]) == 16, d["counts"]; print("items ok:", d["counts"])'
+          vcfcf-migrator --source-version "$ok" inspect fixture.zip
+          if vcfcf-migrator --source-version "$bad" inspect fixture.zip; then
+            echo "::error::$bad is below the $ok floor and must be refused"
+            exit 1
+          fi
+          vcfcf-migrator inspect --json fixture.zip > inspect.json
+          python "$checks" listing inspect.json
+          vcfcf-migrator --source-version "$ok" tree fixture.zip
+          vcfcf-migrator --source-version "$ok" build fixture.zip --select-all --out bundle.zip
+          vcfcf-migrator inspect --json bundle.zip > bundle.json
+          python "$checks" listing bundle.json --bundle
+          mkdir -p empty-corpus
+          vcfcf-migrator corpus-check empty-corpus

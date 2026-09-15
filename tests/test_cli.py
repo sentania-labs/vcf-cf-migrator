@@ -16,7 +16,7 @@ from make_export_fixture import (
 )
 from vcfcf_migrator import __version__
 from vcfcf_migrator.cli import main
-from vcfcf_migrator.export_reader import read_export
+from vcfcf_migrator.export_reader import UnsupportedExport, read_export
 
 
 def test_version_prints_both_versions(capsys):
@@ -57,9 +57,11 @@ def test_inspect_json_carries_the_same_items(export_zip, capsys):
 
 
 def test_read_export_uses_the_core_readers_for_dashboards_and_supermetrics(export_zip):
+    from make_export_fixture import OWNER
+
     export = read_export(export_zip)
     sources = {(i.kind, i.source) for i in export.items}
-    assert ("dashboard", "dashboards/aaaa1111-0000-4000-8000-00000000000a") in sources
+    assert ("dashboard", f"dashboards/{OWNER}") in sources
     assert ("supermetric", "supermetrics.json") in sources
     assert ("view", "views.zip") in sources
     assert ("report", "reports.zip") in sources
@@ -172,13 +174,17 @@ def test_the_same_template_in_two_members_is_listed_once(tmp_path, capsys):
 def test_a_dashboard_shared_by_two_owners_lists_once_per_owner(export_zip, capsys):
     """Five dashboards on a real 9.x export sit under two owners with the
     same uuid; dashboardsByOwner counts each, so the listing must too."""
-    from make_export_fixture import DASHBOARD_ID, OWNER, OWNER_2
+    from make_export_fixture import DASHBOARD_ID, DASHBOARD_ID_2, OWNER, OWNER_2
 
     assert main(["inspect", "--json", str(export_zip)]) == 0
     doc = json.loads(capsys.readouterr().out)
     dashes = [(i["uuid"], i["source"]) for i in doc["items"] if i["kind"] == "dashboard"]
-    assert sorted(dashes) == sorted([(DASHBOARD_ID, f"dashboards/{OWNER}"), (DASHBOARD_ID, f"dashboards/{OWNER_2}")])
-    assert doc["counts"]["dashboard"] == doc["manifest"]["dashboards"] == 2
+    assert sorted(dashes) == sorted([
+        (DASHBOARD_ID, f"dashboards/{OWNER}"),
+        (DASHBOARD_ID, f"dashboards/{OWNER_2}"),
+        (DASHBOARD_ID_2, f"dashboards/{OWNER_2}"),
+    ])
+    assert doc["counts"]["dashboard"] == doc["manifest"]["dashboards"] == 3
 
 
 def test_payload_templates_read_both_nestings(tmp_path, capsys):
@@ -244,7 +250,6 @@ def test_notification_rules_read_both_nestings(tmp_path, capsys):
 
 def test_inspect_refuses_a_zip_that_is_not_a_content_export(tmp_path, capsys):
     """Review N5: no marker and no configuration.json is not an export."""
-    import io
     import zipfile
 
     empty = tmp_path / "empty.zip"
@@ -274,12 +279,15 @@ def test_inspect_rejects_a_non_zip(tmp_path, capsys):
     assert main(["inspect", str(tmp_path / "missing.zip")]) == 1
 
 
-@pytest.mark.parametrize("argv", [["tree", "x.zip"], ["build", "x.zip"], ["corpus-check"]])
-def test_stubs_exit_2_without_a_traceback(argv, capsys):
-    assert main(argv) == 2
-    captured = capsys.readouterr()
-    assert "not implemented in M3, see spec" in captured.err
-    assert "Traceback" not in captured.err
+@pytest.mark.parametrize("argv,code", [
+    (["tree", "x.zip"], 1),                          # unreadable input
+    (["build", "x.zip", "--out", "o.zip"], 2),       # neither --select nor --select-all
+    (["corpus-check", "nowhere"], 1),                # no such directory
+])
+def test_bad_input_exits_without_a_traceback(argv, code, capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(argv) == code
+    assert "Traceback" not in capsys.readouterr().err
 
 
 def test_no_command_prints_help(capsys):
@@ -287,12 +295,56 @@ def test_no_command_prints_help(capsys):
     assert "usage:" in capsys.readouterr().out
 
 
-def test_stub_exit_code_survives_the_console_script(tmp_path):
-    """The installed entry point, not just main(): no traceback on exit 2."""
+def test_exit_code_survives_the_console_script(tmp_path):
+    """The installed entry point, not just main(): no traceback on a refusal."""
     import subprocess
     import sys
 
     r = subprocess.run([sys.executable, "-m", "vcfcf_migrator", "tree", "x.zip"],
                        capture_output=True, text=True, cwd=tmp_path)
-    assert r.returncode == 2
+    assert r.returncode == 1
     assert "Traceback" not in r.stderr
+
+
+def test_the_ci_checker_agrees_with_the_fixture(export_zip, capsys, tmp_path):
+    """CI asserts the console script's listing against the fixture's own
+    expectations rather than a number typed into the workflow, which is how a
+    hand-copied 16 survived the fixture growing to 20 while the suite stayed
+    green. This test is what keeps the checker honest locally: it fails here
+    before it fails in CI."""
+    import ci_checks
+
+    assert main(["inspect", "--json", str(export_zip)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert "listing matches the fixture" in ci_checks.check_listing(doc)
+
+    out = tmp_path / "bundle.zip"
+    assert main(["--source-version", ci_checks.floor_text(), "build", str(export_zip),
+                 "--select-all", "--out", str(out)]) == 0
+    capsys.readouterr()
+    assert main(["inspect", "--json", str(out)]) == 0
+    built = json.loads(capsys.readouterr().out)
+    assert "no unreadable member carried" in ci_checks.check_listing(built, bundle=True)
+
+
+def test_the_ci_checker_notices_a_listing_that_drifted(export_zip, capsys):
+    import ci_checks
+
+    assert main(["inspect", "--json", str(export_zip)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    doc["items"] = doc["items"][:-1]
+    with pytest.raises(AssertionError) as e:
+        ci_checks.check_listing(doc)
+    assert "does not match the fixture" in str(e.value)
+
+
+def test_the_ci_checker_derives_the_floor_from_the_code():
+    """The workflow declares no version of its own either."""
+    import ci_checks
+
+    from vcfcf_migrator.export_reader import VERSION_FLOOR_TEXT, check_source_version
+
+    assert ci_checks.floor_text() == VERSION_FLOOR_TEXT
+    assert check_source_version(ci_checks.floor_text()) == VERSION_FLOOR_TEXT
+    with pytest.raises(UnsupportedExport):
+        check_source_version(ci_checks.below_floor_text())

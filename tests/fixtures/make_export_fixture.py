@@ -25,26 +25,52 @@ from pathlib import Path
 OWNER = "aaaa1111-0000-4000-8000-00000000000a"
 OWNER_2 = "bbbb2222-0000-4000-8000-00000000000b"  # shares the dashboard with OWNER
 MARKER = "1757800000000000000L.v1"
+VIEWS_SIBLING = "resources/views.properties"
+VIEWS_SIBLING_BODY = "#Views localization\nGROUP_hardware=Hardware\n"
 
 DASHBOARD_ID = "2d7b8c1e-4f11-4c7a-9a55-0c1f2e3d4a5b"
+# Only OWNER_2 has this one, so a selection can cross two owner members.
+DASHBOARD_ID_2 = "8e1c2d3f-5a6b-4c7d-9e8f-0a1b2c3d4e5f"
 VIEW_IDS = ("6e8310ed-1753-45a4-aacc-7f1025c03d11", "9a1b2c3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d")
-SM_IDS = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+SM_IDS = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+          "33333333-3333-4333-8333-333333333333")
 REPORT_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f"
+# A super metric uuid nothing in the fixture defines, so an edge to an object
+# the export does not carry can be exercised. Real exports are full of these.
+ABSENT_SM_ID = "deadbeef-0000-4000-8000-000000000001"
+ABSENT_ALERT_ID = "AlertDefinition-VMWARE-NotInThisExport"
+# A super metric named by a formula that nothing in the fixture defines: the
+# by-name spelling has to report a miss the same way the uuid spelling does.
+ABSENT_SM_NAME = "[Fixture] SM Nowhere"
+# A custom group named by a membership rule that names no group here. Most
+# ruleStringValues name ordinary resources, so this one must stay silent.
+ABSENT_GROUP_NAME = "[Fixture] Other Clusters"
+GROUP_NAME = "[Fixture] Prod Clusters"
+GROUP_NAME_2 = "[Fixture] Web Tier"
+GROUP_NAME_3 = "[Fixture] Edge Nodes"
+# A custom group's policy lives in policies.xml, which this tool never
+# carries, so a carried group always points at a policy that will be absent.
+GROUP_POLICY_ID = "9f1e2d3c-4b5a-4968-8777-6a5b4c3d2e1f"
 RULE_ID = "5e9c97aa-a5b0-473e-b51f-a581b2535f59"
 RULE_ID_2 = "7f0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
 TEMPLATE_ID = "b97f2879-57ef-4317-880c-a1a0a1f3ecab"
 TEMPLATE_ID_2 = "c0a1b2c3-d4e5-4f60-8a7b-8c9d0e1f2a3b"
 
 # A dashboard shared by two owners lists once per owner (a set collapses
-# the pair, so EXPECTED_DASHBOARD_LISTINGS carries the count).
-EXPECTED_DASHBOARD_LISTINGS = 2
+# the pair, so EXPECTED_DASHBOARD_LISTINGS carries the count): OWNER has one
+# dashboard, OWNER_2 has the same one plus a second of its own.
+EXPECTED_DASHBOARD_LISTINGS = 3
 EXPECTED_ITEMS = {
     ("dashboard", "[Fixture] Cluster Overview", DASHBOARD_ID),
+    ("dashboard", "[Fixture] VM Overview", DASHBOARD_ID_2),
     ("view", "[Fixture] Cluster List", VIEW_IDS[0]),
     ("view", "[Fixture] VM List", VIEW_IDS[1]),
     ("supermetric", "[Fixture] SM 1", SM_IDS[0]),
     ("supermetric", "[Fixture] SM 2", SM_IDS[1]),
-    ("customgroup", "[Fixture] Prod Clusters", ""),
+    ("supermetric", "[Fixture] SM 3", SM_IDS[2]),
+    ("customgroup", GROUP_NAME, ""),
+    ("customgroup", GROUP_NAME_2, ""),
+    ("customgroup", GROUP_NAME_3, ""),
     ("symptom", "[Fixture] CPU high", "SymptomDefinition-VMWARE-Fixture_CPU_high"),
     ("alert", "[Fixture] Cluster CPU alert", "AlertDefinition-VMWARE-Fixture_Cluster_CPU"),
     ("recommendation", "Add hosts to the cluster", "Recommendation-df-VMWARE-Fixture_Add_hosts"),
@@ -69,12 +95,23 @@ MEMBER_FOR_KIND = {
 }
 
 
+def _view_controls(sm_id: str) -> str:
+    """A column addressing a super metric the way every export spells it:
+    ``Super Metric|sm_<uuid>`` in an attributeKey Property."""
+    return ('<Controls><Control><Property name="attributeKey" '
+            f'value="Super Metric|sm_{sm_id}"/></Control></Controls>')
+
+
 def _views_xml() -> str:
+    # The first view points at a super metric this export carries, the second
+    # at one it does not: the tree has to show both, and only the first can be
+    # pulled into a selection.
+    controls = (_view_controls(SM_IDS[0]), _view_controls(ABSENT_SM_ID))
     defs = "".join(
         f'<ViewDef id="{vid}"><Title>{title}</Title><Description>made up</Description>'
         f'<SubjectType adapterKind="VMWARE" resourceKind="ClusterComputeResource" type="self"/>'
-        f"<Usage><Dashboard/></Usage><Controls/></ViewDef>"
-        for vid, title in zip(VIEW_IDS, ("[Fixture] Cluster List", "[Fixture] VM List"))
+        f"<Usage><Dashboard/></Usage>{control}</ViewDef>"
+        for vid, title, control in zip(VIEW_IDS, ("[Fixture] Cluster List", "[Fixture] VM List"), controls)
     )
     return f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Content><Views>{defs}</Views></Content>'
 
@@ -83,8 +120,10 @@ def _reports_xml() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Content><Reports>'
         f'<ReportDef id="{REPORT_ID}"><isTenant>false</isTenant><Title>[Fixture] Cluster Report</Title>'
-        f'<Description>made up</Description><Sections><Section><ContentType>View</ContentType>'
-        f'<ContentKey>{VIEW_IDS[0]}</ContentKey></Section></Sections></ReportDef>'
+        f'<Description>made up</Description><Sections>'
+        f'<Section><ContentType>View</ContentType><ContentKey>{VIEW_IDS[0]}</ContentKey></Section>'
+        f'<Section><ContentType>Dashboard</ContentType><ContentKey>{DASHBOARD_ID}</ContentKey></Section>'
+        f'</Sections></ReportDef>'
         "</Reports></Content>"
     )
 
@@ -101,10 +140,15 @@ def _alertdefs_xml() -> str:
 
 
 def _symptomdefs_xml() -> str:
+    # The threshold is on a super metric attribute, which is how a symptom
+    # reaches one: <Condition key="Super Metric|sm_<uuid>" type="metric"/>.
     return (
         '<?xml version="1.0" encoding="UTF-8"?><alertContent>'
         '<SymptomDefinitions><SymptomDefinition adapterKind="VMWARE" id="SymptomDefinition-VMWARE-Fixture_CPU_high" '
-        'name="[Fixture] CPU high" resourceKind="ClusterComputeResource"/></SymptomDefinitions></alertContent>'
+        'name="[Fixture] CPU high" resourceKind="ClusterComputeResource">'
+        f'<State severity="warning"><Condition key="Super Metric|sm_{SM_IDS[1]}" operator="&gt;" '
+        'thresholdType="static" type="metric" value="0.0" valueType="numeric"/></State>'
+        '</SymptomDefinition></SymptomDefinitions></alertContent>'
     )
 
 
@@ -117,16 +161,57 @@ def _recommendationdefs_xml() -> str:
     )
 
 
-def _dashboard_json() -> dict:
+def _cluster_overview() -> dict:
+    """A dashboard that reaches a view and, separately, a super metric: real
+    widgets address sm_<uuid> without going through a view at all."""
+    return {
+        "id": DASHBOARD_ID,
+        "name": "[Fixture] Cluster Overview",
+        "widgets": [
+            {"type": "View", "config": {"viewDefinitionId": VIEW_IDS[0]}, "gridsterCoords": {}},
+            # The list-shaped scope: no resourceName, no resource kind, just
+            # the group's name. The same binding as the object shape one
+            # widget up, written the other way an export writes it.
+            {"type": "Scoreboard", "gridsterCoords": {},
+             "config": {"metrics": [{"metricKey": f"Super Metric|sm_{SM_IDS[1]}"}],
+                        "resource": [{"name": GROUP_NAME_2, "id": "resource:id:4_::_"}]}},
+        ],
+        "widgetInteractions": [],
+    }
+
+
+def _vm_overview() -> dict:
+    # Three shapes of the same binding, one per widget: the object with a
+    # Container resource kind, the object with no resource kind at all (which
+    # is why the kind is a negative filter and not a requirement), and the
+    # per-dashboard entryKeys list.
+    return {
+        "id": DASHBOARD_ID_2,
+        "name": "[Fixture] VM Overview",
+        "widgets": [
+            {"type": "View", "gridsterCoords": {},
+             "config": {"viewDefinitionId": VIEW_IDS[1],
+                        "resource": {"resourceId": "resource:id:0_::_",
+                                     "resourceName": GROUP_NAME,
+                                     "resourceKindId": "002009ContainerEnvironment"}}},
+            {"type": "ProblemAlertsList", "gridsterCoords": {},
+             "config": {"resource": {"resourceId": "resource:id:1_::_",
+                                     "resourceName": GROUP_NAME_3}}},
+        ],
+        "entryKeys": {"uuid": DASHBOARD_ID_2, "resourceKind": [],
+                      "resource": [{"resourceKindKey": "Function",
+                                    "internalId": "resource:id:2_::_",
+                                    "adapterKindKey": "Container",
+                                    "identifiers": [], "name": GROUP_NAME_2}]},
+        "widgetInteractions": [],
+    }
+
+
+def _dashboard_json(dashboards) -> dict:
     return {
         "uuid": DASHBOARD_ID,
         "entries": {"resourceKind": [], "resource": []},
-        "dashboards": [{
-            "id": DASHBOARD_ID,
-            "name": "[Fixture] Cluster Overview",
-            "widgets": [{"type": "VIEW", "config": {"viewId": VIEW_IDS[0]}, "gridsterCoords": {}}],
-            "widgetInteractions": [],
-        }],
+        "dashboards": dashboards,
     }
 
 
@@ -136,35 +221,107 @@ def build_export_zip(without=()) -> bytes:
     views_inner = io.BytesIO()
     with zipfile.ZipFile(views_inner, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("content.xml", _views_xml())
+        # A sibling of content.xml inside views.zip. Every views.zip and
+        # reports.zip in all five corpus exports holds content.xml alone, so
+        # nothing in the corpus can catch a rebuild that drops the siblings;
+        # this is what does.
+        z.writestr(VIEWS_SIBLING, VIEWS_SIBLING_BODY)
     reports_inner = io.BytesIO()
     with zipfile.ZipFile(reports_inner, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("content.xml", _reports_xml())
-    dash_inner = io.BytesIO()
-    with zipfile.ZipFile(dash_inner, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("dashboard/dashboard.json", json.dumps(_dashboard_json()))
-        z.writestr("dashboard/resources/resources.properties", "")
+    def _dash_zip(dashboards) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("dashboard/dashboard.json", json.dumps(_dashboard_json(dashboards)))
+            z.writestr("dashboard/resources/resources.properties", "")
+        return buf.getvalue()
+
+    dash_inner = _dash_zip([_cluster_overview()])
+    # The second owner carries the same dashboard (same uuid) plus one of its
+    # own, so a selection can cross two owner members.
+    dash_inner_2 = _dash_zip([_cluster_overview(), _vm_overview()])
 
     sms = {
-        SM_IDS[0]: {"name": "[Fixture] SM 1", "formula": "1", "description": "", "unitId": "", "resourceKinds": []},
-        SM_IDS[1]: {"name": "[Fixture] SM 2", "formula": "2", "description": "", "unitId": "", "resourceKinds": []},
+        # SM 1 reaches SM 2 by uuid, the 9.x spelling. Its description quotes
+        # SM 3's uuid as prose, which is not a reference and must not be read
+        # as one: real exports say "Companion to X (UUID ...)".
+        SM_IDS[0]: {"name": "[Fixture] SM 1",
+                    "formula": f"${{this, metric=Super Metric|sm_{SM_IDS[1]}}} + 1",
+                    "description": f"Companion to [Fixture] SM 3 (UUID {SM_IDS[2]}).",
+                    "unitId": "", "resourceKinds": []},
+        # SM 2 reaches SM 3 by name, the 8.x spelling.
+        SM_IDS[1]: {"name": "[Fixture] SM 2",
+                    "formula": '${this, metric=Super Metric|@supermetric:"[Fixture] SM 3"} * 2',
+                    "description": "", "unitId": "", "resourceKinds": []},
+        # SM 3 names one that does not exist, which must be reported missing.
+        SM_IDS[2]: {"name": "[Fixture] SM 3",
+                    "formula": f'${{this, metric=Super Metric|@supermetric:"{ABSENT_SM_NAME}"}}',
+                    "description": "", "unitId": "", "resourceKinds": []},
     }
     groups = {"customGroups": [{
-        "name": "[Fixture] Prod Clusters", "description": "", "adapterKind": "Container",
+        "name": GROUP_NAME, "description": "", "adapterKind": "Container",
         "resourceKind": "Environment", "autoResolveMembership": True, "started": True,
-        "membershipDefinition": {"rules": []},
+        # The policy is always going to be absent on the target: policies.xml
+        # is a member this tool does not understand and never carries.
+        "policy": GROUP_POLICY_ID,
+        "membershipDefinition": {"ruleGroups": [{
+            "resourceKind": "VirtualMachine", "adapterKind": "VMWARE",
+            "rules": [
+                # A RelationshipRule names another group. This one names no
+                # group in this export, the common case, and stays silent.
+                {"ruleType": "RelationshipRule", "ruleRelationshipType": "DESCENDANT",
+                 "ruleStringOperator": "EQUALS", "ruleStringValue": ABSENT_GROUP_NAME},
+                # A ResourceNameRule names a resource, never a group, even
+                # when its value happens to be a group's name.
+                {"ruleType": "ResourceNameRule", "ruleStringOperator": "CONTAINS",
+                 "ruleStringValue": GROUP_NAME_2},
+            ],
+        }]},
+    }, {
+        "name": GROUP_NAME_3, "description": "", "adapterKind": "Container",
+        "resourceKind": "Function", "autoResolveMembership": True, "started": True,
+        "membershipDefinition": {"ruleGroups": []},
+    }, {
+        "name": GROUP_NAME_2, "description": "", "adapterKind": "Container",
+        "resourceKind": "Function", "autoResolveMembership": True, "started": True,
+        "membershipDefinition": {"ruleGroups": [{
+            "resourceKind": "VirtualMachine", "adapterKind": "VMWARE",
+            "rules": [{"ruleType": "RelationshipRule", "ruleRelationshipType": "DESCENDANT",
+                       "ruleStringOperator": "EQUALS", "ruleStringValue": GROUP_NAME}],
+        }]},
     }], "customGroupTypes": []}
     # 9.1.1 nesting: one entry whose NotificationRule key holds the list of
     # rules (8.x carries one dict per entry; the reader takes both).
     rules = {"NotificationRules": {
         "notificationRules": [{"NotificationRule": [
+            # Rule 1 fires on one alert this export carries and one it does
+            # not, and names an endpoint the export does not carry either.
             {"id": RULE_ID, "Name": "[Fixture] Cluster rule", "Description": "", "PluginType": "WebhookPlugin",
              "PluginID": {"@pluginType": "WebhookPlugin", "@pluginName": "fixture"},
-             "Disabled": "False", "RuleType": "GENERAL_RULE", "entry": []},
+             "Disabled": "False", "RuleType": "GENERAL_RULE",
+             "entry": [{"ConditionType": "ALERT_DEFINITION_ID",
+                        "NotificationRuleAlertDefinitionCondition": {"AlertDefinitionIds": [
+                            {"AlertDefinitionID": ["AlertDefinition-VMWARE-Fixture_Cluster_CPU",
+                                                   ABSENT_ALERT_ID]}]}}]},
+            # Rule 2 names the outbound plugin the export does carry.
+            # A resource condition carries the same by-name scope a widget
+            # does, under a different key.
             {"id": RULE_ID_2, "Name": "[Fixture] Host rule", "Description": "", "PluginType": "StandardEmailPlugin",
-             "PluginID": {"@pluginType": "StandardEmailPlugin", "@pluginName": "fixture"},
-             "Disabled": "False", "RuleType": "GENERAL_RULE", "entry": []},
+             "PluginID": {"@pluginType": "StandardEmailPlugin", "@pluginName": "[Fixture] Mail relay"},
+             "Disabled": "False", "RuleType": "GENERAL_RULE",
+             "entry": [{"ConditionType": "RESOURCE_AND_CHILD",
+                        "NotificationRuleResourcesCondition": {"ResourceItems": [
+                            {"NotificationRuleResourceItem": [
+                                {"ResourceID": {"resourceName": GROUP_NAME,
+                                                "adapterKind": "Container",
+                                                "resourceKind": "Environment"}}]}]}}]},
         ]}],
-        "ruleNameToTemplateNameMap": [],
+        # Two blocks on purpose: 9.x writes entry as a list, 8.x writes it as
+        # a single object, and a select-all must reshape neither.
+        "ruleNameToTemplateNameMap": [
+            {"entry": [{"string": ["[Fixture] Cluster rule", "[Fixture] Cluster template"]}]},
+            {"entry": {"string": ["[Fixture] Host rule", "[Fixture] Host template"]}},
+        ],
     }}
     # 9.x list nesting: one entry whose NotificationTemplateData key holds
     # the list of templates (the one-dict-per-entry form is also read).
@@ -181,22 +338,28 @@ def build_export_zip(without=()) -> bytes:
         "pluginType": "StandardEmailPlugin",
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
     }]}
-    manifest = {"dashboards": 2, "views": 2, "superMetrics": 2, "customGroups": 1, "reports": 1,
+    manifest = {"dashboards": 3, "views": 2, "superMetrics": 3, "customGroups": 3, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
-                "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 1}]}
+                "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 2}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'
 
     members = [
         (MARKER, OWNER),
         ("configuration.json", json.dumps(manifest)),
         ("views.zip", views_inner.getvalue()),
-        ("usermappings.json", json.dumps({OWNER: {"userName": "admin", "userId": OWNER},
-                                          OWNER_2: {"userName": "operator", "userId": OWNER_2}})),
-        (f"dashboards/{OWNER}", dash_inner.getvalue()),
-        (f"dashboardsharings/{OWNER}", "[]"),
+        # Real exports write {"sources": [], "users": [{"userId": ...}, ...]}.
+        ("usermappings.json", json.dumps({"sources": [], "users": [
+            {"userName": "admin", "userId": OWNER},
+            {"userName": "operator", "userId": OWNER_2}]})),
+        (f"dashboards/{OWNER}", dash_inner),
+        (f"dashboardsharings/{OWNER}",
+         json.dumps([{"groupName": "Everyone", "sourceType": "LOCAL",
+                      "dashboards": [{"dashboardId": DASHBOARD_ID, "edit": True}]}])),
         # The same dashboard (same uuid) exported under a second owner.
-        (f"dashboards/{OWNER_2}", dash_inner.getvalue()),
-        (f"dashboardsharings/{OWNER_2}", "[]"),
+        (f"dashboards/{OWNER_2}", dash_inner_2),
+        (f"dashboardsharings/{OWNER_2}",
+         json.dumps([{"groupName": "Everyone", "sourceType": "LOCAL",
+                      "dashboards": [{"dashboardId": DASHBOARD_ID_2, "edit": True}]}])),
         ("supermetrics.json", json.dumps(sms)),
         ("symptomdefs.xml", _symptomdefs_xml()),
         ("alertdefs.xml", _alertdefs_xml()),
