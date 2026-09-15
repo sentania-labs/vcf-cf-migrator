@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from vcfcf_migrator import mockdata
+from vcfcf_migrator import runlog
 from vcfcf_migrator.wording import plural
 from vcfcf_migrator.graph import Graph, Node
 
@@ -351,6 +352,10 @@ def raw_document(graph: Graph, node: Node) -> bytes:
             if (entry.kind == node.kind and entry.index == node.index
                     and entry.ident == node.ident and entry.owner == node.owner):
                 return entry.raw
+    runlog.warn("document.absent", kind=node.kind, uuid=node.uuid or "", name=node.name,
+                member=node.member, index=node.index, owner=node.owner or None,
+                reason="the graph places this object in a member that holds no document "
+                       "matching its kind, index and identifier")
     raise PreviewError(f"{node.label()} has no document in {node.member}")
 
 
@@ -358,6 +363,8 @@ def _json_doc(raw: bytes):
     try:
         return json.loads(raw)
     except ValueError as e:
+        runlog.warn("document.unreadable", format="json", detail=str(e),
+                    document_bytes=len(raw))
         raise PreviewError(f"the document is not readable JSON: {e}") from e
 
 
@@ -365,6 +372,8 @@ def _xml_doc(raw: bytes) -> ET.Element:
     try:
         return ET.fromstring(raw)
     except ET.ParseError as e:
+        runlog.warn("document.unreadable", format="xml", detail=str(e),
+                    document_bytes=len(raw))
         raise PreviewError(f"the document is not readable XML: {e}") from e
 
 
@@ -610,6 +619,12 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
     try:
         root = _xml_doc(raw_document(graph, node))
     except PreviewError as e:
+        runlog.warn("swallowed.widget_view_unreadable", kind=node.kind,
+                    uuid=node.uuid or "", name=node.name, member=node.member,
+                    detail=str(e),
+                    reason="the view this widget shows has a document the page cannot "
+                           "read; the widget draws a placeholder rather than failing the "
+                           "whole preview")
         return f"<div class='pv-placeholder'>{_e(str(e))}</div>"
     columns = view_columns(root)
     presentation = (root.find("Presentation").get("type")
@@ -800,7 +815,16 @@ def _strip_tags(markup: str) -> str:
     try:
         parser.feed(markup)
         parser.close()
-    except Exception:  # noqa: BLE001 - a broken fragment still has to render
+    except Exception as e:  # noqa: BLE001 - a broken fragment still has to render
+        # The page stays quiet about this on purpose: a text widget whose
+        # markup does not parse still has to render, and an admin looking at a
+        # dashboard preview cannot act on a parser error. Quiet in the output
+        # is not quiet in the log, which is the whole point of the log.
+        runlog.warn("swallowed.markup_unparsed", failure=type(e).__name__,
+                    detail=str(e), markup_bytes=len(markup),
+                    reason="the text widget's markup did not parse, so its words are shown "
+                           "with the tags stripped by hand; nothing is said on the page "
+                           "because the page cannot be acted on")
         return " ".join(markup.split())
     return " ".join("".join(parser.parts).split())
 
@@ -1037,8 +1061,12 @@ def _grid_columns(doc: dict, widgets: Sequence[dict]) -> int:
     moved it. Widening the grid keeps every widget its declared width and
     keeps their order; it only makes the neighbours proportionally narrower.
     """
-    columns = doc.get("gridsterMaxColumns")
+    declared = doc.get("gridsterMaxColumns")
+    columns = declared
     if not isinstance(columns, int) or not 1 <= columns <= MAX_GRID_COLUMNS:
+        runlog.detail("grid.columns_defaulted", declared=str(declared),
+                      columns=DEFAULT_GRID_COLUMNS,
+                      reason="the dashboard declares no usable column count")
         columns = DEFAULT_GRID_COLUMNS
     for widget in widgets:
         coords = widget.get("gridsterCoords")
@@ -1047,7 +1075,19 @@ def _grid_columns(doc: dict, widgets: Sequence[dict]) -> int:
         try:
             needed = int(coords.get("x", 1)) + int(coords.get("w", 1)) - 1
         except (TypeError, ValueError):
+            runlog.debug("grid.coords_unreadable", widget=str(widget.get("id") or ""),
+                         widget_type=str(widget.get("type") or ""),
+                         reason="this widget's coordinates are not numbers, so it does not "
+                                "widen the grid and flows after the placed widgets")
             continue
+        if needed > columns:
+            runlog.detail("grid.widened", declared=columns,
+                          columns=min(needed, MAX_GRID_COLUMNS),
+                          widget=str(widget.get("id") or ""),
+                          widget_type=str(widget.get("type") or ""),
+                          reason="a widget runs past the grid the dashboard declares; "
+                                 "widening keeps every widget its declared width rather "
+                                 "than drawing this one as a sliver")
         columns = max(columns, min(needed, MAX_GRID_COLUMNS))
     return columns
 
@@ -1269,6 +1309,11 @@ def _ordered_widgets(widgets: Sequence[dict]) -> List[dict]:
         try:
             return (int(coords.get("y", 1)), int(coords.get("x", 1)), index)
         except (TypeError, ValueError):
+            runlog.debug("widget.order_unreadable",
+                         widget=str(widget.get("id") or ""),
+                         widget_type=str(widget.get("type") or ""),
+                         reason="this widget's coordinates are not numbers, so it is "
+                                "drawn after the placed widgets in document order")
             return (1 << 30, 1 << 30, index)
 
     return [w for _pos, w in sorted(enumerate(widgets), key=position)]
@@ -1408,6 +1453,18 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
             elif len(preview.empty_codes) > before_empty:
                 state, code = "empty", preview.empty_codes[before_empty]
         preview.widget_verdicts[keys[id(widget)]] = (state, code, subject_kind)
+        # The widget classification, with the code and the evidence, at the one
+        # place the verdict is settled. Every surface reads this same verdict,
+        # so the log cannot drift from the page or from the census.
+        runlog.detail("widget.classified", widget=ident, widget_type=widget_type,
+                      title=title, state=state or "drawn", code=code or "",
+                      subject=subject_kind, drives=len(feeds), driven_by=len(driven_by),
+                      renderer=("none" if renderer is None else widget_type),
+                      state_blob_chars=len(widget_state_blob(widget)),
+                      config_keys=sorted(cfg) if isinstance(cfg, dict) else [],
+                      reason=(elsewhere or missing or never_shows
+                              or ("this preview does not lay out this type, so it is named "
+                                  "rather than drawn" if renderer is None else "")) or None)
         cells.append(_widget_cell(widget, widget_type, title, inner, columns, preview,
                                   driven_by=[wiring.title(pid) for pid, _k in driven_by],
                                   feeds=[wiring.title(rid) for rid, _k in feeds]))
@@ -1442,11 +1499,20 @@ def _widget_cell(widget: dict, widget_type: str, title: str, inner: str,
         try:
             raw_x, raw_w = int(coords.get("x", 1)), int(coords.get("w", columns))
         except (TypeError, ValueError):
+            runlog.debug("widget.placement_unreadable",
+                         widget=str(widget.get("id") or ""), widget_type=widget_type,
+                         reason="this widget's coordinates are not numbers, so it flows "
+                                "after the placed widgets")
             style = ""
         else:
             x = max(1, min(raw_x, columns))
             w = max(1, min(raw_w, columns - x + 1))
             if (x, w) != (max(1, raw_x), max(1, raw_w)):
+                runlog.detail("widget.clamped", widget=str(widget.get("id") or ""),
+                              widget_type=widget_type, declared_x=raw_x, declared_w=raw_w,
+                              drawn_x=x, drawn_w=w, columns=columns,
+                              reason="the widget does not fit the grid even after widening, "
+                                     "so the preview moves it and says so")
                 preview.notes.append(
                     f"{title or '(untitled widget)'} ({widget_type or 'no type'}) sits at "
                     f"column {raw_x} spanning {raw_w} of a {columns} column grid, so it is "
@@ -1948,6 +2014,10 @@ def build(graph: Graph, node: Node) -> Preview:
         preview.body = (f"<div class='pv-placeholder'>a {_e(node.kind)} object. This preview "
                         "does not lay out this kind, so it is named rather than drawn.</div>")
         preview.notes.append(f"no preview is written for {node.kind} objects")
+        runlog.detail("preview.kind_not_drawn", kind=node.kind, uuid=node.uuid or "",
+                      name=node.name,
+                      reason="this preview does not lay out this kind, so the object is "
+                             "named rather than drawn")
         return preview
     preview.body = renderer(graph, node, preview)
     if preview.selectors:
@@ -2004,6 +2074,24 @@ def build(graph: Graph, node: Node) -> Preview:
             "widget types named rather than drawn: "
             + ", ".join(f"{name} x{count}" for name, count
                         in sorted(preview.unhandled_types.items())))
+    if preview.empty_reason:
+        runlog.detail("object.carries_nothing", kind=node.kind, uuid=node.uuid or "",
+                      name=node.name, code=preview.empty_code,
+                      reason=preview.empty_reason)
+    runlog.detail("preview.built", kind=node.kind, uuid=node.uuid or "", name=node.name,
+                  owner=node.owner or None, member=node.member,
+                  widgets=sum(preview.widget_types.values()),
+                  widget_types=dict(preview.widget_types),
+                  empty_widgets=len(preview.empty_widgets),
+                  elsewhere_widgets=len(preview.elsewhere),
+                  unhandled_types=dict(preview.unhandled_types),
+                  selectors=preview.selectors, receivers=preview.receivers,
+                  providers=preview.providers,
+                  orphan_receivers=preview.orphan_receivers,
+                  context_driven=preview.context_driven,
+                  subjects=dict(preview.subjects),
+                  notes=len(preview.notes))
+    runlog.count("previews")
     return preview
 
 

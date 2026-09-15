@@ -66,6 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from vcfcf_migrator import graph as _graph  # noqa: E402
 from vcfcf_migrator import preview as _preview  # noqa: E402
+from vcfcf_migrator import runlog as _runlog  # noqa: E402
 from vcfcf_migrator.corpus_check import read_versions  # noqa: E402
 from vcfcf_migrator.export_reader import read_members  # noqa: E402
 
@@ -276,12 +277,39 @@ def main(argv=None) -> int:
     parser.add_argument("--source-version", default=None,
                         help="declared source version for zips versions.json does not name")
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
+    parser.add_argument("--log", metavar="FILE", default=None,
+                        help="write a run log to FILE (- for stderr)")
+    parser.add_argument("--log-level", metavar="LEVEL", default=None,
+                        choices=_runlog.LEVEL_NAMES,
+                        help="how much of the run to log: " + ", ".join(_runlog.LEVEL_NAMES))
     args = parser.parse_args(argv)
     directory = Path(args.dir)
     if not directory.is_dir():
         print(f"corpus directory {directory} does not exist", file=sys.stderr)
         return 1
-    report = walk(directory, args.source_version)
+    log = _runlog.NULL
+    if args.log:
+        level, _from = _runlog.resolve_level(args.log_level)
+        log = _runlog.open_log(args.log, level=level)
+        _runlog.set_current(log)
+        import vcfcf_core
+
+        from vcfcf_migrator import __version__ as _tool_version
+
+        log.header(["corpus_census.py"] + list(argv or sys.argv[1:]),
+                   tool_version=f"{_tool_version} (tools/corpus_census.py)",
+                   core_version=vcfcf_core.__version__, corpus_dir=directory,
+                   corpus_from="command line")
+    try:
+        with log.phase("census", dir=str(directory)):
+            report = walk(directory, args.source_version)
+            _runlog.info("census.counted",
+                         objects=report["objects"], dashboards=report["dashboards"],
+                         widgets=report["widgets"])
+    finally:
+        log.finish(0, what="census")
+        log.close()
+        _runlog.set_current(None)
     print(json.dumps(report, indent=2, sort_keys=True) if args.json else render(report),
           end="" if not args.json else "\n")
     return 0

@@ -1,13 +1,18 @@
 # vcf-cf-migrator
 
-Move custom content between VCF Operations instances: dashboards,
-views, super metrics, groups, symptoms, alerts, reports and
-notification rules. Point it at a content export, see what depends on
-what, preview anything before you take it, pick what you want, get an
-import bundle.
+You have an older VCF Operations instance carrying years of custom
+content, and you are standing up a new one. You do not want to drag all
+of it across. But a content export is all or nothing, the names alone
+will not tell you what a dashboard is, and pulling one out by hand
+breaks the views and super metrics under it.
 
-Runs on your workstation. It never talks to either instance, so it
-needs no credentials and no network.
+This tool reads the export, shows you what depends on what, previews
+anything so you can recognise it, and writes a new bundle holding only
+what you picked and everything it needs.
+
+It handles dashboards, views, super metrics, groups, symptoms, alerts,
+reports and notification rules. It runs on your workstation and never
+talks to either instance, so it needs no credentials and no network.
 
 From the [VCF Content Factory](https://github.com/sentania-labs/vcf-content-factory),
 and built on that project's

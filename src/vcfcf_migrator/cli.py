@@ -1,8 +1,12 @@
 """``vcfcf-migrator`` command line.
 
 Commands: ``version``, ``inspect``, ``tree``, ``preview``, ``build``,
-``corpus-check``, ``ui``. Every option here has a control on the ``ui`` page (house rule:
-every setting has a GUI option).
+``corpus-check``, ``ui``, ``log-render``. Every option here has a control on the ``ui``
+page (house rule: every setting has a GUI option).
+
+Every command can write a run log: ``--log FILE`` (``-`` for stderr), with
+``--log-level`` and ``--log-format``. The log is off until it is asked for,
+and what it may and may not carry is ``vcfcf_migrator.runlog``.
 
 Exit codes: 0 ok, 1 refused or unreadable input, 2 usage.
 """
@@ -20,6 +24,7 @@ from vcfcf_migrator import __version__
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import graph as _graph
 from vcfcf_migrator import selection as _selection
+from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import settings as _settings
 from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator.export_reader import (
@@ -42,6 +47,39 @@ def version_lines() -> List[str]:
     ]
 
 
+class _SubParser(argparse.ArgumentParser):
+    """Every subcommand gets the log flags, without thirteen ``parents=``."""
+
+    parents: List[argparse.ArgumentParser] = []
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("parents", list(_SubParser.parents))
+        super().__init__(*args, **kwargs)
+
+
+def log_flags() -> argparse.ArgumentParser:
+    """The three log options, as a parent every subcommand shares.
+
+    They sit on the main parser *and* on every subcommand, because
+    ``build ... --log run.log`` is what an admin types and argparse would
+    otherwise refuse it after the subcommand. The subcommand copies default to
+    SUPPRESS, so a flag given before the subcommand is not overwritten by the
+    subcommand's own default.
+    """
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument("--log", metavar="FILE", default=argparse.SUPPRESS,
+                        help=f"write a run log to FILE (- for stderr; also {_runlog.ENV_LOG})")
+    parent.add_argument("--log-level", metavar="LEVEL", default=argparse.SUPPRESS,
+                        choices=_runlog.LEVEL_NAMES,
+                        help="how much of the run to log: " + ", ".join(_runlog.LEVEL_NAMES)
+                             + f" (default {_runlog.DEFAULT_LEVEL})")
+    parent.add_argument("--log-format", metavar="FORMAT", default=argparse.SUPPRESS,
+                        choices=_runlog.FORMATS,
+                        help="jsonl, one JSON object per line, or text, the same events as "
+                             f"lines a person reads (default {_runlog.DEFAULT_FORMAT})")
+    return parent
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="vcfcf-migrator",
@@ -49,11 +87,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--corpus", metavar="DIR", default=None,
                    help=f"corpus directory holding real export zips (also {_settings.ENV_CORPUS}; default ./corpus)")
+    p.add_argument("--log", metavar="FILE", default=None,
+                   help=f"write a run log to FILE (- for stderr; also {_runlog.ENV_LOG}, "
+                        "or the ui page). Off until asked for")
+    p.add_argument("--log-level", metavar="LEVEL", default=None, choices=_runlog.LEVEL_NAMES,
+                   help="how much of the run to log: "
+                        + ", ".join(_runlog.LEVEL_NAMES)
+                        + f" (default {_runlog.DEFAULT_LEVEL}; also {_runlog.ENV_LOG_LEVEL})")
+    p.add_argument("--log-format", metavar="FORMAT", default=None, choices=_runlog.FORMATS,
+                   help="jsonl, one JSON object per line, or text, the same events as "
+                        f"lines a person reads (default {_runlog.DEFAULT_FORMAT}; also "
+                        f"{_runlog.ENV_LOG_FORMAT})")
     p.add_argument("--source-version", metavar="X.Y[.Z]", default=None,
                    help="VCF Operations version the export came from, for example 8.18.7; exports carry none, "
                         f"so you declare it (also {_settings.ENV_SOURCE_VERSION}, or the ui page). "
                         f"Floor {VERSION_FLOOR_TEXT}; without it inspect continues and build refuses")
-    sub = p.add_subparsers(dest="command", metavar="command")
+    logs = log_flags()
+    sub = p.add_subparsers(dest="command", metavar="command", parser_class=_SubParser)
+    sub.required = False
+    _SubParser.parents = [logs]
 
     sub.add_parser("version", help="print the tool and library versions")
 
@@ -87,6 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("corpus-check",
                         help="run inspect, tree and a select-all build over every zip in a directory")
     sp.add_argument("dir", nargs="?", help="corpus directory (default: the corpus setting)")
+
+    sp = sub.add_parser("log-render", help="print a run log written as jsonl as the lines "
+                                           "a person reads")
+    sp.add_argument("file", help="the log file, or - for stdin")
 
     sp = sub.add_parser("ui", help="serve the local page on 127.0.0.1 and open the browser")
     sp.add_argument("zip", nargs="?", help="export zip to show on the page")
@@ -165,10 +221,16 @@ def cmd_preview(args) -> int:
 
     keys = _selection.match_line(graph, args.object)
     if not keys:
+        _runlog.error("command.refused", command="preview", asked_for=str(args.object),
+                      reason="this export carries no object of that name or uuid")
         print(f"vcfcf-migrator preview: this export carries no object named "
               f"{args.object!r}", file=sys.stderr)
         return 1
     if len(keys) > 1:
+        _runlog.error("command.refused", command="preview", asked_for=str(args.object),
+                      matches=len(keys),
+                      reason="the spelling names more than one object, and picking one "
+                             "would preview an object the admin did not ask for")
         # One uuid under two owners, or one name two objects answer to. Picking
         # one would preview an object the admin did not ask for, so it says
         # which spellings name exactly one.
@@ -179,6 +241,8 @@ def cmd_preview(args) -> int:
     try:
         html_text = _preview.render_page(graph, node)
     except _preview.PreviewError as e:
+        _runlog.error("command.failed", command="preview", kind=node.kind,
+                      uuid=node.uuid or "", name=node.name, reason=str(e))
         print(f"vcfcf-migrator preview: {e}", file=sys.stderr)
         return 1
 
@@ -193,8 +257,11 @@ def cmd_preview(args) -> int:
     except OSError as e:
         # Every other refusal in this CLI is a message and an exit code; an
         # unwritable path should not be the one that gives a traceback.
+        _runlog.error("output.unwritable", command="preview", path=str(out), reason=str(e))
         print(f"vcfcf-migrator preview: cannot write {out}: {e}", file=sys.stderr)
         return 1
+    _runlog.info("preview.written", path=str(out), bytes=len(html_text),
+                 kind=node.kind, uuid=node.uuid or "", name=node.name)
     print(str(out))
     return 0
 
@@ -202,10 +269,15 @@ def cmd_preview(args) -> int:
 def cmd_build(args) -> int:
     declared, _source = _settings.source_version(args.source_version)
     if bool(args.select) == bool(args.select_all):
+        _runlog.error("command.refused", command="build",
+                      reason="pass exactly one of --select FILE or --select-all")
         print("vcfcf-migrator build: pass exactly one of --select FILE or --select-all",
               file=sys.stderr)
         return 2
     if declared is None:
+        _runlog.error("command.refused", command="build",
+                      reason="no source version declared; an export carries none, so the "
+                             f"admin declares it (floor {VERSION_FLOOR_TEXT})")
         print("vcfcf-migrator build: refused, no source version declared. An export carries "
               f"none, so declare it with --source-version (floor {VERSION_FLOOR_TEXT})",
               file=sys.stderr)
@@ -230,6 +302,8 @@ def cmd_build(args) -> int:
         print("vcfcf-migrator build: no bundle written", file=sys.stderr)
         return 1
     if not picked.keys:
+        _runlog.error("command.refused", command="build",
+                      reason="the selection is empty, so no bundle is written")
         print("vcfcf-migrator build: the selection is empty, no bundle written", file=sys.stderr)
         return 1
 
@@ -256,6 +330,21 @@ def cmd_corpus_check(args) -> int:
     return run(directory, source, declared, sys.stdout)
 
 
+def cmd_log_render(args) -> int:
+    """A captured jsonl log as the lines a person reads. The rendering lives
+    with the log rather than in a separate tool, so the two cannot drift."""
+    if args.file == "-":
+        sys.stdout.write(_runlog.render_log(sys.stdin.read().splitlines()))
+        return 0
+    try:
+        text = Path(args.file).read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"vcfcf-migrator log-render: cannot read {args.file}: {e}", file=sys.stderr)
+        return 1
+    sys.stdout.write(_runlog.render_log(text.splitlines()))
+    return 0
+
+
 def cmd_ui(args) -> int:
     from vcfcf_migrator.ui import serve
 
@@ -263,28 +352,70 @@ def cmd_ui(args) -> int:
                  corpus_cli=args.corpus, source_version_cli=args.source_version)
 
 
+COMMANDS = {
+    "version": cmd_version,
+    "inspect": cmd_inspect,
+    "tree": cmd_tree,
+    "preview": cmd_preview,
+    "build": cmd_build,
+    "corpus-check": cmd_corpus_check,
+    "log-render": cmd_log_render,
+    "ui": cmd_ui,
+}
+
+
+def open_run_log(args, argv: List[str]) -> _runlog.Log:
+    """The run log for this invocation, with its header already written.
+
+    Opened here rather than inside each command, so every command logs the
+    same header and no command can be the one that forgets.
+    """
+    destination, _from = _runlog.resolve_destination(getattr(args, "log", None))
+    if not destination:
+        return _runlog.NULL
+    level, level_from = _runlog.resolve_level(getattr(args, "log_level", None))
+    fmt, _fmt_from = _runlog.resolve_format(getattr(args, "log_format", None))
+    log = _runlog.open_log(destination, level=level, fmt=fmt)
+    _runlog.set_current(log)
+    declared, declared_from = _settings.source_version(args.source_version)
+    corpus, corpus_from = _settings.corpus_dir(args.corpus)
+    log.header(argv, tool_version=__version__, core_version=vcfcf_core.__version__,
+               source_version=declared, source_version_from=declared_from,
+               corpus_dir=corpus, corpus_from=corpus_from)
+    _runlog.detail("log.level", level=level, level_from=level_from)
+    return log
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
+    given = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
         return 2
-    if args.command == "version":
-        return cmd_version(args)
-    if args.command == "inspect":
-        return cmd_inspect(args)
-    if args.command == "tree":
-        return cmd_tree(args)
-    if args.command == "preview":
-        return cmd_preview(args)
-    if args.command == "build":
-        return cmd_build(args)
-    if args.command == "corpus-check":
-        return cmd_corpus_check(args)
-    if args.command == "ui":
-        return cmd_ui(args)
-    parser.print_help()
-    return 2
+    try:
+        log = open_run_log(args, given)
+    except (_runlog.BadLogSetting, OSError) as e:
+        print(f"vcfcf-migrator: {e}", file=sys.stderr)
+        return 2
+    command = COMMANDS.get(args.command)
+    if command is None:
+        parser.print_help()
+        return 2
+    code = 2
+    try:
+        with log.phase(args.command, command=args.command):
+            code = command(args)
+            log.count("exit", 0)
+        return code
+    except Exception as e:  # noqa: BLE001 - logged, then raised as it was
+        _runlog.error("run.crashed", failure=type(e).__name__, detail=str(e),
+                      command=args.command)
+        raise
+    finally:
+        log.finish(code, what=args.command)
+        log.close()
+        _runlog.set_current(None)
 
 
 if __name__ == "__main__":

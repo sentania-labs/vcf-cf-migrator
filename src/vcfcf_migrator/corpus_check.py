@@ -40,6 +40,7 @@ from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator import graph as _graph
 from vcfcf_migrator import preview as _preview
+from vcfcf_migrator import runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator.export_reader import (
     NotAnExport,
@@ -65,6 +66,14 @@ def read_versions(directory: Path) -> Dict[str, str]:
 
 def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
     """One line for one zip. Never writes next to *path*."""
+    with runlog.phase("corpus-zip", zip=str(path), source_version=declared):
+        line = _check_one(path, declared, scratch)
+        runlog.info("corpus.zip_checked", zip=str(path), verdict=line.split()[0],
+                    line=line)
+        return line
+
+
+def _check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
     try:
         export = read_export(path, source_version=declared)
     except UnsupportedExport as e:
@@ -148,14 +157,25 @@ def _preview_all(graph: _graph.Graph) -> Tuple[int, List[str]]:
     per failure naming the object and what went wrong."""
     rendered = 0
     failures: List[str] = []
+    with runlog.phase("preview-all", objects=len(graph.nodes)):
+        return _preview_each(graph, rendered, failures)
+
+
+def _preview_each(graph: _graph.Graph, rendered: int, failures: List[str]):
     for node in graph.ordered():
         try:
             page = _preview.render_page(graph, node)
         except (_preview.PreviewError, ValueError, KeyError, TypeError,
                 AttributeError, IndexError) as e:
+            runlog.error("preview.failed", kind=node.kind, uuid=node.uuid or "",
+                         name=node.name, member=node.member, owner=node.owner or None,
+                         failure=type(e).__name__, detail=str(e))
             failures.append(f"{node.label()}: {type(e).__name__}: {e}")
             continue
         if not page.startswith("<!doctype html>"):
+            runlog.error("preview.not_a_page", kind=node.kind, uuid=node.uuid or "",
+                         name=node.name,
+                         reason="the rendered preview is not an HTML document")
             failures.append(f"{node.label()}: the page is not an HTML document")
             continue
         rendered += 1
@@ -169,9 +189,13 @@ def _fmt(counts: Dict[str, int]) -> str:
 def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
     directory = Path(directory)
     if not directory.is_dir():
+        runlog.error("corpus.absent", dir=str(directory), dir_from=source,
+                     reason="the corpus directory does not exist")
         stream.write(f"corpus directory {directory} does not exist (from {source})\n")
         return 1
     zips = sorted(p for p in directory.iterdir() if p.suffix.lower() == ".zip")
+    runlog.info("corpus.walk", dir=str(directory), dir_from=source, zips=len(zips),
+                source_version=declared)
     stream.write(f"corpus: {directory} (from {source}), {plural(len(zips), 'zip')}\n")
     if not zips:
         return 0
@@ -186,6 +210,7 @@ def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
                 errors += 1
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+    runlog.info("corpus.checked", zips=len(zips), errors=errors)
     return 1 if errors else 0
 
 
