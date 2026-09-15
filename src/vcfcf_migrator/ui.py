@@ -263,6 +263,10 @@ class PageState:
         self.members, self.graph = members, graph
         self.listing = self.command_output = self.build_report = ""
         self.preview_key = self.filter_text = self.build_out = ""
+        # Which groups are open belongs to the export being looked at: a
+        # small one opens its groups by default, and carrying that into a
+        # large one expands exactly what the default is there to prevent.
+        self.disclosure = {}
         self.picked = []
         self._reclose()
         counts = graph.counts()

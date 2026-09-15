@@ -101,7 +101,7 @@ header.top form .grow { flex:1 1 auto }
 .pill.on { background:var(--accent-soft); color:#12376f }
 
 .kindgroup { border-top:1px solid var(--line2); padding:2px 0 }
-.discloser { margin:0 }\n.disc-body[hidden] { display:none }
+.discloser { margin:0 }\n
 .kindgroup > .discloser > .summary, .deps > .discloser > .summary {
   background:none; border:0; border-radius:0; width:100%; text-align:left;
   font:inherit; cursor:pointer }
@@ -109,6 +109,9 @@ header.top form .grow { flex:1 1 auto }
   list-style:none; display:flex; align-items:center; gap:8px }
 .kindgroup > .discloser > .summary::before { content:"\\25B8"; color:var(--ink3); font-size:11px }
 .kindgroup.on > .discloser > .summary::before { content:"\\25BE" }
+.deps > .discloser > .summary::before { content:"\\25B8"; color:var(--ink3); font-size:10px;
+  margin-right:4px }
+.deps.on > .discloser > .summary::before { content:"\\25BE" }
 .kindgroup > .discloser > .summary .n { margin-left:auto; color:var(--ink3); font-weight:400; font-size:12px }
 
 ul.tree { list-style:none; margin:0; padding:0 }
@@ -390,7 +393,7 @@ def _tree_panel(state) -> str:
             if not nodes:
                 continue
             parts.append(_kind_group(state, kind, nodes, open_default=False,
-                                     with_children=False))
+                                     with_children=False, section="viadep"))
     parts.append("</div>")
     return "".join(parts)
 
@@ -406,6 +409,12 @@ def _disclosure(state, did: str, summary: str, body, open_default: bool,
     so the state survives the redraw.
     """
     shown = state.disclosure.get(did, open_default)
+    # hidden='until-found' rather than a bare hidden: the browser can still
+    # find text inside and expand it to show a match, which is what a <details>
+    # did and what a long tree needs. A display:none rule of our own would
+    # defeat it, so there is deliberately none. Browsers without until-found
+    # treat the attribute as an ordinary hidden, which is the old behaviour.
+    shut_attr = "" if shown else " hidden='until-found'"
     return ("<div class='" + cls + ("" if not shown else " on")
             + f"' id='{e(anchor(did))}'>"
             "<form method='post' action='/disclose' class='discloser'>"
@@ -417,12 +426,16 @@ def _disclosure(state, did: str, summary: str, body, open_default: bool,
             # <details> kept it. Dropping it would have been cheaper, and
             # would also have taken the rows out of reach of the browser's own
             # find, which is a real way people look through a long tree.
-            + f"<div class='disc-body'{'' if shown else ' hidden'}>{body()}</div>"
+            # hidden='until-found' rather than a bare hidden: the browser can
+            # still find text in here and expand it, which is what a <details>
+            # did and what a long tree needs. A display:none rule of our own
+            # would defeat it, so there is deliberately none.
+            + f"<div class='disc-body'{shut_attr}>{body()}</div>"
             + "</div>")
 
 
 def _kind_group(state, kind: str, nodes: Sequence[Node], open_default: bool,
-                with_children: bool = True) -> str:
+                with_children: bool = True, section: str = "roots") -> str:
     picked = sum(1 for n in nodes if n.key in state.selected_keys())
     here = len(nodes)
     total = sum(1 for n in state.graph.by_kind(kind)) if state.graph else here
@@ -431,8 +444,11 @@ def _kind_group(state, kind: str, nodes: Sequence[Node], open_default: bool,
     # split it is.
     count = f"{here}" if here == total else f"{here} of {total} here"
     tail = f"{picked} of {count} selected" if picked else count
+    # Scoped by section: six kinds appear in both tree sections on the corpus,
+    # and a shared id made them one control with one state, so opening the
+    # lower group expanded the upper one and sent you there.
     return _disclosure(
-        state, f"kind:{kind}",
+        state, f"kind:{section}:{kind}",
         f"{e(kind)}<span class='n'>{e(tail)}</span>",
         lambda: ("<ul class='tree'>"
                  + "".join(_node_row(state, node, 0, with_children) for node in nodes)
@@ -441,7 +457,7 @@ def _kind_group(state, kind: str, nodes: Sequence[Node], open_default: bool,
 
 
 def _node_row(state, node: Node, depth: int, with_children: bool = True,
-              seen: Optional[frozenset] = None) -> str:
+              seen: Optional[frozenset] = None, path: str = "") -> str:
     graph = state.graph
     seen = seen or frozenset()
     selected = node.key in state.selection_keys()
@@ -493,17 +509,23 @@ def _node_row(state, node: Node, depth: int, with_children: bool = True,
     ])
 
     children_html = ""
+    # Where this row sits in the tree, not just what it is. The same object is
+    # rendered once per route to it, and an id built from the object alone
+    # made every copy one control: opening the dependencies under one
+    # dashboard opened them under the other and scrolled you there.
+    here = f"{path}>{node.key}" if path else node.key
     if with_children and depth < MAX_DEPTH and node.key not in seen:
         targets = [graph.nodes[t] for t in graph.edges.get(node.key, []) if t in graph.nodes]
         gaps = graph.missing_for(node.key)
         if targets or gaps:
-            inner = "".join(_node_row(state, child, depth + 1, True, seen | {node.key})
+            inner = "".join(_node_row(state, child, depth + 1, True,
+                                      seen | {node.key}, path=here)
                             for child in targets)
             inner += "".join(
                 f"<li class='node'><div class='missing'>missing {e(gap.kind)} "
                 f"{e(gap.ident)} (via {e(gap.via)})</div></li>" for gap in gaps)
             children_html = _disclosure(
-                state, f"deps:{node.key}",
+                state, f"deps:{here}",
                 "depends on "
                 + f"{len(targets)}"
                 + (f", {len(gaps)} not in this export" if gaps else ""),
