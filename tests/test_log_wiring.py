@@ -372,6 +372,63 @@ def test_the_page_ends_its_log_so_a_truncated_one_can_be_told_apart(
     assert ends, [e["event"] for e in state.log.events][-5:]
 
 
+def test_the_ui_command_writes_the_log_the_flag_asks_for(tmp_path, export_zip,
+                                                         config_dir):
+    """``ui --log run.log`` was accepted, advertised in --help and in the
+    README's one instruction for reporting a problem, and wrote four lines with
+    nothing the page did in them. Two review rounds proved logging through
+    preview and build and never through the page."""
+    from vcfcf_migrator.ui import make_server
+
+    target = tmp_path / "ui.jsonl"
+    server = make_server(zip_path=str(export_zip), port=0, log_cli=str(target),
+                         log_level_cli="debug")
+    state = server.page_state
+    try:
+        state.select_all()
+        state.run_tree()
+        state.render()
+    finally:
+        state.log.close()
+        server.server_close()
+    events = [json.loads(line) for line in
+              target.read_text(encoding="utf-8").splitlines() if line]
+    codes = {e["event"] for e in events}
+    assert len(events) > 50, len(events)
+    # Not just the header: what the page actually did.
+    assert {"input.fingerprint", "graph.built", "closure.picked", "run.end"} <= codes, codes
+    for needle in EXCLUDED_FROM_THE_FIXTURE:
+        assert needle not in target.read_text(encoding="utf-8"), needle
+
+
+def test_the_page_takes_the_log_level_from_the_command_line(tmp_path, export_zip,
+                                                            config_dir):
+    from vcfcf_migrator.ui import PageState as State
+
+    state = State(str(export_zip), log_cli=str(tmp_path / "quiet.jsonl"),
+                  log_level_cli="error")
+    _destination, _from, level, level_from = state.log_settings()
+    assert level == "error" and level_from == "command line"
+    state.log.close()
+
+
+def test_a_head_event_is_kept_once_and_the_newest_one_wins():
+    """The page hands the old log's events to the new one on every settings
+    save. Without a dedup the head grew by three per save and _trim never drops
+    from it, so a truncated session kept the first run header rather than the
+    one it was running under."""
+    log = runlog.Log(level="debug")
+    log.events = [{"event": "run.start", "tool": "old"},
+                  {"event": "noise"},
+                  {"event": "run.start", "tool": "new"},
+                  {"event": "input.fingerprint", "sha256": "a"},
+                  {"event": "input.fingerprint", "sha256": "b"}]
+    heads = [e for e in log.events if e["event"] in runlog.HEAD_EVENTS]
+    assert len(heads) == 2, heads
+    assert [e for e in heads if e["event"] == "run.start"][0]["tool"] == "new"
+    assert [e for e in heads if e["event"] == "input.fingerprint"][0]["sha256"] == "b"
+
+
 def test_the_page_has_a_control_for_the_log_file_and_the_level(state):
     page = state.render()
     assert "Run log file" in page and "Log level" in page

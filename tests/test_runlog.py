@@ -460,6 +460,18 @@ def test_open_log_refuses_a_level_or_a_format_it_does_not_know(tmp_path):
         runlog.open_log(str(tmp_path / "x.jsonl"), fmt="yaml")
 
 
+def test_each_event_reaches_the_file_before_the_next_one(tmp_path):
+    """The page runs until someone stops it, usually with Ctrl-C. A log whose
+    last events are still in a buffer then loses the part a support case is
+    about."""
+    path = tmp_path / "flushed.jsonl"
+    log = runlog.open_log(str(path), level="debug")
+    log.info("first", index=1)
+    log.info("second", index=2)
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+    log.close()
+
+
 def test_open_log_appends_so_two_runs_are_one_story(tmp_path):
     path = tmp_path / "logs" / "run.jsonl"
     for _ in range(2):

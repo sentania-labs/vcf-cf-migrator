@@ -360,8 +360,14 @@ def cmd_log_render(args) -> int:
 def cmd_ui(args) -> int:
     from vcfcf_migrator.ui import serve
 
+    # The page is another way in to the same commands, so it takes the same
+    # log settings: a flag the tool accepts and ignores is worse than one it
+    # refuses.
     return serve(zip_path=args.zip, port=args.port, open_browser=not args.no_browser,
-                 corpus_cli=args.corpus, source_version_cli=args.source_version)
+                 corpus_cli=args.corpus, source_version_cli=args.source_version,
+                 log_cli=getattr(args, "log", None),
+                 log_level_cli=getattr(args, "log_level", None),
+                 log_format_cli=getattr(args, "log_format", None))
 
 
 COMMANDS = {

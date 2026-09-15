@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.0 (2026-09-15)
 
 - Logging, after the whole-branch review: the person pattern names its own
   replacement through named groups, so the match and the replacement come from

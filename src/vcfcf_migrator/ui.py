@@ -105,7 +105,8 @@ class PageState:
     """What the page shows, and every action it can take. One per server."""
 
     def __init__(self, zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,
-                 source_version_cli: Optional[str] = None):
+                 source_version_cli: Optional[str] = None, log_cli: Optional[str] = None,
+                 log_level_cli: Optional[str] = None, log_format_cli: Optional[str] = None):
         # The page always keeps its events in memory, whether or not a file is
         # asked for, because "save diagnostics" has to be answerable after the
         # run that went wrong rather than only before it.
@@ -113,6 +114,14 @@ class PageState:
         self.zip_path = zip_path or ""
         self.corpus_cli = corpus_cli
         self.source_version_cli = source_version_cli
+        # The command line's log settings, threaded in the way the corpus
+        # directory and the source version already were. Without this the page
+        # resolved from the environment and the settings file only, so
+        # ``ui --log run.log`` was accepted, advertised in --help and in the
+        # README, and wrote a four line file with nothing the page did in it.
+        self.log_cli = log_cli
+        self.log_level_cli = log_level_cli
+        self.log_format_cli = log_format_cli
         self.origins = ()  # set once the server is bound: 127.0.0.1 and localhost on this port
         self.message = ""
         self.error = ""
@@ -144,9 +153,9 @@ class PageState:
         one excluded, and the diagnostics file the README tells a customer to
         mail carried them too.
         """
-        destination, self.log_from = _runlog.resolve_destination(None)
-        level, self.log_level_from = _runlog.resolve_level(None)
-        fmt, _fmt_from = _runlog.resolve_format(None)
+        destination, self.log_from = _runlog.resolve_destination(self.log_cli)
+        level, self.log_level_from = _runlog.resolve_level(self.log_level_cli)
+        fmt, _fmt_from = _runlog.resolve_format(self.log_format_cli)
         old = self.log
         try:
             self.log = _runlog.open_log(destination, level=level, fmt=fmt,
@@ -167,8 +176,8 @@ class PageState:
 
     def log_settings(self):
         """Destination, level and where each came from, for the page."""
-        destination, destination_from = _runlog.resolve_destination(None)
-        level, level_from = _runlog.resolve_level(None)
+        destination, destination_from = _runlog.resolve_destination(self.log_cli)
+        level, level_from = _runlog.resolve_level(self.log_level_cli)
         return destination, destination_from, level, level_from
 
     def _last_event(self, code: str) -> Optional[dict]:
@@ -732,9 +741,12 @@ def _handler_for(state: PageState):
 
 
 def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optional[str] = None,
-                source_version_cli: Optional[str] = None) -> ThreadingHTTPServer:
+                source_version_cli: Optional[str] = None, log_cli: Optional[str] = None,
+                log_level_cli: Optional[str] = None,
+                log_format_cli: Optional[str] = None) -> ThreadingHTTPServer:
     """A bound server on 127.0.0.1; the caller runs it. Tests use this."""
-    state = PageState(zip_path, corpus_cli, source_version_cli)
+    state = PageState(zip_path, corpus_cli, source_version_cli,
+                      log_cli, log_level_cli, log_format_cli)
     server = ThreadingHTTPServer(("127.0.0.1", port), _handler_for(state))
     server.daemon_threads = True
     port = server.server_address[1]
@@ -744,8 +756,11 @@ def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optio
 
 
 def serve(zip_path: Optional[str] = None, port: int = 0, open_browser: bool = True,
-          corpus_cli: Optional[str] = None, source_version_cli: Optional[str] = None) -> int:
-    server = make_server(zip_path, port, corpus_cli, source_version_cli)
+          corpus_cli: Optional[str] = None, source_version_cli: Optional[str] = None,
+          log_cli: Optional[str] = None, log_level_cli: Optional[str] = None,
+          log_format_cli: Optional[str] = None) -> int:
+    server = make_server(zip_path, port, corpus_cli, source_version_cli,
+                         log_cli, log_level_cli, log_format_cli)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"vcfcf-migrator ui: {url} (Ctrl-C to stop)", flush=True)
     if open_browser:
