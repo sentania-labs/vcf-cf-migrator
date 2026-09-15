@@ -58,7 +58,8 @@ PREVIEW_CSS = """
   background:var(--pv-bg); color:var(--pv-ink); border-radius:6px; padding:14px 16px 18px;
   font:13px/1.45 system-ui,"Segoe UI",sans-serif; }
 .pv * { box-sizing:border-box }
-.pv h2.pv-title { font-size:17px; margin:0 0 2px; font-weight:600; color:var(--pv-ink) }
+.pv h2.pv-title { font-size:17px; margin:0 0 2px; font-weight:600; color:var(--pv-ink);
+  text-transform:none; letter-spacing:normal }
 .pv .pv-sub { color:var(--pv-ink2); font-size:12px; margin:0 0 10px }
 .pv .pv-sub code, .pv code { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:var(--pv-ink3) }
 .pv .pv-banner { background:var(--pv-panel2); border-left:3px solid var(--pv-warn); color:var(--pv-ink2);

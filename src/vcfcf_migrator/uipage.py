@@ -75,6 +75,10 @@ header.top form .grow { flex:1 1 auto }
   padding:16px 18px 40px; align-items:start }
 .card { background:var(--card); border:1px solid var(--line); border-radius:9px;
   padding:14px 16px; margin-bottom:16px }
+/* A grid item's default min-width is its content, so one long line inside a
+   <pre> made the whole page scroll sideways at phone width. */
+.cols > div { min-width:0 }
+.card pre { max-width:100% }
 .left { position:sticky; top:59px; max-height:calc(100vh - 75px); overflow:auto }
 
 .counts { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 10px }
