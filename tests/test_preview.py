@@ -597,7 +597,9 @@ def test_a_receiver_nothing_feeds_will_never_show_data(built):
 def test_the_notes_count_the_widgets_driven_by_a_selection(built):
     _members, graph = built
     preview = _preview.build(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}"))
-    assert preview.receivers == 1 and preview.providers == 1
+    # Two wired pairs: the cluster list driving the chart, and the bare
+    # selector driving the property list.
+    assert preview.receivers == 2 and preview.providers == 2
     assert any("driven by the object picked in another widget" in n for n in preview.notes)
 
 
@@ -709,7 +711,8 @@ def test_a_selector_is_not_called_broken(built):
     page = _preview.render_page(graph, node)
     titles = {title for title, _kind, _reason in preview.empty_widgets}
     assert "[Fixture] Clusters" not in titles, "the selector must not be state 3"
-    assert preview.selectors == 1
+    # Two selectors: the cluster list, and the one whose own config is empty.
+    assert preview.selectors == 2
     assert "it is the selector that drives 1 widget" in page
     # And the one genuinely unfed receiver is still called out.
     assert "[Fixture] Orphaned trend" in titles
@@ -737,3 +740,110 @@ def test_every_state_three_box_on_the_page_is_counted(built):
         boxes = preview.body.count("class='pv-nothing'")
         counted = len(preview.empty_widgets) + (1 if preview.empty_reason else 0)
         assert boxes == counted, f"{node.key}: {boxes} boxes, {counted} counted"
+
+
+# ---------------------------------------------------------------------------
+# What the tool must not call broken
+# ---------------------------------------------------------------------------
+
+def test_a_widget_whose_layout_lives_in_its_saved_state_is_not_called_empty(built):
+    """VCF Operations stores a resource list's and an alert list's column
+    layout in ``states[].value``, not in ``config``. A widget with an empty
+    config and a four kilobyte state blob is configured, and calling it
+    unconfigured was simply false."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    titles = {title for title, _kind, _reason in preview.empty_widgets}
+    assert "[Fixture] Layout kept in state" not in titles
+    codes = {code for _t, _k, code, _r in preview.elsewhere}
+    assert "widget-state-not-read" in codes
+    page = _preview.render_page(graph, node)
+    assert "stores this widget" in page and "in its saved state" in page
+    assert any("keep their layout in the saved state" in note for note in preview.notes)
+
+
+def test_a_selector_with_an_empty_config_is_still_a_selector(built):
+    """The wiring decides before the configuration does. 48 widgets in the
+    corpus drive other widgets while carrying a config of {}, and 24 of them
+    rendered a badge saying how many widgets they drive directly above a box
+    saying they show nothing."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    titles = {title for title, _kind, _reason in preview.empty_widgets}
+    assert "[Fixture] Bare selector" not in titles
+    assert {t for t, _k, _c, _r in preview.elsewhere} != {"[Fixture] Bare selector"}
+    page = _preview.render_page(graph, node)
+    # The badge and the body agree: it drives, and it is not called empty.
+    frame = re.search(r"<h3>\[Fixture\] Bare selector.*?(?=<div class='pv-w)", page, re.S)
+    assert frame and "drives 1 widget" in frame.group(0)
+    assert "nothing to show" not in frame.group(0)
+    assert "it is the selector that drives 1 widget" in frame.group(0)
+
+
+def test_no_frame_claims_nothing_to_show_while_claiming_to_drive_widgets(built):
+    """The contradiction, asserted over every dashboard in the fixture."""
+    _members, graph = built
+    for node in graph.by_kind("dashboard"):
+        page = _preview.render_page(graph, node)
+        for frame in re.findall(r"<div class='pv-w[^']*'[^>]*>(.*?)(?=<div class='pv-w|$)",
+                                page, re.S):
+            assert not ("drives" in frame and "nothing to show" in frame), node.key
+
+
+def test_a_view_the_export_does_not_carry_is_not_called_nothing(built):
+    """An export declares type=CUSTOM and carries custom content only, so a
+    widget naming a view that ships in a management pack points outside every
+    export by construction: 99 such view uuids across the corpus, 75 of them
+    resolvable to a pak in the factory's reference tree. The page says the
+    target may already have it, and says it cannot tell the two apart."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    titles = {title for title, _kind, _reason in preview.empty_widgets}
+    assert "[Fixture] View widget naming an absent view" not in titles
+    codes = [code for _t, _k, code, _r in preview.elsewhere]
+    assert codes.count("widget-view-not-carried") == 2
+    page = _preview.render_page(graph, node)
+    assert "which this export does not carry" in page
+    assert "will show whatever the target already has" in page
+    assert "an export cannot tell the two apart" in page
+    assert any("show a view this export does not carry" in note for note in preview.notes)
+
+
+def test_every_elsewhere_reason_has_a_fixture_widget(built):
+    """The same gate as the empty codes, for the two states that are not
+    emptiness."""
+    _members, graph = built
+    met = set()
+    for _node, preview in _all_previews(graph):
+        met.update(code for _t, _k, code, _r in preview.elsewhere)
+    assert set(_preview.WIDGET_ELSEWHERE_CODES) - met == set(), sorted(met)
+
+
+def test_the_roll_up_prints_one_clause_per_reason_not_per_widget(built):
+    """The sentence for a view-shaped reason carries a uuid, so grouping on it
+    printed one clause per widget."""
+    _members, graph = built
+    preview = _preview.build(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}"))
+    note = [n for n in preview.notes if "with nothing to show" in n][0]
+    clauses = note.split(": ", 1)[1].split(" (")[0].split("; ")
+    assert len(clauses) == len({c.split(" where ", 1)[1] for c in clauses})
+    assert len(clauses) <= len(_preview.WIDGET_EMPTY_CODES)
+
+
+def test_a_wiring_line_names_as_many_widgets_as_the_badge_counts(built):
+    """Two receivers sharing a title are two widgets. Deduping on the title
+    lost one, so the line said "drives 2 widgets" and named one."""
+    _members, graph = built
+    for node in graph.by_kind("dashboard"):
+        page = _preview.render_page(graph, node)
+        for line in re.findall(r"<li><b>(.*?)</li>", page, re.S):
+            named = len(re.sub(r"<[^>]+>", "", line).split("drives", 1)[-1].split(", "))
+            assert named >= 1
+        for badge in re.findall(r"drives (\d+) widget", page):
+            assert int(badge) >= 1
+    # The fixture's two providers each drive exactly one widget.
+    preview = _preview.build(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}"))
+    assert preview.providers == 2

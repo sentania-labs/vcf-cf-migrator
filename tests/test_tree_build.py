@@ -884,3 +884,16 @@ def test_two_templates_sharing_a_name_are_both_carried(tmp_path):
     assert {graph.nodes[k].ident for k in picked.keys if
             graph.nodes[k].kind == "notificationtemplate"} == {TEMPLATE_ID, twin}
     assert picked.ambiguous
+
+
+def test_two_widgets_naming_one_absent_object_are_one_missing_edge(graph):
+    """The dedupe has a fixture behind it: two View widgets on the Cluster
+    Overview name the same view the export does not carry, which is one thing
+    to tell the admin about, not two. It is still one row per owner's copy of
+    the dashboard, because those are two documents."""
+    rows = [m for m in graph.missing if m.ident == ABSENT_VIEW_ID]
+    assert len(rows) == 2
+    assert {m.source_key for m in rows} == {
+        f"dashboard:{DASHBOARD_ID}@{OWNER}", f"dashboard:{DASHBOARD_ID}@{OWNER_2}"}
+    text = _graph.render_tree(graph)
+    assert text.count(f"view [{ABSENT_VIEW_ID}] wanted by") == 2

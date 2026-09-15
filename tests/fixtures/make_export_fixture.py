@@ -44,6 +44,15 @@ REPORT_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f"
 WIDGET_PROVIDER = "4a5b6c7d-1111-4111-8111-0a1b2c3d4e5f"
 WIDGET_RECEIVER = "4a5b6c7d-2222-4222-8222-0a1b2c3d4e5f"
 WIDGET_ORPHAN = "4a5b6c7d-3333-4333-8333-0a1b2c3d4e5f"
+# A selector whose own config is empty: VCF Operations keeps a resource
+# list's column layout in states[].value, and 48 widgets in the corpus drive
+# other widgets while carrying a config of {}. A selector is never "carries
+# nothing", whatever its config looks like.
+WIDGET_BARE_SELECTOR = "4a5b6c7d-4444-4444-8444-0a1b2c3d4e5f"
+WIDGET_SELECTOR_FED = "4a5b6c7d-5555-4555-8555-0a1b2c3d4e5f"
+# A widget with no config and a saved-state blob: configured, in a place this
+# preview does not decode.
+WIDGET_STATE_ONLY = "4a5b6c7d-6666-4666-8666-0a1b2c3d4e5f"
 # A dashboard with no widgets at all, a second alert whose state names no
 # symptom, two more symptoms (one with no state, one with a state and no
 # condition), a recommendation with no text, a report with no sections and a
@@ -328,6 +337,42 @@ def _laid_out_widgets() -> list:
          "config": {"title": "[Fixture] Cluster heat", "mode": "all",
                     "configs": [{"colorBy": "cpu|usage_average",
                                  "sizeBy": "cpu|demandmhz"}]}},
+        # The bare selector and the widget it drives: config {} on the
+        # selector, and a state blob carrying its column layout.
+        {"type": "ResourceList", "title": "[Fixture] Bare selector",
+         "id": WIDGET_BARE_SELECTOR,
+         "gridsterCoords": {"x": 1, "y": 49, "w": 6, "h": 4}, "config": {},
+         "states": [{"key": "permResGrid_widget_bare",
+                     "value": "o%3Acolumns%3Da%253Ao%25253Aid%25253Ds%2525253Ah1"}]},
+        {"type": "PropertyList", "title": "[Fixture] Driven properties",
+         "id": WIDGET_SELECTOR_FED,
+         "gridsterCoords": {"x": 7, "y": 49, "w": 6, "h": 4},
+         "config": {"title": "[Fixture] Driven properties",
+                    "selfProvider": {"selfProvider": False},
+                    "metric": _kind_metric("config|hardware|num_Cpu", "Hardware|vCPUs")}},
+        # No config at all, a saved-state blob, and it drives nothing: the
+        # widget is configured where this preview does not read.
+        {"type": "AlertList", "title": "[Fixture] Layout kept in state",
+         "id": WIDGET_STATE_ONLY,
+         "gridsterCoords": {"x": 1, "y": 53, "w": 6, "h": 4}, "config": {},
+         "states": [{"key": "permAlertGrid_widget_state_only",
+                     "value": "o%3Acolumns%3Da%253Ao%25253Aid%25253Ds%2525253Acrit"}]},
+        # Two charts naming no metric, one per branch, since a gate that
+        # passes on a sibling sharing a code is not a gate.
+        {"type": "ParetoAnalysis", "title": "[Fixture] Pareto with no metric",
+         "gridsterCoords": {"x": 7, "y": 53, "w": 6, "h": 4},
+         "config": {"title": "[Fixture] Pareto with no metric", "barsCount": 5,
+                    "topOption": "top"}},
+        {"type": "HealthChart", "title": "[Fixture] Health with no metric",
+         "gridsterCoords": {"x": 1, "y": 57, "w": 6, "h": 4},
+         "config": {"title": "[Fixture] Health with no metric", "mode": "all",
+                    "chartHeight": 100}},
+        # A second widget naming the same absent view as the one above: one
+        # missing edge for the pair, not two.
+        {"type": "View", "title": "[Fixture] Second widget on the absent view",
+         "gridsterCoords": {"x": 7, "y": 57, "w": 6, "h": 4},
+         "config": {"title": "[Fixture] Second widget on the absent view",
+                    "viewDefinitionId": ABSENT_VIEW_ID}},
         {"type": "PropertyList", "title": "[Fixture] Cluster properties",
          "gridsterCoords": {"x": 9, "y": 13, "w": 4, "h": 6},
          "config": {"title": "[Fixture] Cluster properties",
@@ -436,6 +481,8 @@ def _cluster_overview() -> dict:
         "widgetInteractions": [
             {"widgetIdProvider": WIDGET_PROVIDER, "type": "resourceId",
              "widgetIdReceiver": WIDGET_RECEIVER},
+            {"widgetIdProvider": WIDGET_BARE_SELECTOR, "type": "resourceId",
+             "widgetIdReceiver": WIDGET_SELECTOR_FED},
         ],
     }
 

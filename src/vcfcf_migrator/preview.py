@@ -65,16 +65,33 @@ MOCK_ROWS = 5
 # The first version of the never-shows rule called 27 selectors broken, and
 # nothing in the suite touched the classification at all.
 WIDGET_EMPTY_CODES = (
-    "widget-no-config",          # config missing or {}
+    "widget-no-config",          # no config and no state blob either
     "widget-title-only",         # a title and nothing else
     "widget-no-view",            # a View widget naming no view
-    "widget-no-metric",          # a metric widget naming no metric
+    "widget-no-metric",          # a scoreboard-family widget naming no metric
+    "widget-no-pareto-metric",   # a pareto chart naming no metric
+    "widget-no-health-metric",   # a health chart naming no metric
     "widget-no-heatmap-metric",  # a heatmap declaring no colour or size metric
     "widget-no-text",            # a text widget with no text and no file
     "widget-no-heading",         # a section divider with no heading
     "widget-never-shows",        # waits on a selection nothing provides
-    "widget-view-missing",       # names a view this export does not carry
-    "widget-view-no-columns",    # names a view that declares no columns
+    "widget-view-no-columns",    # shows a view that declares no columns
+)
+
+# Not emptiness. Two things a widget can be that this page must not call
+# empty, because in both cases the widget works and the gap is elsewhere.
+WIDGET_ELSEWHERE_CODES = (
+    # VCF Operations stores a ResourceList's or an AlertList's column layout
+    # in ``states[].value``, a nested percent-encoded blob this page does not
+    # decode. A widget with no ``config`` and a 4kB state blob is configured;
+    # saying it carries nothing was simply false.
+    "widget-state-not-read",
+    # A view the export does not carry. An export declares ``type=CUSTOM`` and
+    # carries custom content only, so a widget pointing at a view shipped in a
+    # management pack points outside every export by construction: 99 of the
+    # view uuids named this way across the corpus are pak content. Nothing in
+    # an export distinguishes a built-in from one that is genuinely gone.
+    "widget-view-not-carried",
 )
 
 OBJECT_EMPTY_CODES = (
@@ -156,6 +173,10 @@ PREVIEW_CSS = """
   background:rgba(224,164,0,0.09); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
 .pv .pv-nothing b { color:var(--pv-warn); display:block; font-size:10px; text-transform:uppercase;
   letter-spacing:.06em; margin-bottom:3px }
+.pv .pv-elsewhere { border:1px dashed var(--pv-accent); border-radius:3px;
+  background:rgba(57,135,229,0.07); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
+.pv .pv-elsewhere b { color:var(--pv-accent); display:block; font-size:10px;
+  text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px }
 .pv .pv-section { grid-column:1 / -1; border-bottom:1px solid var(--pv-line); color:var(--pv-ink2);
   font-size:12px; font-weight:600; padding:4px 2px; min-height:0 }
 .pv .pv-facts { margin:0; display:grid; grid-template-columns:max-content 1fr; gap:3px 14px; font-size:12px }
@@ -227,6 +248,9 @@ class Preview:  # noqa: D101
     # selection, and how many of those have nothing feeding them.
     receivers: int = 0
     providers: int = 0
+    # Widgets whose content is real but lives somewhere this page cannot
+    # follow: (title, type, code, sentence).
+    elsewhere: List[Tuple[str, str, str, str]] = field(default_factory=list)
     orphan_receivers: int = 0
     context_driven: int = 0
     selectors: int = 0
@@ -249,6 +273,29 @@ def _mark_widget_empty(preview: Optional[Preview], title: str, widget_type: str,
     preview.empty_widgets.append((title or "(untitled widget)",
                                   widget_type or "no type", reason))
     preview.empty_codes.append(code)
+
+
+def _mark_widget_elsewhere(preview: Optional[Preview], title: str, widget_type: str,
+                           code: str, reason: str) -> str:
+    """The widget is configured, or points at something real; this page just
+    cannot follow it. Counted apart from the empties, and worded as what it
+    is rather than as a fault in the content."""
+    assert code in WIDGET_ELSEWHERE_CODES, code
+    if preview is not None:
+        preview.elsewhere.append((title or "(untitled widget)",
+                                  widget_type or "no type", code, reason))
+    return (f"<div class='pv-elsewhere'><b>not shown here</b>{_e(reason)}</div>")
+
+
+def widget_state_blob(widget: dict) -> str:
+    """The widget's own stored state, concatenated. VCF Operations keeps a
+    ResourceList's and an AlertList's column layout here rather than in
+    ``config``; the value is a nested percent-encoded form this page does not
+    decode, so its presence is all this reads from it."""
+    states = widget.get("states")
+    if not isinstance(states, list):
+        return ""
+    return "".join(str(s.get("value") or "") for s in states if isinstance(s, dict))
 
 
 # ---------------------------------------------------------------------------
@@ -514,11 +561,20 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
     view_id = str(cfg.get("viewDefinitionId") or "")
     node = _find_node(graph, "view", view_id) if view_id else None
     if node is None:
-        # Counted like any other box with nothing in it: a roll-up that is
-        # silent about three of the boxes on the page is not a roll-up.
-        return _record_empty(ctx, "widget-view-missing",
-                             f"the view this widget names, {view_id or '(none)'}, is not in "
-                             "this export, so its columns cannot be shown here")
+        # Not emptiness. An export declares type=CUSTOM and carries custom
+        # content only, so a widget pointing at a view that ships inside a
+        # management pack points outside every export by construction; 99 of
+        # the view uuids named this way across the corpus are pak content.
+        # Nothing in an export tells a built-in apart from one that is
+        # genuinely gone, and this page must not pretend otherwise.
+        return _mark_widget_elsewhere(
+            ctx.get("preview"), ctx.get("title") or "",
+            str((ctx.get("widget") or {}).get("type") or ""),
+            "widget-view-not-carried",
+            f"this widget shows view {view_id or '(none named)'}, which this export does "
+            "not carry: an export holds custom content only, so the view may ship with a "
+            "management pack or with the product. It will show whatever the target already "
+            "has, and an export cannot tell the two apart")
     try:
         root = _xml_doc(raw_document(graph, node))
     except PreviewError as e:
@@ -780,11 +836,17 @@ def _self_provider(cfg: dict) -> Optional[bool]:
 
 def _widget_nothing(widget_type: str, cfg: dict, widget: dict) -> Tuple[str, str]:
     """``(code, sentence)`` for what is missing, or ``("", "")`` when the
-    widget has something to show."""
+    widget has something to show.
+
+    Read ``_widget_verdict`` for the two things that come before this: a
+    widget that drives others is a selector and is never empty, and a widget
+    whose configuration lives in its state blob is configured.
+    """
     if not isinstance(cfg, dict) or not cfg:
         return ("widget-no-config",
-                "this widget carries no configuration at all, so it shows nothing on the "
-                "dashboard either; it is usually an unfinished leftover")
+                "this widget carries no configuration at all, and no stored state either, "
+                "so it shows nothing on the dashboard; it is usually an unfinished "
+                "leftover")
     # A config that is nothing but a title is the same emptiness wearing a hat.
     if set(cfg) <= {"title", "titleLocalized", "refreshContent", "refreshInterval"}:
         if widget_type != "Section":
@@ -802,12 +864,12 @@ def _widget_nothing(widget_type: str, cfg: dict, widget: dict) -> Tuple[str, str
                     "until someone picks one")
     elif widget_type == "ParetoAnalysis":
         if not _cfg_metrics(cfg) and not str(cfg.get("metricName") or "").strip():
-            return ("widget-no-metric",
+            return ("widget-no-pareto-metric",
                     "this chart names no metric, so it shows nothing until someone picks one")
     elif widget_type == "HealthChart":
         if not (str(cfg.get("metricKey") or "").strip()
                 or str(cfg.get("metricName") or "").strip()):
-            return ("widget-no-metric",
+            return ("widget-no-health-metric",
                     "this chart names no metric, so it shows nothing until someone picks one")
     elif widget_type == "Heatmap":
         configs = cfg.get("configs")
@@ -827,6 +889,31 @@ def _widget_nothing(widget_type: str, cfg: dict, widget: dict) -> Tuple[str, str
         if not title:
             return ("widget-no-heading", "this section divider carries no heading")
     return ("", "")
+
+
+def _widget_verdict(widget_type: str, cfg: dict, widget: dict,
+                    feeds: bool) -> Tuple[str, str, str]:
+    """``(kind, code, sentence)`` for one widget, where kind is "empty",
+    "elsewhere" or "" for a widget with something to draw.
+
+    The order is the finding of this round. A widget that drives other widgets
+    is the dashboard's selector and cannot be empty whatever its config looks
+    like: 48 widgets in the corpus drive others and were called empty anyway,
+    24 of them under a badge reading how many widgets they drive. A widget
+    whose column layout sits in its state blob is configured, in a place this
+    page does not read. Only what is left can be empty.
+    """
+    if feeds:
+        return ("", "", "")
+    blob = widget_state_blob(widget)
+    if blob and (not isinstance(cfg, dict) or not cfg):
+        return ("elsewhere", "widget-state-not-read",
+                f"VCF Operations stores this widget's layout in its saved state rather than "
+                f"in its configuration ({len(blob)} characters of it), in a form this page "
+                "does not decode, so the widget is configured and its shape is not shown "
+                "here")
+    code, sentence = _widget_nothing(widget_type, cfg, widget)
+    return ("empty" if code else "", code, sentence)
 
 
 def _record_empty(ctx: dict, code: str, detail: str) -> str:
@@ -955,14 +1042,24 @@ def _wiring_summary(wiring: Wiring) -> str:
         return ""
     lines = []
     for provider, fed in wiring.receivers.items():
-        # One widget can be fed by two interaction types, which listed its
-        # name twice on 13 of the corpus's 199 wiring lines.
-        seen_names: List[str] = []
+        # One widget fed by two interaction types is one widget, so the line
+        # dedupes on the receiver's id. Two different widgets sharing a title
+        # are two widgets, so deduping on the title lost one: they are
+        # numbered instead, and the count in the badge is the count here.
+        seen_ids: List[str] = []
         for receiver, _kind in fed:
-            name = _e(wiring.title(receiver))
-            if name not in seen_names:
-                seen_names.append(name)
-        names = ", ".join(seen_names)
+            if receiver not in seen_ids:
+                seen_ids.append(receiver)
+        used: Dict[str, int] = {}
+        labels = []
+        titles = [wiring.title(r) for r in seen_ids]
+        for title in titles:
+            if titles.count(title) > 1:
+                used[title] = used.get(title, 0) + 1
+                labels.append(f"{_e(title)} ({used[title]})")
+            else:
+                labels.append(_e(title))
+        names = ", ".join(labels)
         lines.append(f"<li><b>{_e(wiring.title(provider))}</b> "
                      f"<span class='arrow'>drives</span> {names}</li>")
     return ("<div class='pv-wiring'>This dashboard is interaction driven: what most of it "
@@ -1038,9 +1135,9 @@ def _dashboard_preview(graph: Graph, node: Node, preview: Preview) -> str:
             "dashboard those show nothing until a selection is made")
     if wiring.foreign_navigations:
         preview.notes.append(
-            f"{wiring.foreign_navigations} dashboard navigation target(s) are not in this "
-            "export, so those links will not land unless the target instance already has "
-            "what they point at")
+            f"{_plural(wiring.foreign_navigations, 'dashboard navigation target')} are "
+            "not in this export, so those links will not land unless the target instance "
+            "already has what they point at")
 
     description = str(doc.get("description") or "").strip()
     head = f"<p class='pv-sub'>{_e(description)}</p>" if description else ""
@@ -1087,20 +1184,27 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
         ident = str(widget.get("id") or "")
         driven_by = wiring.providers.get(ident, [])
         feeds = wiring.receivers.get(ident, [])
-        missing_code, missing = _widget_nothing(widget_type, cfg, widget)
+        verdict, missing_code, missing = _widget_verdict(
+            widget_type, cfg, widget, feeds=bool(feeds))
+        elsewhere = missing if verdict == "elsewhere" else ""
+        missing = missing if verdict == "empty" else ""
         subject_kind = "fed" if driven_by else "self"
         subject = ""      # how this widget gets the object it shows, in words
         never_shows = ""   # state 3, kept as a caption over the drawn widget
-        if not missing and _self_provider(cfg) is False and not driven_by:
+        if feeds and not driven_by:
+            # A widget that drives others is the dashboard's selector, and
+            # that is true whether or not it declares selfProvider: the corpus
+            # has selectors with no config at all, whose column layout lives
+            # in their saved state. Asking selfProvider first is what let 48
+            # of them be called empty.
+            subject_kind = "selector"
+            subject = ("this widget chooses no subject of its own: it is the selector "
+                       f"that drives {_plural(len(feeds), 'widget')} on this dashboard")
+            preview.selectors += 1
+        elif not missing and _self_provider(cfg) is False and not driven_by:
             # The export says this widget does not choose its own subject and
-            # names nothing that feeds it. Three different things wear that
-            # shape, and the corpus separates them:
+            # names nothing that feeds it. Two things wear that shape:
             #
-            # * it drives other widgets: it is the dashboard's selector, whose
-            #   whole job is to have no subject of its own (27 of the 32
-            #   widgets an earlier version of this rule called broken, among
-            #   them one that drives nine widgets while the frame above it
-            #   said it would never show data);
             # * the dashboard wires other widgets and not this one: it is
             #   wired wrong and stays blank, which is the admin's fact;
             # * the dashboard wires nothing at all (whole summary-style
@@ -1108,17 +1212,11 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
             #   subject arrives from outside, as it does for a dashboard
             #   opened in an object's context. Calling those broken would be
             #   inventing a fault.
-            if feeds:
-                subject_kind = "selector"
-                subject = ("this widget chooses no subject of its own: it is the selector "
-                           f"that drives {len(feeds)} widget"
-                           f"{'s' if len(feeds) != 1 else ''} on this dashboard")
-                preview.selectors += 1
-            elif wiring.receivers:
+            if wiring.receivers:
+                subject_kind = "never-shows"
                 never_shows = ("this widget takes its subject from another widget's "
                                "selection, and nothing on this dashboard feeds it while "
                                "other widgets here are wired, so it will never show data")
-                subject_kind = "never-shows"
                 preview.orphan_receivers += 1
                 _mark_widget_empty(preview, title, widget_type, "widget-never-shows",
                                    never_shows)
@@ -1129,7 +1227,10 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
                            "values below stand for whatever object arrives")
                 preview.context_driven += 1
         preview.subjects[subject_kind] = preview.subjects.get(subject_kind, 0) + 1
-        if missing:
+        if elsewhere:
+            inner = _mark_widget_elsewhere(preview, title, widget_type,
+                                           missing_code, elsewhere)
+        elif missing:
             _mark_widget_empty(preview, title, widget_type, missing_code, missing)
             inner = nothing_here(missing)
         elif renderer is None:
@@ -1689,27 +1790,50 @@ def build(graph: Graph, node: Node) -> Preview:
     preview.body = renderer(graph, node, preview)
     if preview.selectors:
         preview.notes.append(
-            f"{preview.selectors} widget(s) are selectors: they choose no subject of their "
-            "own and drive the widgets below them")
+            f"{_plural(preview.selectors, 'widget')} on this dashboard "
+            + ("is a selector: it chooses" if preview.selectors == 1 else
+               "are selectors: they choose")
+            + " no subject of their own and drive the widgets below them")
     if preview.context_driven:
         preview.notes.append(
-            f"{preview.context_driven} widget(s) take their subject from outside this "
-            "dashboard: nothing here is wired to feed them, which is how a dashboard opened "
-            "in an object's context works")
+            f"{_plural(preview.context_driven, 'widget')} take their subject from "
+            "outside this dashboard: nothing here is wired to feed them, which is how a "
+            "dashboard opened in an object's context works")
     if preview.orphan_receivers:
         preview.notes.append(
-            f"{preview.orphan_receivers} widget(s) wait on a selection that nothing on this "
-            "dashboard provides, so they will never show data")
+            f"{_plural(preview.orphan_receivers, 'widget')} wait on a selection that "
+            "nothing on this dashboard provides, so they will never show data")
+    if preview.elsewhere:
+        by_code: Dict[str, int] = {}
+        for _title, _type, code, _reason in preview.elsewhere:
+            by_code[code] = by_code.get(code, 0) + 1
+        if by_code.get("widget-view-not-carried"):
+            number = by_code["widget-view-not-carried"]
+            preview.notes.append(
+                f"{_plural(number, 'widget')} show a view this export does not carry, so "
+                "they will show whatever the target already has; an export carries custom "
+                "content only, so a view that ships with a management pack or with the "
+                "product is never in one, and nothing here tells that apart from a view "
+                "that is genuinely gone")
+        if by_code.get("widget-state-not-read"):
+            number = by_code["widget-state-not-read"]
+            preview.notes.append(
+                f"{_plural(number, 'widget')} keep their layout in the saved state VCF "
+                "Operations writes rather than in their configuration, which this page does "
+                "not decode: they are configured, and their shape is not drawn here")
     if preview.empty_widgets:
+        # Grouped on the short reason, not the sentence: a sentence carrying a
+        # uuid is unique per widget, which printed one clause per widget.
         reasons: Dict[str, int] = {}
         for _title, _type, reason in preview.empty_widgets:
-            reasons[reason] = reasons.get(reason, 0) + 1
+            short = _short_reason(reason)
+            reasons[short] = reasons.get(short, 0) + 1
         count = len(preview.empty_widgets)
         preview.notes.append(
-            f"{count} widget{'s' if count != 1 else ''} with nothing to show: "
-            + "; ".join(f"{number} where {_short_reason(reason)}"
-                        for reason, number in sorted(reasons.items(),
-                                                     key=lambda pair: -pair[1]))
+            f"{_plural(count, 'widget')} with nothing to show: "
+            + "; ".join(f"{number} where {short}"
+                        for short, number in sorted(reasons.items(),
+                                                    key=lambda pair: (-pair[1], pair[0])))
             + " (" + ", ".join(f"{title} [{kind}]"
                                for title, kind, _r in preview.empty_widgets[:6])
             + (f" and {count - 6} more" if count > 6 else "") + ")")
@@ -1736,6 +1860,12 @@ _SHORT_REASONS = (
     ("is not in this export", "the view the widget names is not in this export"),
     ("declares no columns, so the widget", "the view the widget shows declares no columns"),
 )
+
+
+def _plural(count: int, noun: str) -> str:
+    """``1 widget``, ``3 widgets``. Operator-facing strings do not say
+    "widget(s)"."""
+    return f"{count} {noun}" + ("" if count == 1 else "s")
 
 
 def _short_reason(reason: str) -> str:

@@ -31,14 +31,25 @@
   does not lay out Skittles" is a fact about the tool. It covers objects too:
   a view with no columns, a super metric with an empty formula, an alert with
   no symptom sets, a group with no membership rules, a dashboard with no
-  widgets. Every one of those branches carries a code, and the suite asserts
-  the fixture exercises all of them, so a new one fails until something does.
-  The notes count every box the page shows.
+  widgets. Every one of those branches carries its own code, one per branch
+  rather than one shared by three, and the suite asserts the fixture
+  exercises all of them, so a new one fails until something does. The notes
+  count every box the page shows, grouped by reason rather than by sentence.
 
-  Census over the corpus, by distinct content: of 835 widgets on 118
-  dashboards, 31 carry nothing themselves (27 with no configuration at all)
-  and 158 name a view the export does not carry or one with no columns; 4 of
-  634 objects carry nothing to show, all of them views with no attributes.
+  Two things are deliberately *not* emptiness, because in both the widget
+  works and the gap is elsewhere. A widget whose column layout lives in the
+  saved state VCF Operations writes (`states[].value`, a nested encoded blob
+  this page does not decode) is configured, and calling it unconfigured was
+  false. A widget naming a view the export does not carry is pointing at
+  content an export cannot hold: an export declares `type=CUSTOM` and carries
+  custom content only, so a view that ships in a management pack is never in
+  one, and nothing in an export tells that apart from a view that is
+  genuinely gone. Both get their own state, their own count, and the wording
+  `inspect` already uses for navigation links.
+
+  Corpus figures come from `tools/corpus_census.py`, which states the identity
+  rule it implements, is order independent, and reports where two copies of
+  one identity disagree rather than letting whichever was read first win.
 
   **The preview shows the dashboard's wiring.** `widgetInteractions` is read
   and rendered: a summary above the grid naming which widget drives which, a
@@ -48,14 +59,16 @@
   recognised and a blank box shows neither its columns nor its metrics; the
   label is what keeps that honest. `selfProvider` is read in both the nested
   and the flat spelling (every corpus widget nests it). How a widget comes by
-  its subject has four answers and the preview gives the right one: fed by a
-  named widget; a selector, which chooses no subject of its own precisely
-  because it drives the widgets below it; driven from outside the dashboard,
-  which is how a dashboard opened in an object's context works; or waiting on
-  a selection nothing on the dashboard provides, which is the only one of the
-  four that will never show data and the only one counted as state 3. Census
-  by distinct content: 118 dashboards, 86 interaction driven, 469 fed widgets,
-  17 selectors, 117 driven from outside, 3 that will never show data.
+  its subject has four answers and the preview gives the right one, deciding
+  from the wiring before it looks at the configuration: fed by a named widget;
+  a selector, which chooses no subject of its own precisely because it drives
+  the widgets below it, whatever its own configuration looks like; driven from
+  outside the dashboard, which is how a dashboard opened in an object's
+  context works; or waiting on a selection nothing on the dashboard provides,
+  which is the only one of the four that will never show data and the only one
+  counted as state 3. Asking the configuration first is what let a widget
+  carry a badge saying how many widgets it drives directly above a box saying
+  it showed nothing.
 
   Widths and order are the dashboard's own, heights are the preview's (taken
   from the content, so nothing is clipped), and the banner on every page says
