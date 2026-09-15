@@ -35,6 +35,7 @@ from __future__ import annotations
 import html
 import json
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -42,6 +43,11 @@ from vcfcf_migrator import mockdata
 from vcfcf_migrator.graph import Graph, Node
 
 MOCK_ROWS = 5
+DEFAULT_GRID_COLUMNS = 12
+# A grid can be widened to fit a widget the dashboard places outside its own
+# columns; past this it is a number no layout can mean, and the widget is
+# clamped and named instead.
+MAX_GRID_COLUMNS = 48
 
 PREVIEW_CSS = """
 .pv { --pv-bg:#1b1f24; --pv-panel:#23282f; --pv-panel2:#2a3038; --pv-line:#363d47;
@@ -550,18 +556,39 @@ def _widget_text(cfg: dict, ctx: dict) -> str:
     return f"<div class='pv-text'>{_e(text[:600])}</div>"
 
 
+class _TextOnly(HTMLParser):
+    """The text of a markup fragment, entities decoded, tags dropped."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: List[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_starttag(self, tag, attrs):  # a tag break is a word break
+        self.parts.append(" ")
+
+    def handle_endtag(self, tag):
+        self.parts.append(" ")
+
+
 def _strip_tags(markup: str) -> str:
-    out: List[str] = []
-    depth = 0
-    for char in markup:
-        if char == "<":
-            depth += 1
-        elif char == ">":
-            depth = max(0, depth - 1)
-            out.append(" ")
-        elif depth == 0:
-            out.append(char)
-    return " ".join("".join(out).split())
+    """The readable text of a widget's markup.
+
+    A parser rather than a depth counter over ``<`` and ``>``: a ``>`` inside
+    an attribute value ends a tag early for a counter, which leaks attribute
+    text into what the admin reads as the widget's words, and a counter also
+    leaves ``&amp;`` on screen as five characters. Escaping is unaffected
+    either way; this is about what the text says.
+    """
+    parser = _TextOnly()
+    try:
+        parser.feed(markup)
+        parser.close()
+    except Exception:  # noqa: BLE001 - a broken fragment still has to render
+        return " ".join(markup.split())
+    return " ".join("".join(parser.parts).split())
 
 
 def _widget_healthchart(cfg: dict, ctx: dict) -> str:
@@ -609,26 +636,82 @@ def _widget_unhandled(widget_type: str) -> str:
 # Per-kind previews
 # ---------------------------------------------------------------------------
 
+def _grid_columns(doc: dict, widgets: Sequence[dict]) -> int:
+    """How many columns to draw: the dashboard's own, widened to fit any
+    widget that runs past them.
+
+    An export can place a widget outside the grid it declares (one corpus
+    dashboard puts an alert list at x=13 on a 12 column grid). Clamping that
+    into whatever columns are left draws a full width widget as an unreadable
+    sliver, and the admin deciding from the preview cannot tell the preview
+    moved it. Widening the grid keeps every widget its declared width and
+    keeps their order; it only makes the neighbours proportionally narrower.
+    """
+    columns = doc.get("gridsterMaxColumns")
+    if not isinstance(columns, int) or not 1 <= columns <= MAX_GRID_COLUMNS:
+        columns = DEFAULT_GRID_COLUMNS
+    for widget in widgets:
+        coords = widget.get("gridsterCoords")
+        if not isinstance(coords, dict):
+            continue
+        try:
+            needed = int(coords.get("x", 1)) + int(coords.get("w", 1)) - 1
+        except (TypeError, ValueError):
+            continue
+        columns = max(columns, min(needed, MAX_GRID_COLUMNS))
+    return columns
+
+
+def _tab_names(doc: dict) -> Dict[object, str]:
+    """``tabId`` to the tab's name, where the document carries one.
+
+    No dashboard in any corpus export has more than one tab, so the shape of a
+    tab table is unproven; these are the keys a tab list would be written
+    under. Where nothing answers, the heading says the document gives only an
+    id rather than printing the id as if it were a name.
+    """
+    out: Dict[object, str] = {}
+    for key in ("tabs", "dashboardTabs", "tabList"):
+        value = doc.get(key)
+        for entry in value if isinstance(value, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            ident = entry.get("id", entry.get("tabId"))
+            name = entry.get("name") or entry.get("title")
+            if ident is not None and name:
+                out[ident] = str(name)
+    return out
+
+
 def _dashboard_preview(graph: Graph, node: Node, preview: Preview) -> str:
     doc = _json_doc(raw_document(graph, node))
     widgets = doc.get("widgets")
     widgets = [w for w in widgets if isinstance(w, dict)] if isinstance(widgets, list) else []
-    columns = doc.get("gridsterMaxColumns")
-    if not isinstance(columns, int) or not 1 <= columns <= 24:
-        columns = 12
+    columns = _grid_columns(doc, widgets)
+    declared = doc.get("gridsterMaxColumns")
+    if isinstance(declared, int) and 1 <= declared < columns:
+        preview.notes.append(
+            f"the dashboard declares {declared} columns and at least one widget runs past "
+            f"them, so the grid is drawn {columns} columns wide rather than squashing it")
 
     tabs: List[object] = []
     for widget in widgets:
         tab = widget.get("tabId")
         if tab not in tabs:
             tabs.append(tab)
+    named = _tab_names(doc)
 
     parts: List[str] = []
     for tab in tabs:
         members = [w for w in widgets if w.get("tabId") == tab]
         if len(tabs) > 1:
-            parts.append(f"<h4 class='pv-h'>tab {_e(tab if tab is not None else 'default')}"
-                         f" ({len(members)} widgets)</h4>")
+            if tab in named:
+                label = _e(named[tab])
+            elif tab is None:
+                label = "no tab"
+            else:
+                label = f"id {_e(tab)}, which is all the document gives"
+            parts.append(f"<h4 class='pv-h'>tab {label} ({len(members)} widgets)</h4>")
         parts.append(_widget_grid(graph, members, columns, preview))
     if not widgets:
         parts.append("<div class='pv-placeholder'>this dashboard carries no widgets</div>")
@@ -678,7 +761,7 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
             inner = _widget_unhandled(widget_type)
         else:
             inner = renderer(cfg, {"graph": graph, "seed": seed, "widget": widget})
-        cells.append(_widget_cell(widget, widget_type, title, inner, columns))
+        cells.append(_widget_cell(widget, widget_type, title, inner, columns, preview))
     if not cells:
         return ""
     return (f"<div class='pv-grid' style='grid-template-columns:repeat({columns},1fr)'>"
@@ -686,7 +769,7 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
 
 
 def _widget_cell(widget: dict, widget_type: str, title: str, inner: str,
-                 columns: int) -> str:
+                 columns: int, preview: Preview) -> str:
     """One widget frame, placed where the dashboard places it.
 
     The columns are the export's own: gridster ``x`` is one-based and ``w`` is
@@ -695,18 +778,29 @@ def _widget_cell(widget: dict, widget_type: str, title: str, inner: str,
     the export's, which is a deliberate trade: honouring ``h`` clipped the
     table inside a widget whose mock rows are taller than the source's row
     band, and a clipped widget is exactly the thing an admin cannot recognise.
-    A widget with no coordinates (rare, but the 8.x exports carry some) flows
-    after the placed ones rather than landing on top of one.
+
+    The grid is already widened to fit any widget that runs past the declared
+    columns (``_grid_columns``), so a clamp here means a widget beyond even
+    that, which is a document this tool has not seen: it is drawn at the edge
+    and named in the notes rather than quietly resized. A widget with no
+    coordinates at all (none in any corpus export, but the fallback costs
+    nothing) flows after the placed ones rather than landing on top of one.
     """
     coords = widget.get("gridsterCoords")
     style = ""
     if isinstance(coords, dict):
         try:
-            x = max(1, min(int(coords.get("x", 1)), columns))
-            w = max(1, min(int(coords.get("w", columns)), columns - x + 1))
+            raw_x, raw_w = int(coords.get("x", 1)), int(coords.get("w", columns))
         except (TypeError, ValueError):
             style = ""
         else:
+            x = max(1, min(raw_x, columns))
+            w = max(1, min(raw_w, columns - x + 1))
+            if (x, w) != (max(1, raw_x), max(1, raw_w)):
+                preview.notes.append(
+                    f"{title or '(untitled widget)'} ({widget_type or 'no type'}) sits at "
+                    f"column {raw_x} spanning {raw_w} of a {columns} column grid, so it is "
+                    f"drawn at column {x} spanning {w}")
             style = f"grid-column:{x} / span {w}"
     klass = "pv-section" if widget_type == "Section" else "pv-w"
     head = (f"<h3>{_e(title or '(untitled widget)')}"
@@ -1166,7 +1260,9 @@ def fragment(graph: Graph, node: Node) -> str:
         f"<p class='pv-sub'>{_e(preview.subtitle)}</p>",
         "<p class='pv-banner'>Every value below is made up, derived by hash from the keys "
         "and names the export carries, so this page looks the same on every run. Names, "
-        "titles, columns and keys are the export's own.</p>",
+        "titles, columns and keys are the export's own. Widget widths and order are the "
+        "dashboard's own; widget heights are this page's, taken from the content so "
+        "nothing is clipped.</p>",
         preview.body,
     ]
     if preview.notes:

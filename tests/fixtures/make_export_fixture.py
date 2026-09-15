@@ -196,12 +196,96 @@ def _recommendationdefs_xml() -> str:
     )
 
 
+def _kind_metric(key: str, label: str, unit="") -> dict:
+    """The ``metric`` block the scoreboard family writes: a list of resource
+    kind metrics, each with its key, its display name and its unit."""
+    return {"mode": "resourceKind", "resourceMetrics": [],
+            "resourceKindMetrics": [{"metricKey": key, "metricName": label,
+                                     "metricUnitId": unit,
+                                     "resourceKindName": "Cluster Compute Resource"}]}
+
+
+def _laid_out_widgets() -> list:
+    """One widget of every type the preview lays out on purpose.
+
+    The preview claims thirteen types; a fixture carrying five of them leaves
+    the other eight renderers executed by nothing, which is how a render
+    surface starts drawing the wrong thing and still ships green
+    (``tests/test_preview.py`` asserts the set here covers
+    ``preview.HANDLED_WIDGETS``, so a new renderer fails until a widget for it
+    lands in this list).
+
+    Every metric key here is an ordinary VCF Operations key rather than a
+    ``Super Metric|sm_<uuid>`` one, and no resource scope names a group, so
+    these widgets add no edge to the dependency graph: they exercise the
+    drawing, not the walking, which the two widgets in
+    ``_cluster_overview`` already cover.
+    """
+    return [
+        {"type": "MetricChart", "title": "[Fixture] CPU over time",
+         "gridsterCoords": {"x": 1, "y": 7, "w": 6, "h": 5},
+         "config": {"title": "[Fixture] CPU over time",
+                    "metric": _kind_metric("cpu|usage_average", "CPU|Usage", "percent")}},
+        {"type": "SparklineChart", "title": "[Fixture] Latency sparkline",
+         "gridsterCoords": {"x": 7, "y": 7, "w": 6, "h": 5},
+         "config": {"title": "[Fixture] Latency sparkline",
+                    "metric": _kind_metric("virtualDisk|totalReadLatency_average",
+                                           "Virtual Disk|Read Latency", "msec")}},
+        {"type": "ParetoAnalysis", "title": "[Fixture] Top consumers",
+         "gridsterCoords": {"x": 1, "y": 13, "w": 4, "h": 6},
+         "config": {"title": "[Fixture] Top consumers", "barsCount": 8,
+                    "metric": {"metricKey": "mem|consumed_average",
+                               "name": "Memory|Consumed"},
+                    "metricName": "Memory consumed",
+                    "metricUnit": {"metricUnitId": "gb", "metricUnitName": "GB"}}},
+        {"type": "Heatmap", "title": "[Fixture] Cluster heat",
+         "gridsterCoords": {"x": 5, "y": 13, "w": 4, "h": 6},
+         "config": {"title": "[Fixture] Cluster heat", "mode": "all",
+                    "configs": [{"colorBy": "cpu|usage_average",
+                                 "sizeBy": "cpu|demandmhz"}]}},
+        {"type": "PropertyList", "title": "[Fixture] Cluster properties",
+         "gridsterCoords": {"x": 9, "y": 13, "w": 4, "h": 6},
+         "config": {"title": "[Fixture] Cluster properties",
+                    "metric": _kind_metric("configuration|dpmConfiginfo|enabled",
+                                           "Cluster Configuration|DPM Enabled")}},
+        {"type": "AlertList", "title": "[Fixture] Open alerts",
+         "gridsterCoords": {"x": 1, "y": 19, "w": 6, "h": 5},
+         "config": {"title": "[Fixture] Open alerts", "mode": "all",
+                    # The one alert this export carries, so the widget's rows
+                    # can be checked against a name the preview resolved.
+                    "alertDefinitions": ["AlertDefinition-VMWARE-Fixture_Cluster_CPU"]}},
+        {"type": "ResourceList", "title": "[Fixture] Clusters",
+         "gridsterCoords": {"x": 7, "y": 19, "w": 6, "h": 5},
+         "config": {"title": "[Fixture] Clusters", "mode": "all",
+                    "additionalColumns": [{"name": "Memory|Usage",
+                                           "metricKey": "mem|usage_average"}]}},
+        {"type": "HealthChart", "title": "[Fixture] Health",
+         "gridsterCoords": {"x": 1, "y": 25, "w": 6, "h": 5},
+         "config": {"title": "[Fixture] Health", "mode": "all",
+                    "metricName": "Badge|Health", "metricKey": "badge|health",
+                    "metricUnit": {"metricUnitId": -1,
+                                   "metricUnitName": "Default Unit"}}},
+        {"type": "Section", "title": "[Fixture] Second half",
+         "gridsterCoords": {"x": 1, "y": 31, "w": 12, "h": 1},
+         "config": {"title": "[Fixture] Second half"}},
+        # Wider than the grid the dashboard declares (x 7 + w 8 needs 14
+        # columns of 12), which is the shape one corpus dashboard has. The
+        # preview widens the grid rather than squashing it into a sliver.
+        {"type": "View", "title": "[Fixture] Overhanging list",
+         "gridsterCoords": {"x": 7, "y": 33, "w": 8, "h": 5},
+         "config": {"title": "[Fixture] Overhanging list",
+                    "viewDefinitionId": VIEW_IDS[0]}},
+    ]
+
+
 def _cluster_overview() -> dict:
     """A dashboard that reaches a view and, separately, a super metric: real
-    widgets address sm_<uuid> without going through a view at all."""
+    widgets address sm_<uuid> without going through a view at all, plus one
+    widget of every type the preview lays out."""
     return {
         "id": DASHBOARD_ID,
         "name": "[Fixture] Cluster Overview",
+        "gridsterMaxColumns": 12,
         "widgets": [
             {"type": "View", "config": {"viewDefinitionId": VIEW_IDS[0]}, "gridsterCoords": {}},
             # The list-shaped scope: no resourceName, no resource kind, just
@@ -210,7 +294,7 @@ def _cluster_overview() -> dict:
             {"type": "Scoreboard", "gridsterCoords": {},
              "config": {"metrics": [{"metricKey": f"Super Metric|sm_{SM_IDS[1]}"}],
                         "resource": [{"name": GROUP_NAME_2, "id": "resource:id:4_::_"}]}},
-        ],
+        ] + _laid_out_widgets(),
         "widgetInteractions": [],
     }
 
@@ -224,28 +308,32 @@ def _vm_overview() -> dict:
         "id": DASHBOARD_ID_2,
         "name": "[Fixture] VM Overview",
         "widgets": [
-            {"type": "View", "gridsterCoords": {},
+            {"type": "View", "gridsterCoords": {}, "tabId": "tab-one",
              "config": {"viewDefinitionId": VIEW_IDS[1],
                         "resource": {"resourceId": "resource:id:0_::_",
                                      "resourceName": GROUP_NAME,
                                      "resourceKindId": "002009ContainerEnvironment"}}},
-            {"type": "ProblemAlertsList", "gridsterCoords": {},
+            {"type": "ProblemAlertsList", "gridsterCoords": {}, "tabId": "tab-one",
              "config": {"resource": {"resourceId": "resource:id:1_::_",
                                      "resourceName": GROUP_NAME_3}}},
             # A widget type the preview does not lay out: it has to be named,
             # not drawn as something else.
             {"type": "Geo", "title": "[Fixture] Where things are",
-             "gridsterCoords": {"x": 1, "y": 9, "w": 6, "h": 5},
+             "gridsterCoords": {"x": 1, "y": 9, "w": 6, "h": 5}, "tabId": "tab-two",
              "config": {"title": "[Fixture] Where things are",
                         "locationFile": "fixture-locations.json"}},
             # Markup inside a document, so the preview can prove it never
             # injects one: a text widget's content is shown as text.
             {"type": "TextDisplay", "title": "[Fixture] Notes",
-             "gridsterCoords": {"x": 7, "y": 9, "w": 6, "h": 5},
+             "gridsterCoords": {"x": 7, "y": 9, "w": 6, "h": 5}, "tabId": "tab-two",
              "config": {"title": "[Fixture] Notes",
                         "viewModeHTML": "<p>Read the <b>runbook</b> first."
                                         "</p><script>alert(1)</script>"}},
         ],
+        # Two tabs, one of which the document names and one it does not: 9.1.1
+        # writes a tabId per widget, and no corpus dashboard has more than one
+        # tab, so this is the only place the multi-tab heading ever runs.
+        "tabs": [{"id": "tab-one", "name": "[Fixture] Overview tab"}],
         "entryKeys": {"uuid": DASHBOARD_ID_2, "resourceKind": [],
                       "resource": [{"resourceKindKey": "Function",
                                     "internalId": "resource:id:2_::_",

@@ -60,6 +60,58 @@ def test_dashboard_preview_lays_out_its_widgets(built):
     assert "SCOREBOARD" in page.upper()
 
 
+def test_every_widget_type_the_preview_claims_is_exercised(built):
+    """The fixture has to carry one widget of every type ``WIDGET_RENDERERS``
+    knows, or a renderer ships with nothing executing it.
+
+    This is the gate the milestone was missing: seven of the thirteen
+    renderers drew 304 widgets in the real corpus and were run by no test, so
+    the next change to any of them would have shipped green whatever it broke.
+    A new entry in ``WIDGET_RENDERERS`` fails here until a widget for it lands
+    in ``make_export_fixture._laid_out_widgets``.
+    """
+    _members, graph = built
+    met = {}
+    for node in graph.by_kind("dashboard"):
+        preview = _preview.build(graph, node)
+        for name, count in preview.widget_types.items():
+            met[name] = met.get(name, 0) + count
+    missing = set(_preview.HANDLED_WIDGETS) - set(met)
+    assert missing == set(), f"no fixture widget exercises: {sorted(missing)}"
+    # And the unhandled case is still present, so the other branch stays live.
+    assert "Geo" in met
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("[Fixture] CPU over time", "cpu|usage_average"),          # MetricChart
+    ("[Fixture] Latency sparkline", "Virtual Disk|Read Latency"),  # SparklineChart
+    ("[Fixture] Top consumers", "mem|consumed_average"),       # ParetoAnalysis
+    ("[Fixture] Cluster heat", "cpu|usage_average"),           # Heatmap
+    ("[Fixture] Cluster properties", "Cluster Configuration|DPM Enabled"),  # PropertyList
+    ("[Fixture] Open alerts", "[Fixture] Cluster CPU alert"),  # AlertList, by name
+    ("[Fixture] Clusters", "Memory|Usage"),                    # ResourceList
+    ("[Fixture] Health", "badge|health"),                      # HealthChart
+    ("[Fixture] Second half", "pv-section"),                   # Section
+])
+def test_each_laid_out_widget_draws_what_the_export_named(built, title, expected):
+    """Each renderer puts the export's own label or key on the page. A
+    renderer that starts drawing nothing, or somebody else's key, fails here
+    rather than in a corpus run nobody repeats."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    assert title in page
+    assert expected in page
+
+
+def test_the_chart_widgets_draw_a_chart_and_the_heatmap_draws_cells(built):
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    assert page.count("<polyline") >= 2      # MetricChart and SparklineChart
+    assert page.count("<rect") >= 8          # ParetoAnalysis, one per bar
+    assert page.count("<div class='pv-heat'>") == 1
+    assert "aria-label='mock trend'" in page and "aria-label='mock ranking'" in page
+
+
 def test_dashboard_preview_names_a_widget_type_it_does_not_draw(built):
     _members, graph = built
     page = page_for(graph, f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}")
@@ -73,6 +125,74 @@ def test_dashboard_preview_names_a_widget_type_it_does_not_draw(built):
     # counted as unhandled.
     assert preview.widget_types["ProblemAlertsList"] == 1
     assert preview.widget_types["TextDisplay"] == 1
+
+
+def test_a_widget_wider_than_the_declared_grid_widens_the_grid(built):
+    """A widget the dashboard places past its own columns is not squashed into
+    a sliver: the grid grows to fit it, and every other widget keeps its
+    declared width."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    # The fixture's overhanging view sits at x=7 spanning 8, which needs 14.
+    assert "grid-template-columns:repeat(14,1fr)" in preview.body
+    assert "grid-column:7 / span 8" in preview.body
+    assert any("drawn 14 columns wide" in note for note in preview.notes)
+    # Nothing was clamped, so nothing claims it was moved.
+    assert not any("is drawn at column" in note for note in preview.notes)
+
+
+def test_a_widget_past_even_a_widened_grid_is_named_not_quietly_resized():
+    """Past the widest grid this page will draw, the widget is clamped, and
+    the note says which widget and what happened to it."""
+    preview = _preview.Preview(node=None, title="", subtitle="", body="")
+    cell = _preview._widget_cell(
+        {"gridsterCoords": {"x": _preview.MAX_GRID_COLUMNS + 40, "y": 1, "w": 6, "h": 4}},
+        "AlertList", "[Fixture] Far away", "", _preview.MAX_GRID_COLUMNS, preview)
+    assert "grid-column:" in cell
+    assert len(preview.notes) == 1
+    assert "[Fixture] Far away" in preview.notes[0]
+    assert "is drawn at column" in preview.notes[0]
+
+
+def test_the_banner_says_whose_layout_this_is(built):
+    """Heights are the page's, not the export's, and the page has to say so or
+    an admin reads the proportions as the dashboard's."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    assert "widths and order are the" in page.lower()
+    assert "heights are this page's" in page
+
+
+def test_a_multi_tab_dashboard_names_the_tab_it_can_and_says_so_when_it_cannot(built):
+    """No corpus dashboard has two tabs, so this is the only exercise the
+    multi-tab heading gets. A tab the document names is named; a tab it does
+    not name says the id is all there is, rather than printing the id as if it
+    were a name."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}")
+    assert "tab [Fixture] Overview tab (2 widgets)" in page
+    assert "tab id tab-two, which is all the document gives (2 widgets)" in page
+
+
+@pytest.mark.parametrize("attrs,children,expected", [
+    ({"type": "message_event", "operator": "contains", "eventType": "SYSTEM",
+      "eventMsg": "disk failure"}, [], "disk failure"),
+    ({"type": "log", "queryText": "error", "autoCancelTimeInMinutes": "0"},
+     [("triggerCondition", {"function": "COUNT", "interval": "5",
+                            "operator": "greaterThan", "value": "0.0"})], "log query"),
+    ({"type": "somethingNew", "operator": "?"}, [], "does not state in words"),
+])
+def test_a_symptom_condition_is_stated_in_words_for_every_shape(attrs, children, expected):
+    """The corpus carries metric, event and log conditions; a shape none of
+    them carries says so rather than rendering as nothing."""
+    import xml.etree.ElementTree as ET
+
+    condition = ET.Element("Condition", attrs)
+    for tag, child_attrs in children:
+        ET.SubElement(condition, tag, child_attrs)
+    words = _preview._condition_words(condition)
+    assert expected in words
 
 
 def test_text_widget_markup_is_shown_as_text_never_injected(built):
@@ -224,6 +344,17 @@ def test_mock_values_come_from_the_key_not_the_clock():
     assert len(mockdata.series("k", points=8)) == 8
 
 
+def test_widget_text_survives_an_angle_bracket_in_an_attribute_and_an_entity():
+    """A depth counter over < and > leaks attribute text into the words the
+    admin reads, and leaves &amp; on screen as five characters."""
+    text = _preview._strip_tags(
+        '<a title="1 > 0" href="x">Fix&nbsp;the&amp;check</a><br/>now')
+    assert "title=" not in text and "href" not in text
+    assert "1 > 0" not in text
+    assert "Fix" in text and "check" in text and "&amp;" not in text
+    assert text.endswith("now")
+
+
 def test_a_preview_of_a_missing_document_is_refused(built):
     _members, graph = built
     node = node_for(graph, f"view:{VIEW_IDS[0]}")
@@ -255,6 +386,16 @@ def test_cli_preview_defaults_the_filename_to_the_object(export_zip, tmp_path, m
     written = capsys.readouterr().out.strip()
     assert written == f"preview-view-{VIEW_IDS[0]}.html"
     assert (tmp_path / written).exists()
+
+
+def test_cli_preview_refuses_an_unwritable_path_with_a_message(export_zip, tmp_path, capsys):
+    """Every other refusal in this CLI is a message and an exit code, so an
+    unwritable path must not be the one that gives a traceback."""
+    blocked = tmp_path / "a-file"
+    blocked.write_text("not a directory")
+    assert main(["preview", str(export_zip), VIEW_IDS[0],
+                 "--out", str(blocked / "nested" / "p.html")]) == 1
+    assert "cannot write" in capsys.readouterr().err
 
 
 def test_cli_preview_refuses_an_object_the_export_does_not_carry(export_zip, capsys):

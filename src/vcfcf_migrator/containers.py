@@ -62,10 +62,19 @@ ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 
 def zip_entry(name: str) -> zipfile.ZipInfo:
-    """A deflated entry at a fixed timestamp, so a bundle is reproducible."""
+    """A deflated entry at a fixed timestamp, so a bundle is reproducible.
+
+    ``create_system`` is pinned too. ``ZipInfo`` sets it to 0 on Windows and 3
+    everywhere else, so without this the Windows binary and the Linux binary
+    write bundles that differ in bytes for the same selection, and an admin
+    comparing hashes across the three shipped binaries would be chasing a
+    field no importer reads. 3 is Unix, which is what every bundle written so
+    far carries.
+    """
     info = zipfile.ZipInfo(name, date_time=ZIP_EPOCH)
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = 0o600 << 16
+    info.create_system = 3
     return info
 
 

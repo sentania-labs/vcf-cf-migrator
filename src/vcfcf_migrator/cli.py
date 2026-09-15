@@ -186,9 +186,15 @@ def cmd_preview(args) -> int:
         sys.stdout.write(html_text)
         return 0
     out = Path(args.out) if args.out else Path(preview_filename(node))
-    if out.parent and str(out.parent):
-        out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(html_text, encoding="utf-8")
+    try:
+        if out.parent and str(out.parent):
+            out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html_text, encoding="utf-8")
+    except OSError as e:
+        # Every other refusal in this CLI is a message and an exit code; an
+        # unwritable path should not be the one that gives a traceback.
+        print(f"vcfcf-migrator preview: cannot write {out}: {e}", file=sys.stderr)
+        return 1
     print(str(out))
     return 0
 
@@ -227,8 +233,12 @@ def cmd_build(args) -> int:
         print("vcfcf-migrator build: the selection is empty, no bundle written", file=sys.stderr)
         return 1
 
-    result = _bundle.build_bundle(members.data, members.order, graph, picked,
-                                  args.out, marker=members.marker)
+    try:
+        result = _bundle.build_bundle(members.data, members.order, graph, picked,
+                                      args.out, marker=members.marker)
+    except OSError as e:
+        print(f"vcfcf-migrator build: cannot write {args.out}: {e}", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps({"selection": _selection.as_dict(graph, picked),
                           "build": result.as_dict()}, indent=2))
