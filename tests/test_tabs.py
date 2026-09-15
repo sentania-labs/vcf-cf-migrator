@@ -104,3 +104,65 @@ def test_diagnostics_reports_from_whatever_panel_you_are_on(state, tmp_path):
         assert state.tab == start, "diagnostics moved you for no reason"
         assert str(out) in state.render()
         assert state.error == ""
+
+
+# ---------------------------------------------------------------------------
+# Disclosures (#20, reported from outside: "selecting the checkbox closes the
+# window that displays all dashboards")
+# ---------------------------------------------------------------------------
+
+def _group_open(page, kind="dashboard"):
+    import re
+    m = re.search(r"<div class='kindgroup( on)?' id='[^']*kind-" + kind + r"'", page)
+    assert m, f"no {kind} group on the page"
+    return bool(m.group(1))
+
+
+def test_a_group_the_user_opened_survives_ticking_a_checkbox(state):
+    """The reported bug. Every action redraws the whole tree, and the open
+    state used to live only in the browser's <details>, so the redraw shut the
+    list you were ticking and selecting several objects meant reopening the
+    group between every click.
+    """
+    dispatch(state, "/disclose", {"id": "kind:dashboard", "on": "0"})
+    assert not _group_open(state.render())
+    dispatch(state, "/disclose", {"id": "kind:dashboard", "on": "1"})
+    assert _group_open(state.render())
+
+    node = next(n for n in state.graph.ordered() if n.kind == "dashboard")
+    dispatch(state, "/select", {"key": node.key, "on": "1"})
+    assert _group_open(state.render()), "ticking a checkbox shut the group again"
+    dispatch(state, "/preview", {"key": node.key})
+    assert _group_open(state.render()), "previewing shut the group"
+
+
+def test_a_group_the_user_shut_stays_shut(state):
+    dispatch(state, "/disclose", {"id": "kind:dashboard", "on": "0"})
+    node = next(n for n in state.graph.ordered() if n.kind == "dashboard")
+    dispatch(state, "/select", {"key": node.key, "on": "1"})
+    assert not _group_open(state.render()), "an action reopened a group the user shut"
+
+
+def test_the_rows_are_on_the_page_even_when_the_group_is_shut(state):
+    """A <details> kept its content in the document, so the browser's own find
+    could reach it. Dropping the body when shut would have been cheaper and
+    would have quietly taken that away."""
+    node = next(n for n in state.graph.ordered() if n.kind == "dashboard")
+    dispatch(state, "/disclose", {"id": "kind:dashboard", "on": "0"})
+    page = state.render()
+    assert not _group_open(page)
+    assert f"value='{node.key}'" in page
+    assert "hidden" in page
+
+
+def test_opening_a_group_comes_back_to_it(state):
+    """Opening a group two thirds down a long tree and being sent back to the
+    top would be its own version of this bug."""
+    anchor = dispatch(state, "/disclose", {"id": "kind:dashboard", "on": "1"})
+    assert anchor
+    assert f"id='{anchor}'" in state.render()
+
+
+def test_a_disclosure_with_no_name_is_refused(state):
+    dispatch(state, "/disclose", {"on": "1"})
+    assert "no disclosure named" in state.error

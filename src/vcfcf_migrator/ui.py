@@ -129,6 +129,14 @@ class PageState:
         # action re-renders the whole page: a tab remembered only in the
         # browser would snap back to the first one on every click.
         self.tab = "preview"
+        # Which disclosures the user has opened or closed, by id. A <details>
+        # element toggles in the browser and tells the server nothing, so with
+        # the state living only in the DOM every action redrew the tree from
+        # scratch and shut the group you were working in. Ticking one checkbox
+        # collapsed the list you were ticking, which made selecting several
+        # objects, the thing this tool is for, close to unusable. Missing key
+        # means "whatever the default for that disclosure is".
+        self.disclosure = {}
         self.message = ""
         self.error = ""
         self.listing = ""
@@ -583,6 +591,19 @@ def _act_open(state: "PageState", form: dict) -> str:
 TABS = ("preview", "commands", "settings")
 
 
+def _act_disclose(state: "PageState", form: dict) -> str:
+    """Open or shut one disclosure, and stay where you were on the page."""
+    which = (form.get("id") or "").strip()
+    if not which:
+        state.error = "no disclosure named"
+        return ""
+    state.disclosure[which] = form.get("on") == "1"
+    # Back to the thing that was clicked. Opening a group two thirds of the
+    # way down a long tree and being returned to the top would be its own
+    # version of the bug this fixes.
+    return uipage.anchor(which)
+
+
 def _act_tab(state: "PageState", form: dict) -> str:
     wanted = (form.get("tab") or "").strip()
     if wanted in TABS:
@@ -716,6 +737,7 @@ ACTIONS = {
     "/open": _act_open,
     "/pick-export": _act_pick_export,
     "/tab": _act_tab,
+    "/disclose": _act_disclose,
     "/inspect": _act_inspect,
     "/tree": _act_tree,
     "/select": _act_select,
