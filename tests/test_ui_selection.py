@@ -398,3 +398,120 @@ def test_the_page_still_works_with_no_export_open(config_dir):
     page = PageState().render()
     assert "Open an export zip" in page
     assert "Start here" in page
+
+
+# ---------------------------------------------------------------------------
+# A failed open must cost the admin nothing
+# ---------------------------------------------------------------------------
+
+def test_a_failed_open_leaves_the_selection_preview_and_counts_untouched(state, tmp_path):
+    """The old export used to be gone from the state before the new one was
+    shown to be readable, so a mistyped path emptied the page and took a
+    prepared selection with it."""
+    state.toggle(DASH, on=True)
+    state.set_preview(DASH)
+    before = (state.zip_path, set(state.selected_keys()), set(state.selection_keys()),
+              state.preview_key, state.selection.counts(state.graph))
+    page_before = state.render()
+
+    bad = tmp_path / "not-an-export.zip"
+    bad.write_bytes(b"not a zip at all")
+    state.open_export(str(bad))
+
+    assert state.error, "a failed open has to say so"
+    assert "is still open" in state.error
+    assert "1 object picked" in state.error
+    assert (state.zip_path, set(state.selected_keys()), set(state.selection_keys()),
+            state.preview_key, state.selection.counts(state.graph)) == before
+    # The page still shows the same selection, counts and preview.
+    page_after = state.render()
+    assert "class='pv-grid'" in page_after
+    for pill in ("<b>1</b> dashboard", "<b>11</b> objects"):
+        assert (pill in page_before) == (pill in page_after)
+    assert state.graph is not None and state.members is not None
+
+
+def test_an_open_with_no_path_keeps_the_export_that_is_open(state):
+    state.toggle(DASH, on=True)
+    state.open_export("")
+    assert "no export zip given" in state.error
+    assert state.selected_keys() == {DASH}
+    assert state.graph is not None
+
+
+def test_a_failed_open_over_http_keeps_the_selection(server, tmp_path):
+    bad = tmp_path / "broken.zip"
+    bad.write_bytes(b"still not a zip")
+    _post(server, "/select", {"key": DASH, "on": "1"})
+    _, body = _post(server, "/open", {"zip": str(bad)})
+    assert "is still open" in body
+    assert "<b>1</b> dashboard" in body
+
+
+def test_a_successful_open_still_resets_the_selection(state, tmp_path):
+    """A selection carried across two exports would name objects the new one
+    does not have, so a *successful* open still clears it."""
+    from make_export_fixture import build_export_zip
+
+    state.toggle(DASH, on=True)
+    other = tmp_path / "other.zip"
+    other.write_bytes(build_export_zip(without=["reports.zip"]))
+    state.open_export(str(other))
+    assert not state.error
+    assert state.selected_keys() == set()
+    assert state.zip_path == str(other)
+
+
+# ---------------------------------------------------------------------------
+# The command line is quoted for the shell it will be pasted into
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("path", [
+    "/tmp/plain.zip",
+    "/tmp/My Export.zip",
+    "/tmp/$(whoami).zip",
+    "/tmp/`id`.zip",
+    '/tmp/a"b.zip',
+    "/tmp/a'b.zip",
+    r"C:\Users\a b\export.zip",
+])
+def test_the_posix_form_is_one_argument_and_substitutes_nothing(path):
+    """Inside double quotes a POSIX shell still expands ``$name`` and
+    ``` `command` ``` , so the double-quoted form produced a line that could
+    write somewhere else or run substituted text."""
+    import shlex
+
+    from vcfcf_migrator.ui import _shell_quote
+
+    quoted = _shell_quote(path, windows=False)
+    assert shlex.split(f"vcfcf-migrator inspect {quoted}")[-1] == path
+    if any(ch in path for ch in "$`"):
+        # The metacharacters survive as characters, not as a substitution.
+        assert quoted.startswith("'") and quoted.endswith("'")
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("C:\\exports\\plain.zip", "C:\\exports\\plain.zip"),
+    ("C:\\Users\\a b\\export.zip", '"C:\\Users\\a b\\export.zip"'),
+    ("C:\\x\\$(whoami).zip", '"C:\\x\\$(whoami).zip"'),
+    ('C:\\x\\a"b.zip', '"C:\\x\\a""b.zip"'),
+])
+def test_the_windows_form_keeps_double_quotes(path, expected):
+    """Single quotes are literal characters to cmd.exe, which is why the
+    double-quoted form was chosen; an embedded double quote is doubled, which
+    is what cmd.exe, PowerShell and the C runtime parser all take."""
+    from vcfcf_migrator.ui import _shell_quote
+
+    assert _shell_quote(path, windows=True) == expected
+
+
+def test_the_platform_decides_the_quoting(monkeypatch):
+    """The command is pasted into the shell of the machine the page runs on."""
+    import os as _os
+
+    from vcfcf_migrator.ui import _shell_quote
+
+    monkeypatch.setattr(_os, "name", "posix")
+    assert _shell_quote("/tmp/My Export.zip") == "'/tmp/My Export.zip'"
+    monkeypatch.setattr(_os, "name", "nt")
+    assert _shell_quote("/tmp/My Export.zip") == '"/tmp/My Export.zip"'

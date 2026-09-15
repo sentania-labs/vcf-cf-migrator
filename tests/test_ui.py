@@ -158,25 +158,32 @@ def test_unknown_path_is_404(server):
 
 @pytest.mark.parametrize("path,expected", [
     ("/tmp/plain.zip", "vcfcf-migrator tree /tmp/plain.zip"),
-    ("/tmp/My Export.zip", 'vcfcf-migrator tree "/tmp/My Export.zip"'),
-    (r"C:\Users\a b\export.zip", 'vcfcf-migrator tree "C:\\Users\\a b\\export.zip"'),
+    ("/tmp/My Export.zip", "vcfcf-migrator tree '/tmp/My Export.zip'"),
+    (r"C:\Users\a b\export.zip", "vcfcf-migrator tree 'C:\\Users\\a b\\export.zip'"),
 ])
-def test_the_command_the_page_hands_back_is_one_argument(path, expected):
+def test_the_command_the_page_hands_back_is_one_argument(path, expected, monkeypatch):
     """A path with a space in it is ordinary on every OS this ships for, and
     unquoted it is two arguments, so the command the button offers does not
-    run. Double quotes rather than shlex, which emits single quotes that
-    Windows takes literally."""
+    run. The quoting follows the platform the page runs on, since that is the
+    shell the line will be pasted into: this asserts the POSIX form, and
+    ``tests/test_ui_selection.py`` asserts the Windows one.
+    """
+    import os
+
     from vcfcf_migrator.ui import PageState
 
+    monkeypatch.setattr(os, "name", "posix")
     state = PageState(path, corpus_cli=None, source_version_cli=None)
     assert state.command_line("tree") == expected
 
 
-def test_a_quoted_command_survives_a_shell_split():
+def test_a_quoted_command_survives_a_shell_split(monkeypatch):
+    import os
     import shlex
 
     from vcfcf_migrator.ui import PageState
 
+    monkeypatch.setattr(os, "name", "posix")
     state = PageState("/tmp/My Export.zip", corpus_cli=None, source_version_cli="9.0.2")
     parts = shlex.split(state.command_line("build"))
     assert "/tmp/My Export.zip" in parts

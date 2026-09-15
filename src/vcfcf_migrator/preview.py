@@ -461,8 +461,8 @@ def view_columns(root: ET.Element) -> List[Column]:
                 label = fields.get("displayName") or key or "(unnamed column)"
                 out.append(Column(
                     label=label, key=key,
-                    is_string=fields.get("isStringAttribute", "").lower() == "true",
-                    is_property=fields.get("isProperty", "").lower() == "true",
+                    is_string=declared_flag(fields.get("isStringAttribute")) is True,
+                    is_property=declared_flag(fields.get("isProperty")) is True,
                     unit=fields.get("preferredUnitId", "")))
     return out
 
@@ -844,6 +844,43 @@ HANDLED_WIDGETS = tuple(sorted(WIDGET_RENDERERS))
 # before the renderer, and before the unhandled-type branch, because state 3
 # beats state 2: an empty widget of a type this page does not draw is empty
 # first.
+# What a document can write for "yes" and for "no". XML hands every attribute
+# back as a string, so ``instanced="false"`` is truthy and reading it as a
+# boolean says the opposite of what the export says; JSON writes real booleans
+# today, and nothing stops a future export writing the string. One reader for
+# all of them, and it answers None where the export says nothing, because
+# "not declared" and "declared false" are different facts and several of these
+# fields mean something different when absent.
+_TRUE_WORDS = frozenset({"true", "yes", "y", "1", "on"})
+_FALSE_WORDS = frozenset({"false", "no", "n", "0", "off"})
+
+
+def declared_flag(value, key: str = "", depth: int = 4) -> Optional[bool]:
+    """``True``, ``False``, or ``None`` when the document does not say.
+
+    *key* lets a value that nests under its own name (``{"selfProvider":
+    {"selfProvider": false}}``, which is how every corpus widget writes it)
+    be unwrapped.
+    """
+    for _ in range(depth):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            word = value.strip().lower()
+            if word in _TRUE_WORDS:
+                return True
+            if word in _FALSE_WORDS:
+                return False
+            return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return bool(value)
+        if isinstance(value, dict) and key and key in value:
+            value = value[key]
+            continue
+        return None
+    return None
+
+
 def _self_provider(cfg: dict) -> Optional[bool]:
     """Whether the widget chooses its own subject, per the export.
 
@@ -855,17 +892,7 @@ def _self_provider(cfg: dict) -> Optional[bool]:
     exactly the content it was written for. ``None`` means the export does not
     say, and nothing is claimed about it.
     """
-    value = cfg.get("selfProvider")
-    for _ in range(4):  # nested is one deep in the corpus; the loop is cheap
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str) and value.strip().lower() in ("true", "false"):
-            return value.strip().lower() == "true"
-        if isinstance(value, dict) and "selfProvider" in value:
-            value = value["selfProvider"]
-            continue
-        return None
-    return None
+    return declared_flag(cfg.get("selfProvider"), key="selfProvider")
 
 
 def _widget_nothing(widget_type: str, cfg: dict, widget: dict) -> Tuple[str, str]:
@@ -1701,7 +1728,10 @@ def _condition_words(condition: ET.Element) -> str:
         target = condition.get("targetKey")
         threshold = condition.get("thresholdType") or ""
         tail = (f" {_e(target)}" if target else f" {_e(value)}" if value is not None else "")
-        instanced = " (instanced)" if condition.get("instanced") else ""
+        # ElementTree hands back the string "false", which is truthy: read
+        # as a boolean it labelled the condition instanced when the export
+        # said the opposite.
+        instanced = " (instanced)" if declared_flag(condition.get("instanced")) else ""
         return (f"<code>{_e(key)}</code> <span class='op'>{_e(operator)}</span>{tail}"
                 + (f" <span class='op'>({_e(threshold)} threshold)</span>" if threshold else "")
                 + instanced)
@@ -1773,8 +1803,8 @@ def _customgroup_preview(graph: Graph, node: Node, preview: Preview) -> str:
     facts = _facts([
         ("group kind", f"{doc.get('adapterKind') or ''} "
                        f"{doc.get('resourceKind') or ''}".strip() or "not declared"),
-        ("membership", "kept up to date automatically"
-                       if doc.get("autoResolveMembership") else "fixed at import"),
+        ("membership", _flag_words(doc.get("autoResolveMembership"),
+                                   "kept up to date automatically", "fixed at import")),
         ("policy", str(doc.get("policy") or "none attached")),
     ])
     definition = doc.get("membershipDefinition")
@@ -1833,7 +1863,8 @@ def _rule_preview(graph: Graph, node: Node, preview: Preview) -> str:
         ("delivered by", f"{doc.get('PluginType') or 'not declared'}"
                          + (f" ({plugin_name})" if plugin_name else "")),
         ("rule type", str(doc.get("RuleType") or "not declared")),
-        ("enabled", "no" if str(doc.get("Disabled", "")).lower() == "true" else "yes"),
+        # Absence means enabled: a rule with no Disabled field is live.
+        ("enabled", "no" if declared_flag(doc.get("Disabled")) is True else "yes"),
     ])
     entries = doc.get("entry")
     entries = entries if isinstance(entries, list) else ([entries] if entries else [])
@@ -1866,7 +1897,7 @@ def _outbound_preview(graph: Graph, node: Node, preview: Preview) -> str:
     config = doc.get("pluginConfig") if isinstance(doc.get("pluginConfig"), dict) else {}
     rows = [("plugin type", str(doc.get("pluginType") or "not declared")),
             ("name", str(config.get("pluginName") or node.name)),
-            ("enabled", "yes" if config.get("enabled") else "no")]
+            ("enabled", _flag_words(config.get("enabled"), "yes", "no"))]
     for key, value in sorted(config.items()):
         if key in ("pluginName", "enabled") or isinstance(value, (dict, list)):
             continue
@@ -1874,6 +1905,14 @@ def _outbound_preview(graph: Graph, node: Node, preview: Preview) -> str:
     return _facts(rows[:14]) + (
         "<p class='pv-sub'>values the export encrypted are carried through untouched and are "
         "not shown here; the target's import asks for the password used at export time</p>")
+
+
+def _flag_words(value, when_true: str, when_false: str,
+                when_unsaid: str = "not declared") -> str:
+    """A declared flag in words, with a third answer for a document that does
+    not declare it at all."""
+    flag = declared_flag(value)
+    return when_true if flag is True else when_false if flag is False else when_unsaid
 
 
 def _facts(rows: Sequence[Tuple[str, str]]) -> str:

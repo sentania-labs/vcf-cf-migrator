@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shlex
 import sys
 import threading
 import urllib.parse
@@ -65,21 +67,34 @@ from vcfcf_migrator.wording import plural
 COMMANDS = ("tree", "preview", "build", "corpus-check")
 
 
-def _shell_quote(value: str) -> str:
-    """Quote a value so the command line reads as one argument.
+def _shell_quote(value: str, windows: Optional[bool] = None) -> str:
+    """Quote a value so the command line reads as one argument, on the shell
+    it is going to be pasted into.
 
-    Double quotes rather than ``shlex.quote``: this page runs on Windows too,
-    where the single quotes shlex emits are literal characters and the command
-    would fail in exactly the case the quoting exists for. Double quotes are
-    understood by cmd.exe, PowerShell and every POSIX shell. An embedded
-    double quote is backslash-escaped, which POSIX shells take and cmd.exe
-    cannot express at all; a path containing one is beyond what a copyable
-    line can promise.
+    Double quotes were chosen here to be Windows-safe, since the single quotes
+    ``shlex.quote`` emits are literal characters to cmd.exe and the command
+    then fails in exactly the case the quoting exists for. That reasoning
+    holds, and it is only half the problem: inside double quotes a POSIX shell
+    still substitutes ``$name`` and ``` `command` ```, so a path carrying
+    either produced a line that writes somewhere else or runs substituted
+    text. So the quoting follows the platform the page is running on, which is
+    the machine whose shell the admin will paste into: ``shlex.quote`` there,
+    and the double-quoted form on Windows.
+
+    *windows* overrides the platform, for the tests that check both forms.
     """
     text = str(value)
-    if text and not any(ch in text for ch in ' \t"\'\\&|<>^()$`'):
+    on_windows = os.name == "nt" if windows is None else windows
+    if not on_windows:
+        return shlex.quote(text)
+    # A backslash is an ordinary path character on Windows, so it does not
+    # force quoting there; the rest are cmd.exe metacharacters or whitespace.
+    if text and not any(ch in text for ch in ' \t"\'&|<>^()$`'):
         return text
-    return '"' + text.replace('"', '\\"') + '"'
+    # cmd.exe cannot express an embedded double quote inside a quoted
+    # argument, so it is doubled, which is what PowerShell and the C runtime
+    # parser both take.
+    return '"' + text.replace('"', '""') + '"'
 
 
 class PageState:
@@ -114,23 +129,38 @@ class PageState:
         return declared
 
     def open_export(self, zip_path: str) -> None:
-        """Read the export and build the graph. A new export resets everything
-        that was about the old one: a selection carried across two exports
-        would name objects this one does not have."""
-        self.zip_path = zip_path
-        self.listing = self.command_output = self.build_report = ""
-        self.preview_key = self.filter_text = self.build_out = ""
-        self.picked, self.selection, self.members, self.graph = [], None, None, None
+        """Read the export and build the graph, then swap.
+
+        Nothing is cleared until the replacement parses. A mistyped path used
+        to empty the page and take the admin's prepared selection with it,
+        with no way back: the old export was gone from the state before the
+        new one had been shown to be readable. So the reading happens into
+        locals, and the state changes only once there is something to change
+        it to.
+
+        A *successful* open still resets everything: a selection carried
+        across two exports would name objects this one does not have.
+        """
         if not zip_path:
-            self.error = "no export zip given"
+            self.error = "no export zip given; the export already open is unchanged"
             return
         try:
             members = read_members(zip_path, source_version=self._declared())
             graph = _graph.build_graph(members.data)
         except (NotAnExport, UnsupportedExport, BadSourceVersion, RawDocError) as e:
             self.error = str(e)
+            if self.graph is not None:
+                still = f"; {self.zip_path} is still open"
+                if self.picked:
+                    still += f" with {plural(len(self.picked), 'object')} picked"
+                self.error += still
             return
+
+        self.zip_path = zip_path
         self.members, self.graph = members, graph
+        self.listing = self.command_output = self.build_report = ""
+        self.preview_key = self.filter_text = self.build_out = ""
+        self.picked = []
         self._reclose()
         counts = graph.counts()
         self.message = (f"{zip_path}: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))

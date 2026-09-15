@@ -977,3 +977,80 @@ def test_every_selector_caption_matches_what_the_export_declares(built):
         assert captions == declared, node.key
         assert preview.selectors == sum(declared.values())
 
+
+
+# ---------------------------------------------------------------------------
+# A declared flag is read, not guessed from truthiness
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value,expected", [
+    (True, True), (False, False),
+    ("true", True), ("false", False), ("True", True), ("FALSE", False),
+    ("yes", True), ("no", False), ("1", True), ("0", False), ("on", True), ("off", False),
+    (" true ", True), ("", None), ("maybe", None), (None, None), ([], None), ({}, None),
+    (1, True), (0, False),
+])
+def test_a_declared_flag_is_read_from_every_spelling(value, expected):
+    """XML hands every attribute back as a string, so "false" is truthy, and
+    JSON writes real booleans today with nothing stopping a future export
+    writing the word. None is its own answer: several of these fields mean
+    something different when the document does not declare them."""
+    assert _preview.declared_flag(value) is expected
+
+
+def test_a_declared_flag_unwraps_the_value_nested_under_its_own_name():
+    assert _preview.declared_flag({"selfProvider": False}, key="selfProvider") is False
+    assert _preview.declared_flag({"selfProvider": "true"}, key="selfProvider") is True
+    assert _preview.declared_flag({"other": True}, key="selfProvider") is None
+
+
+def test_a_condition_the_export_says_is_not_instanced_is_not_called_instanced(built):
+    """``instanced="false"`` was reported as instanced: the string is truthy,
+    and the page said the opposite of the document."""
+    _members, graph = built
+    page = page_for(graph, "symptom:SymptomDefinition-VMWARE-Fixture_CPU_high")
+    assert "(instanced)" not in page
+    import xml.etree.ElementTree as ET
+
+    assert "(instanced)" in _preview._condition_words(
+        ET.Element("Condition", {"type": "metric", "key": "k", "operator": ">",
+                                 "value": "1", "instanced": "true"}))
+    assert "(instanced)" not in _preview._condition_words(
+        ET.Element("Condition", {"type": "metric", "key": "k", "operator": ">",
+                                 "value": "1", "instanced": "false"}))
+
+
+def test_a_group_the_export_says_is_not_auto_resolved_says_so(built):
+    _members, graph = built
+    page = page_for(graph, f"customgroup:{GROUP_NAME_3}")
+    assert "fixed at import" in page
+    assert "kept up to date automatically" not in page
+    # And a group that declares it true still reads true.
+    assert "kept up to date automatically" in page_for(graph, f"customgroup:{GROUP_NAME}")
+
+
+def test_an_outbound_setting_disabled_as_a_string_reads_as_disabled(built):
+    _members, graph = built
+    page = page_for(graph, "outboundsetting:")
+    facts = re.findall(r"<dt>enabled</dt><dd>([^<]*)</dd>", page)
+    assert facts == ["no"], page[:0] or facts
+
+
+def test_a_flag_the_export_does_not_declare_is_not_reported_either_way():
+    """"not declared" is a third answer, and the fields that have it mean
+    something different when absent."""
+    assert _preview._flag_words(None, "yes", "no") == "not declared"
+    assert _preview._flag_words("false", "yes", "no") == "no"
+    assert _preview._flag_words(True, "yes", "no") == "yes"
+
+
+def test_a_column_the_export_says_is_not_text_is_a_number(built):
+    """``isStringAttribute="false"`` decides the cell, so a numeric column
+    cannot be filled with sample text."""
+    _members, graph = built
+    root = _preview._xml_doc(_preview.raw_document(
+        graph, node_for(graph, f"view:{VIEW_IDS[0]}")))
+    columns = _preview.view_columns(root)
+    by_label = {c.label: c for c in columns}
+    assert by_label["CPU Usage"].is_string is False
+    assert by_label["Cluster"].is_string is True

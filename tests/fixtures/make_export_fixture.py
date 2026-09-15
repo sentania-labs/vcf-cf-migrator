@@ -271,7 +271,10 @@ def _symptomdefs_xml() -> str:
         '<SymptomDefinitions><SymptomDefinition adapterKind="VMWARE" id="SymptomDefinition-VMWARE-Fixture_CPU_high" '
         'name="[Fixture] CPU high" resourceKind="ClusterComputeResource">'
         f'<State severity="warning"><Condition key="Super Metric|sm_{SM_IDS[1]}" operator="&gt;" '
-        'thresholdType="static" type="metric" value="0.0" valueType="numeric"/></State>'
+        # instanced="false" is the string "false", which is truthy: read as a
+        # boolean it said the opposite of what the export says.
+        'thresholdType="static" type="metric" value="0.0" valueType="numeric" '
+        'instanced="false"/></State>'
         '</SymptomDefinition>'
         # No State element at all, and a State with no Condition: two
         # different ways a symptom can carry nothing.
@@ -649,7 +652,7 @@ def build_export_zip(without=()) -> bytes:
         }]},
     }, {
         "name": GROUP_NAME_3, "description": "", "adapterKind": "Container",
-        "resourceKind": "Function", "autoResolveMembership": True, "started": True,
+        "resourceKind": "Function", "autoResolveMembership": False, "started": True,
         "membershipDefinition": {"ruleGroups": []},
     }, {
         "name": GROUP_NAME_2, "description": "", "adapterKind": "Container",
@@ -711,7 +714,10 @@ def build_export_zip(without=()) -> bytes:
     }]}}
     outbound = {"serviceCredentials": [], "exportId": "fixture", "plugins": [{
         "pluginType": "StandardEmailPlugin",
-        "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
+        # "false" as a string: JSON writes real booleans today, and nothing
+        # stops an export writing the word.
+        "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": "false",
+                         "resIdent": []},
     }]}
     manifest = {"dashboards": 4, "views": 4, "superMetrics": 4, "customGroups": 3, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
