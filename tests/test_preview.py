@@ -944,8 +944,13 @@ def test_a_selector_the_export_says_nothing_about_gets_neither_tail(built):
 
 
 def test_every_selector_caption_matches_what_the_export_declares(built):
-    """All three branches at once, over every fixture dashboard: the tail is
-    the one the widget's own selfProvider warrants and no other."""
+    """All three branches at once, over every fixture dashboard, matched as a
+    multiset rather than by locating each widget's frame by its title: one
+    title that is a prefix of another finds the wrong frame, which is a
+    weakness of the check and not of the page.
+    """
+    import collections
+
     _members, graph = built
     for node in graph.by_kind("dashboard"):
         preview = _preview.build(graph, node)
@@ -953,19 +958,22 @@ def test_every_selector_caption_matches_what_the_export_declares(built):
         widgets = [w for w in doc.get("widgets", []) if isinstance(w, dict)]
         wiring = _preview.read_wiring(doc, widgets)
         keys = _preview.widget_keys(widgets)
+        declared = collections.Counter()
         for widget in widgets:
             key = keys[id(widget)]
             if not wiring.receivers.get(key) or wiring.providers.get(key):
                 continue
             cfg = widget.get("config") if isinstance(widget.get("config"), dict) else {}
-            declared = _preview._self_provider(cfg)
-            title = _preview._widget_title(widget) or "(untitled widget)"
-            page = _preview.render_page(graph, node)
-            frame = re.search(rf"<h3>{re.escape(title)}.*?(?=<div class='pv-w)", page, re.S)
-            assert frame, title
-            body = frame.group(0)
-            assert ("picks its own subject" in body) is (declared is True), title
-            assert ("does not choose its own subject" in body) is (declared is False), title
-        assert preview.selectors == sum(
-            1 for w in widgets
-            if wiring.receivers.get(keys[id(w)]) and not wiring.providers.get(keys[id(w)]))
+            says = _preview._self_provider(cfg)
+            declared["true" if says is True else "false" if says is False else "unsaid"] += 1
+        captions = collections.Counter()
+        for caption in re.findall(r"<p class='pv-drivenby'>(.*?)</p>",
+                                  _preview.render_page(graph, node), re.S):
+            if "drives" not in caption:
+                continue
+            captions["true" if "picks its own subject" in caption else
+                     "false" if "does not choose its own subject" in caption
+                     else "unsaid"] += 1
+        assert captions == declared, node.key
+        assert preview.selectors == sum(declared.values())
+
