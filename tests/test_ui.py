@@ -45,7 +45,9 @@ def _post(srv, path, form, headers=None):
 
 
 def test_page_shows_versions_settings_and_listing(server):
-    status, body = _get(server)
+    # The settings live on their own panel now; getting there is a post like
+    # everything else, which is also what proves the tab strip works.
+    status, body = _post(server, "/tab", {"tab": "settings"})
     assert status == 200
     assert f"vcfcf-migrator {__version__}" in body
     assert f"vcfcf_core {vcfcf_core.__version__}" in body
@@ -53,9 +55,12 @@ def test_page_shows_versions_settings_and_listing(server):
     assert "current value from: default" in body
     assert "[Fixture] Cluster Overview" in body
     assert "[Fixture] SM 2" in body
+    # The command buttons are on their own panel, so this has to go there to
+    # see them. Splitting the assertion is the point of the change.
+    _, commands = _post(server, "/tab", {"tab": "commands"})
     for cmd in ("tree", "preview", "build", "corpus-check"):
-        assert f"value='{cmd}'" in body
-        assert f"show the {cmd} command" in body
+        assert f"value='{cmd}'" in commands
+        assert f"show the {cmd} command" in commands
     assert "id='zip'" in body
 
 
@@ -64,6 +69,8 @@ def test_server_binds_loopback_only(server):
 
 
 def test_saving_corpus_dir_persists_to_the_settings_file(server, config_dir):
+    # Saving a setting leaves you on the panel you saved it from.
+    _post(server, "/tab", {"tab": "settings"})
     status, body = _post(server, "/settings", {"corpus_dir": "/data/exports"})
     assert status == 200
     assert "corpus directory saved to" in body
@@ -100,6 +107,7 @@ def test_foreign_origin_post_is_refused_with_403(server, config_dir):
 
 
 def test_environment_overrides_the_saved_setting(server, config_dir, monkeypatch):
+    _post(server, "/tab", {"tab": "settings"})
     _post(server, "/settings", {"corpus_dir": "/data/exports"})
     monkeypatch.setenv("VCFCF_MIGRATOR_CORPUS", "/env/corpus")
     _, body = _get(server)

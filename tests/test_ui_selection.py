@@ -365,6 +365,7 @@ ENDPOINT_FORMS = [
     # A cross-origin page must not be able to make the machine pop a file
     # dialog, let alone act on what it returns.
     ("/pick-export", {}),
+    ("/tab", {"tab": "settings"}),
 ]
 
 
