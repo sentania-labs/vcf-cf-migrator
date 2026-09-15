@@ -54,11 +54,7 @@ from vcfcf_migrator import selection as _selection
 from vcfcf_migrator import settings as _settings
 from vcfcf_migrator import uipage
 from vcfcf_migrator.export_reader import (
-    VERSION_FLOOR_TEXT,
-    BadSourceVersion,
     NotAnExport,
-    UnsupportedExport,
-    check_source_version,
     read_export,
     read_members,
     render_text,
@@ -105,7 +101,7 @@ class PageState:
     """What the page shows, and every action it can take. One per server."""
 
     def __init__(self, zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,
-                 source_version_cli: Optional[str] = None, log_cli: Optional[str] = None,
+                 log_cli: Optional[str] = None,
                  log_level_cli: Optional[str] = None, log_format_cli: Optional[str] = None):
         # The page always keeps its events in memory, whether or not a file is
         # asked for, because "save diagnostics" has to be answerable after the
@@ -113,9 +109,8 @@ class PageState:
         self.log = _runlog.NULL
         self.zip_path = zip_path or ""
         self.corpus_cli = corpus_cli
-        self.source_version_cli = source_version_cli
         # The command line's log settings, threaded in the way the corpus
-        # directory and the source version already were. Without this the page
+        # directory already was. Without this the page
         # resolved from the environment and the settings file only, so
         # ``ui --log run.log`` was accepted, advertised in --help and in the
         # README, and wrote a four line file with nothing the page did in it.
@@ -171,8 +166,7 @@ class PageState:
             old.close()
         _runlog.set_current(self.log)
         self.log.header(["ui"], tool_version=__version__,
-                        core_version=vcfcf_core.__version__,
-                        source_version=self._declared())
+                        core_version=vcfcf_core.__version__)
 
     def log_settings(self):
         """Destination, level and where each came from, for the page."""
@@ -218,10 +212,6 @@ class PageState:
 
     # -- loading -----------------------------------------------------------
 
-    def _declared(self) -> Optional[str]:
-        declared, _source = _settings.source_version(self.source_version_cli)
-        return declared
-
     def open_export(self, zip_path: str) -> None:
         """Read the export and build the graph, then swap.
 
@@ -239,9 +229,9 @@ class PageState:
             self.error = "no export zip given; the export already open is unchanged"
             return
         try:
-            members = read_members(zip_path, source_version=self._declared())
+            members = read_members(zip_path)
             graph = _graph.build_graph(members.data)
-        except (NotAnExport, UnsupportedExport, BadSourceVersion, RawDocError) as e:
+        except (NotAnExport, RawDocError) as e:
             self.error = str(e)
             if self.graph is not None:
                 still = f"; {self.zip_path} is still open"
@@ -424,11 +414,6 @@ class PageState:
         if self.graph is None or self.members is None:
             self.error = "open an export first"
             return
-        declared = self._declared()
-        if declared is None:
-            self.error = ("refused, no source version declared. An export carries none, so "
-                          f"declare it in Settings below (floor {VERSION_FLOOR_TEXT})")
-            return
         if not (self.selection and self.selection.keys):
             self.error = "the selection is empty, no bundle written"
             return
@@ -454,8 +439,8 @@ class PageState:
             self.error = "no export zip given"
             return
         try:
-            export = read_export(target, source_version=self._declared())
-        except (NotAnExport, UnsupportedExport, BadSourceVersion) as e:
+            export = read_export(target)
+        except NotAnExport as e:
             self.error = str(e)
             return
         self.listing = (json.dumps(export.as_dict(), indent=2) if as_json
@@ -473,7 +458,7 @@ class PageState:
 
         target, source = _settings.corpus_dir(directory or self.corpus_cli)
         buffer = io.StringIO()
-        code = run(target, source, self._declared(), buffer)
+        code = run(target, source, buffer)
         self.command_output = buffer.getvalue()
         self.message = f"corpus-check over {target} finished with exit code {code}"
 
@@ -485,26 +470,6 @@ class PageState:
                 return
             saved = _settings.save_settings({"corpus_dir": value})
             self.message = f"corpus directory saved to {saved}"
-            return
-        if "source_version" in form:
-            value = form.get("source_version", "").strip()
-            try:
-                check_source_version(value or None)
-            except (BadSourceVersion, UnsupportedExport) as err:
-                self.error = str(err)
-                return
-            saved = _settings.save_settings({"source_version": value})
-            self.message = (f"source version {value} saved to {saved}" if value
-                            else f"source version cleared in {saved}")
-            if self.zip_path and self.graph is None:
-                # A declaration below the floor is what refused the export, so
-                # a new declaration is worth another try at reading it.
-                self.open_export(self.zip_path)
-            elif self.listing:
-                # The listing states the declared version and whether it passed
-                # the floor, so a listing on screen has to be re-read or it
-                # keeps claiming what was true before the save.
-                self.run_inspect(self.zip_path, self.as_json)
             return
         if "log_file" in form:
             value = form.get("log_file", "").strip()
@@ -534,10 +499,8 @@ class PageState:
         path with a space in it (ordinary on every OS this ships for) is
         quoted rather than left as two arguments.
         """
-        declared = self._declared()
         corpus, _src = _settings.corpus_dir(self.corpus_cli)
-        head = "vcfcf-migrator" + (f" --source-version {_shell_quote(declared)}"
-                                   if declared else "")
+        head = "vcfcf-migrator"
         if cmd == "corpus-check":
             return f"{head} corpus-check {_shell_quote(str(corpus))}"
         target = _shell_quote(self.zip_path) if self.zip_path else "<export.zip>"
@@ -546,10 +509,6 @@ class PageState:
             return f"{head} preview {target} {what}"
         if cmd == "build":
             out = _shell_quote(self.build_out or self.default_out())
-            if not declared:
-                return (f"vcfcf-migrator --source-version <X.Y.Z> build {target} "
-                        f"--select <picks.txt> --out {out}   "
-                        "(build refuses without a declared source version)")
             return f"{head} build {target} --select <picks.txt> --out {out}"
         return f"{head} {cmd} {target}"
 
@@ -741,11 +700,11 @@ def _handler_for(state: PageState):
 
 
 def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optional[str] = None,
-                source_version_cli: Optional[str] = None, log_cli: Optional[str] = None,
+                log_cli: Optional[str] = None,
                 log_level_cli: Optional[str] = None,
                 log_format_cli: Optional[str] = None) -> ThreadingHTTPServer:
     """A bound server on 127.0.0.1; the caller runs it. Tests use this."""
-    state = PageState(zip_path, corpus_cli, source_version_cli,
+    state = PageState(zip_path, corpus_cli,
                       log_cli, log_level_cli, log_format_cli)
     server = ThreadingHTTPServer(("127.0.0.1", port), _handler_for(state))
     server.daemon_threads = True
@@ -756,10 +715,10 @@ def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optio
 
 
 def serve(zip_path: Optional[str] = None, port: int = 0, open_browser: bool = True,
-          corpus_cli: Optional[str] = None, source_version_cli: Optional[str] = None,
+          corpus_cli: Optional[str] = None,
           log_cli: Optional[str] = None, log_level_cli: Optional[str] = None,
           log_format_cli: Optional[str] = None) -> int:
-    server = make_server(zip_path, port, corpus_cli, source_version_cli,
+    server = make_server(zip_path, port, corpus_cli,
                          log_cli, log_level_cli, log_format_cli)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"vcfcf-migrator ui: {url} (Ctrl-C to stop)", flush=True)

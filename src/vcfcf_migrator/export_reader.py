@@ -20,10 +20,12 @@ reader dispatches on content, not on member name. Everything not recognised
 (policies, users, roles, solution config, cost drivers) is listed as
 "carried, not inspected" and left alone.
 
-No export carries a product version anywhere (checked on both corpus zips;
-the ``L.v1`` marker is a format marker and is identical across instances),
-so the admin declares it with ``--source-version`` and the 8.10 floor is
-enforced on the declared value only.
+No export names a product version anywhere: not in ``configuration.json``,
+not in any member of any of the five corpus zips, and the ``L.v1`` marker is
+a format marker identical across instances. The tool therefore reads an export
+without knowing or asking which version wrote it, and the log's input
+fingerprint (size, member list, manifest counts) is the honest statement of
+what it read.
 
 The zip readers for dashboards, super metrics and view XML come from
 ``vcfcf_core.extractor.extractor``; this module adds the walk and the
@@ -38,7 +40,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 
 from vcfcf_core.extractor.extractor import (
     _content_xml_from_export_zip,
@@ -47,9 +49,6 @@ from vcfcf_core.extractor.extractor import (
 )
 
 from vcfcf_migrator import runlog
-
-VERSION_FLOOR = (8, 10)
-VERSION_FLOOR_TEXT = "8.10"
 
 # Listing order for inspect output.
 KIND_ORDER = [
@@ -67,19 +66,10 @@ KIND_ORDER = [
 ]
 
 _MARKER_RE = re.compile(r"^(\d+)L\.v(\d+)$")
-_SOURCE_VERSION_RE = re.compile(r"^\d+\.\d+(?:\.\d+)?$")
-
-
-class UnsupportedExport(Exception):
-    """The declared source version is below the floor."""
 
 
 class NotAnExport(Exception):
     """The path is not a readable zip, or the zip is not a content export."""
-
-
-class BadSourceVersion(ValueError):
-    """A declared source version that is not major.minor[.patch]."""
 
 
 @dataclass
@@ -99,7 +89,6 @@ class Export:
     marker: Optional[str] = None
     marker_format: Optional[str] = None
     owner: Optional[str] = None
-    source_version: Optional[str] = None  # declared by the admin, never sniffed
     manifest: dict = field(default_factory=dict)
     items: List[Item] = field(default_factory=list)
     carried: List[str] = field(default_factory=list)
@@ -125,7 +114,6 @@ class Export:
             "marker": self.marker,
             "marker_format": self.marker_format,
             "owner": self.owner,
-            "source_version": self.source_version,
             "manifest": self.manifest,
             "counts": self.counts(),
             "items": [it.as_dict() for it in self.sorted_items()],
@@ -217,47 +205,6 @@ def teach_content(items: Sequence["Item"]) -> None:
     for item in items:
         if item.uuid:
             redactor.content_id(item.uuid)
-
-
-# ---------------------------------------------------------------------------
-# Version handling
-# ---------------------------------------------------------------------------
-
-def parse_version(text: str) -> Optional[Tuple[int, ...]]:
-    """``"8.10.2"`` -> ``(8, 10, 2)``; None unless the text is a dotted
-    major.minor[.patch] string. A bare integer is never a product version."""
-    if not _SOURCE_VERSION_RE.match(str(text).strip()):
-        return None
-    return tuple(int(p) for p in str(text).strip().split("."))
-
-
-def check_source_version(declared: Optional[str]) -> Optional[str]:
-    """Validate a declared source version against the floor.
-
-    Returns the normalised string, or None when nothing was declared. Raises
-    ``BadSourceVersion`` on a malformed value and ``UnsupportedExport`` when
-    it is below the floor.
-    """
-    if declared is None or not str(declared).strip():
-        runlog.detail("version.not_declared", floor=VERSION_FLOOR_TEXT,
-                      reason=runlog.prose("no export carries a product version, so the admin declares it"))
-        return None
-    parsed = parse_version(declared)
-    if parsed is None:
-        runlog.warn("version.refused", declared=str(declared),
-                    reason=runlog.prose("not major.minor[.patch]"))
-        raise BadSourceVersion(
-            f"source version {declared!r} is not major.minor[.patch] (for example 8.18.7)"
-        )
-    if parsed < VERSION_FLOOR:
-        runlog.warn("version.refused", declared=str(declared).strip(),
-                    floor=VERSION_FLOOR_TEXT, reason=runlog.prose("below the floor"))
-        raise UnsupportedExport(
-            f"refused: declared source version {str(declared).strip()} is below the floor {VERSION_FLOOR_TEXT}"
-        )
-    runlog.detail("version.accepted", declared=str(declared).strip(),
-                  floor=VERSION_FLOOR_TEXT)
-    return str(declared).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -423,22 +370,17 @@ def navigation_gaps(dashes: List[dict]) -> int:
 # The walk
 # ---------------------------------------------------------------------------
 
-def read_export(path, source_version: Optional[str] = None) -> Export:
+def read_export(path) -> Export:
     """Walk the export at *path* and return what it carries.
 
-    *source_version* is the admin's declaration (``--source-version``); it is
-    checked against the floor first. Raises ``NotAnExport`` when the file is
-    not a zip or carries neither a marker nor ``configuration.json``,
-    ``BadSourceVersion`` on a malformed declaration and ``UnsupportedExport``
-    when the declared version is below the floor. With no declaration the
-    export is read anyway and the listing says so.
+    Raises ``NotAnExport`` when the file is not a zip or carries neither a
+    marker nor ``configuration.json``.
     """
     with runlog.phase("read", zip=str(path), command="inspect"):
-        return _read_export(path, source_version)
+        return _read_export(path)
 
 
-def _read_export(path, source_version: Optional[str] = None) -> Export:
-    declared = check_source_version(source_version)
+def _read_export(path) -> Export:
     path = Path(path)
     try:
         data = path.read_bytes()
@@ -450,7 +392,7 @@ def _read_export(path, source_version: Optional[str] = None) -> Export:
                      reason=runlog.prose("the file does not open as a zip archive"))
         raise NotAnExport(f"{path} is not a zip file")
 
-    export = Export(path=str(path), source_version=declared)
+    export = Export(path=str(path))
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/") and not n.startswith("__MACOSX/")]
         if runlog.current().on:
@@ -489,8 +431,6 @@ def _read_export(path, source_version: Optional[str] = None) -> Export:
         else:
             runlog.detail("marker.read", marker=export.marker, marker_format="v1",
                           owner=export.owner or "")
-        if declared is None:
-            export.notes.append("source version not declared (--source-version); the 8.10 floor was not checked")
 
         # Dashboards: one core-reader pass per owner member, so a dashboard
         # shared by two owners (same uuid under dashboards/<a> and
@@ -609,8 +549,7 @@ def _read_export(path, source_version: Optional[str] = None) -> Export:
         runlog.warn("input.note", note=note)
     runlog.info("input.listed", items=len(export.items), counts=counts,
                 carried=len(export.carried),
-                navigation_gaps=export.navigation_gaps,
-                source_version=export.source_version)
+                navigation_gaps=export.navigation_gaps)
     runlog.count("items", len(export.items))
     return export
 
@@ -638,18 +577,17 @@ class Members:
     directory_order: dict = field(default_factory=dict)
 
 
-def read_members(path, source_version: Optional[str] = None) -> Members:
+def read_members(path) -> Members:
     """Load every member of the export at *path*.
 
     Same refusals as ``read_export``: not a zip, no marker and no
-    ``configuration.json``, a declared version below the floor.
+    ``configuration.json``.
     """
     with runlog.phase("read", zip=str(path)):
-        return _read_members(path, source_version)
+        return _read_members(path)
 
 
-def _read_members(path, source_version: Optional[str] = None) -> Members:
-    check_source_version(source_version)
+def _read_members(path) -> Members:
     path = Path(path)
     try:
         raw = path.read_bytes()
@@ -718,10 +656,6 @@ def render_text(export: Export) -> str:
         lines.append(f"marker: {export.marker} (format {export.marker_format}, owner {export.owner or 'unknown'})")
     else:
         lines.append("marker: none")
-    if export.source_version:
-        lines.append(f"source version: {export.source_version} (declared; floor {VERSION_FLOOR_TEXT} passed)")
-    else:
-        lines.append("source version: not declared")
     if export.manifest:
         summary = " ".join(f"{k}={v}" for k, v in export.manifest.items() if not isinstance(v, (dict, list)))
         lines.append(f"manifest: {summary}")

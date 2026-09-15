@@ -1,17 +1,14 @@
 """Persisted settings and their resolution order.
 
-Two settings exist in M3, each resolved the same way, first hit wins:
+The corpus directory resolves first hit wins:
 
-1. a value passed on the command line (``--corpus``, ``--source-version``),
-2. the environment (``VCFCF_MIGRATOR_CORPUS``, ``VCFCF_MIGRATOR_SOURCE_VERSION``),
+1. a value passed on the command line (``--corpus``),
+2. the environment (``VCFCF_MIGRATOR_CORPUS``),
 3. the settings file in the user's config directory,
-4. the default: ``./corpus`` for the corpus directory (relative to the
-   current working directory), nothing for the source version.
+4. the default: ``./corpus``, relative to the current working directory.
 
 The corpus directory is where the admin keeps real export zips (never inside
-the repo). The source version is the VCF Operations version the export came
-from; no export carries it, so the admin declares it and the tool remembers
-the declaration.
+the repo).
 
 The config directory follows the platform convention by hand (no
 platformdirs dependency): ``%APPDATA%`` on Windows, ``~/Library/Application
@@ -28,7 +25,6 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 ENV_CORPUS = "VCFCF_MIGRATOR_CORPUS"
-ENV_SOURCE_VERSION = "VCFCF_MIGRATOR_SOURCE_VERSION"
 ENV_CONFIG_DIR = "VCFCF_MIGRATOR_CONFIG_DIR"
 DEFAULT_CORPUS = "corpus"
 APP_DIR_NAME = "vcfcf-migrator"
@@ -84,17 +80,3 @@ def corpus_dir(cli_value: Optional[str] = None) -> Tuple[Path, str]:
     if saved:
         return Path(str(saved)), f"settings file ({settings_path()})"
     return Path(DEFAULT_CORPUS), "default"
-
-
-def source_version(cli_value: Optional[str] = None) -> Tuple[Optional[str], str]:
-    """Resolve the declared source version and say where it came from;
-    ``(None, "not declared")`` when nothing declares it."""
-    if cli_value:
-        return str(cli_value).strip(), "command line"
-    env = os.environ.get(ENV_SOURCE_VERSION)
-    if env:
-        return env.strip(), f"environment ({ENV_SOURCE_VERSION})"
-    saved = load_settings().get("source_version")
-    if saved:
-        return str(saved).strip(), f"settings file ({settings_path()})"
-    return None, "not declared"

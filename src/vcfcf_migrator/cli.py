@@ -28,10 +28,7 @@ from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import settings as _settings
 from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator.export_reader import (
-    VERSION_FLOOR_TEXT,
-    BadSourceVersion,
     NotAnExport,
-    UnsupportedExport,
     read_export,
     read_members,
     render_text,
@@ -58,24 +55,20 @@ class _SubParser(argparse.ArgumentParser):
 
 
 def log_flags() -> argparse.ArgumentParser:
-    """The options every subcommand shares: the corpus directory, the declared
-    source version and the three log settings.
+    """The options every subcommand shares: the corpus directory and the three
+    log settings.
 
     They sit on the main parser *and* on every subcommand, because
-    ``ui my-export.zip --source-version 9.0.2`` is what the README tells an
-    admin to type, and argparse refuses an option after the subcommand unless
-    the subcommand has it too. That command failed with "unrecognized
-    arguments" until this parent carried them. The subcommand copies default to
-    SUPPRESS, so a flag given before the subcommand is not overwritten by the
-    subcommand's own default.
+    ``ui my-export.zip --log run.log`` is a shape an admin types, and argparse
+    refuses an option after the subcommand unless the subcommand has it too.
+    That command failed with "unrecognized arguments" until this parent carried
+    them. The subcommand copies default to SUPPRESS, so a flag given before the
+    subcommand is not overwritten by the subcommand's own default.
     """
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument("--corpus", metavar="DIR", default=argparse.SUPPRESS,
                         help=f"corpus directory holding real export zips (also "
                              f"{_settings.ENV_CORPUS}; default ./corpus)")
-    parent.add_argument("--source-version", metavar="X.Y[.Z]", default=argparse.SUPPRESS,
-                        help="VCF Operations version the export came from, for example "
-                             "8.18.7; exports carry none, so you declare it")
     parent.add_argument("--log", metavar="FILE", default=argparse.SUPPRESS,
                         help=f"write a run log to FILE (- for stderr; also {_runlog.ENV_LOG})")
     parent.add_argument("--log-level", metavar="LEVEL", default=argparse.SUPPRESS,
@@ -107,10 +100,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="jsonl, one JSON object per line, or text, the same events as "
                         f"lines a person reads (default {_runlog.DEFAULT_FORMAT}; also "
                         f"{_runlog.ENV_LOG_FORMAT})")
-    p.add_argument("--source-version", metavar="X.Y[.Z]", default=None,
-                   help="VCF Operations version the export came from, for example 8.18.7; exports carry none, "
-                        f"so you declare it (also {_settings.ENV_SOURCE_VERSION}, or the ui page). "
-                        f"Floor {VERSION_FLOOR_TEXT}; without it inspect continues and build refuses")
     logs = log_flags()
     sub = p.add_subparsers(dest="command", metavar="command", parser_class=_SubParser)
     sub.required = False
@@ -166,13 +155,9 @@ def cmd_version(_args) -> int:
 
 
 def cmd_inspect(args) -> int:
-    declared, _source = _settings.source_version(args.source_version)
     try:
-        export = read_export(args.zip, source_version=declared)
-    except BadSourceVersion as e:
-        print(f"vcfcf-migrator inspect: {e}", file=sys.stderr)
-        return 2
-    except (NotAnExport, UnsupportedExport) as e:
+        export = read_export(args.zip)
+    except NotAnExport as e:
         print(f"vcfcf-migrator inspect: {e}", file=sys.stderr)
         return 1
     if args.json:
@@ -182,20 +167,16 @@ def cmd_inspect(args) -> int:
     return 0
 
 
-def _load_graph(zip_path, declared):
+def _load_graph(zip_path):
     """The export's members and the graph over them, read once."""
-    members = read_members(zip_path, source_version=declared)
+    members = read_members(zip_path)
     return members, _graph.build_graph(members.data)
 
 
 def cmd_tree(args) -> int:
-    declared, _source = _settings.source_version(args.source_version)
     try:
-        _members, graph = _load_graph(args.zip, declared)
-    except BadSourceVersion as e:
-        print(f"vcfcf-migrator tree: {e}", file=sys.stderr)
-        return 2
-    except (NotAnExport, UnsupportedExport, RawDocError) as e:
+        _members, graph = _load_graph(args.zip)
+    except (NotAnExport, RawDocError) as e:
         print(f"vcfcf-migrator tree: {e}", file=sys.stderr)
         return 1
     if args.json:
@@ -218,13 +199,9 @@ def preview_filename(node) -> str:
 def cmd_preview(args) -> int:
     from vcfcf_migrator import preview as _preview
 
-    declared, _source = _settings.source_version(args.source_version)
     try:
-        _members, graph = _load_graph(args.zip, declared)
-    except BadSourceVersion as e:
-        print(f"vcfcf-migrator preview: {e}", file=sys.stderr)
-        return 2
-    except (NotAnExport, UnsupportedExport, RawDocError) as e:
+        _members, graph = _load_graph(args.zip)
+    except (NotAnExport, RawDocError) as e:
         print(f"vcfcf-migrator preview: {e}", file=sys.stderr)
         return 1
 
@@ -276,28 +253,15 @@ def cmd_preview(args) -> int:
 
 
 def cmd_build(args) -> int:
-    declared, _source = _settings.source_version(args.source_version)
     if bool(args.select) == bool(args.select_all):
         _runlog.error("command.refused", command="build",
                       reason=_runlog.prose("pass exactly one of --select FILE or --select-all"))
         print("vcfcf-migrator build: pass exactly one of --select FILE or --select-all",
               file=sys.stderr)
         return 2
-    if declared is None:
-        _runlog.error("command.refused", command="build",
-                      reason=_runlog.prose(
-                          "no source version declared; an export carries none, so the "
-                          f"admin declares it (floor {VERSION_FLOOR_TEXT})"))
-        print("vcfcf-migrator build: refused, no source version declared. An export carries "
-              f"none, so declare it with --source-version (floor {VERSION_FLOOR_TEXT})",
-              file=sys.stderr)
-        return 1
     try:
-        members, graph = _load_graph(args.zip, declared)
-    except BadSourceVersion as e:
-        print(f"vcfcf-migrator build: {e}", file=sys.stderr)
-        return 2
-    except (NotAnExport, UnsupportedExport, RawDocError) as e:
+        members, graph = _load_graph(args.zip)
+    except (NotAnExport, RawDocError) as e:
         print(f"vcfcf-migrator build: {e}", file=sys.stderr)
         return 1
 
@@ -338,8 +302,7 @@ def cmd_corpus_check(args) -> int:
     from vcfcf_migrator.corpus_check import run
 
     directory, source = _settings.corpus_dir(args.dir or args.corpus)
-    declared, _src = _settings.source_version(args.source_version)
-    return run(directory, source, declared, sys.stdout)
+    return run(directory, source, sys.stdout)
 
 
 def cmd_log_render(args) -> int:
@@ -364,7 +327,7 @@ def cmd_ui(args) -> int:
     # log settings: a flag the tool accepts and ignores is worse than one it
     # refuses.
     return serve(zip_path=args.zip, port=args.port, open_browser=not args.no_browser,
-                 corpus_cli=args.corpus, source_version_cli=args.source_version,
+                 corpus_cli=args.corpus,
                  log_cli=getattr(args, "log", None),
                  log_level_cli=getattr(args, "log_level", None),
                  log_format_cli=getattr(args, "log_format", None))
@@ -395,10 +358,8 @@ def open_run_log(args, argv: List[str]) -> _runlog.Log:
     fmt, _fmt_from = _runlog.resolve_format(getattr(args, "log_format", None))
     log = _runlog.open_log(destination, level=level, fmt=fmt)
     _runlog.set_current(log)
-    declared, declared_from = _settings.source_version(args.source_version)
     corpus, corpus_from = _settings.corpus_dir(args.corpus)
     log.header(argv, tool_version=__version__, core_version=vcfcf_core.__version__,
-               source_version=declared, source_version_from=declared_from,
                corpus_dir=corpus, corpus_from=corpus_from)
     _runlog.detail("log.level", level=level, level_from=level_from)
     return log
