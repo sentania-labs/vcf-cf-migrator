@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from vcfcf_migrator import runlog
 from vcfcf_migrator.graph import Graph, MissingEdge, Node, missing_reason
 
 
@@ -67,12 +68,14 @@ def parse_selection_file(path) -> List[str]:
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as e:
+        runlog.error("selection.unreadable", path=str(path), reason=str(e))
         raise BadSelection(f"cannot read selection file {path}: {e}") from e
     out = []
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
         if line:
             out.append(line)
+    runlog.detail("selection.file_read", path=str(path), lines=len(out))
     return out
 
 
@@ -108,6 +111,12 @@ def resolve(graph: Graph, lines: Sequence[str]) -> List[str]:
     the admin asked for is worse than no bundle."""
     keys: List[str] = []
     unknown: List[str] = []
+    # A selection line is the admin naming content, the same as an identifier
+    # typed on the command line, so the identifiers in it are allowed in the
+    # log. Without this a refusal read "the selection names [excluded:id]",
+    # which is the one line where the identifier is the whole point.
+    for line in lines:
+        runlog.content_id(line)
     for line in lines:
         hits = match_line(graph, line)
         if not hits:
@@ -116,10 +125,18 @@ def resolve(graph: Graph, lines: Sequence[str]) -> List[str]:
         for key in hits:
             if key not in keys:
                 keys.append(key)
+    for line in lines:
+        runlog.debug("selection.line", line=str(line),
+                     matched=len(match_line(graph, line)))
     if unknown:
+        runlog.warn("selection.refused", lines=list(unknown),
+                    reason=runlog.prose("the selection names objects this export does not carry; "
+                           "continuing would write a bundle quietly missing what was asked "
+                           "for, so no bundle is written"))
         raise BadSelection(
             "the selection names " + ("objects" if len(unknown) > 1 else "an object")
             + " this export does not carry: " + ", ".join(unknown))
+    runlog.detail("selection.resolved", lines=len(lines), keys=len(keys))
     return keys
 
 
@@ -130,7 +147,18 @@ def close(graph: Graph, keys: Sequence[str]) -> Selection:
     target instance may already have the object, and the spec's baseline is
     that the admin is never worse off than importing the whole export by hand.
     """
+    with runlog.phase("select", picked=len(keys)):
+        return _close(graph, keys)
+
+
+def _close(graph: Graph, keys: Sequence[str]) -> Selection:
     selection = Selection(picked=list(keys), lines=len(keys))
+    for key in keys:
+        node = graph.nodes.get(key)
+        if node is not None:
+            runlog.detail("closure.picked", kind=node.kind, uuid=node.uuid or "",
+                          name=node.name, owner=node.owner or None,
+                          member=node.member, reason=runlog.prose("named by the selection"))
     queue: List[str] = list(keys)
     seen: List[str] = []
     while queue:
@@ -149,6 +177,14 @@ def close(graph: Graph, keys: Sequence[str]) -> Selection:
                 continue
             selection.added.append(Addition(
                 target, f"{child.label()} added: required by {node.label()}"))
+            runlog.detail("closure.added", kind=child.kind, uuid=child.uuid or "",
+                          name=child.name, owner=child.owner or None,
+                          member=child.member,
+                          required_by_kind=node.kind, required_by_uuid=node.uuid or "",
+                          required_by_name=node.name,
+                          reason=runlog.prose("the selected object depends on it, so a bundle without "
+                                 "it would point at an object it does not carry"))
+            runlog.count("added_by_closure")
             queue.append(target)
         for gap in graph.missing_for(key):
             if gap not in selection.missing:
@@ -161,6 +197,19 @@ def close(graph: Graph, keys: Sequence[str]) -> Selection:
             if note.source_key == key and note.text not in selection.unhandled:
                 selection.unhandled.append(note.text)
     selection.keys = seen
+    for gap in selection.missing:
+        source = graph.nodes.get(gap.source_key)
+        runlog.detail("closure.not_carried", wants=gap.kind, ident=gap.ident,
+                      via=gap.via,
+                      kind=source.kind if source else "", name=source.name if source else "",
+                      uuid=(source.uuid or "") if source else "",
+                      reason=runlog.prose(
+                          f"{missing_reason(gap)}, so it will be missing on import "
+                          "unless the target already has it"))
+    runlog.info("selection.closed", picked=len(selection.picked),
+                carried=len(selection.keys), added=len(selection.added),
+                counts=selection.counts(graph), not_carried=len(selection.missing),
+                ambiguous=len(selection.ambiguous), unhandled=len(selection.unhandled))
     return selection
 
 

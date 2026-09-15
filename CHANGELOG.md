@@ -1,6 +1,116 @@
 # Changelog
 
-## Unreleased
+## v0.1.0 (2026-09-15)
+
+- Three from the external review, each on a guarantee this release makes.
+  A carried dashboard owner always gets a `dashboardsharings/<owner>` member
+  now, whatever the source held: a source member that is empty, unparseable,
+  or about dashboards the selection left behind narrows to nothing, and that
+  used to suppress the synthesis as surely as an absent member did, producing
+  a bundle the target refuses. A credential written as a number is excluded
+  like any other: the exception that let an export's manifest counts through
+  was "an int under a credential key", which is a hole shaped like a type, and
+  counts are now recognised by name. And a log destination that goes bad after
+  it was opened, a full disk or a broken pipe, no longer reaches the caller:
+  the stream is dropped, the loss is recorded in the events still held in
+  memory and in `run.end`, and the command carries on.
+
+- Logging, after the whole-branch review: the person pattern names its own
+  replacement through named groups, so the match and the replacement come from
+  one expression rather than from `re.I` and `str.lower()` agreeing by
+  coincidence on ASCII and raising `KeyError` on the 77 pairs where they do
+  not; a logging call can no longer end a command, since a failure inside one
+  is recorded as `log.failed` and the event that could not be redacted is
+  dropped rather than written; and the person rules have no exemption at all
+  now keyed on a field name, because the old one covered `detail=str(e)` at
+  fourteen call sites and wrote an exception message carrying a name straight
+  into the log and the diagnostics file. It is a value type instead,
+  `runlog.prose(...)`: a sentence this package wrote is exempt from the person
+  rules wherever it appears, and anything computed from a document, an
+  exception or a path is data and is scanned.
+
+- Logging, after review: a person's name is excluded in any case and wherever
+  it starts a token; an account uuid written as 32 hex digits without hyphens
+  is excluded like a hyphenated one; a person value that is also an ordinary
+  word (the built-in `admin`) is never taught, and the tool's own sentences are
+  never person-substituted, so a log can still be paired with what VCF
+  Operations says about a named object; the page carries its redactor across a
+  log setting change rather than forgetting every person it had harvested; file
+  paths are logged as typed everywhere, and the contents line and the README
+  both say so; the in-memory buffer never drops the header events and says when
+  it truncates; the page ends its log; the census logs the code it exits with;
+  and a build now logs the hash of each carried document, not only of each
+  member.
+
+- **Bundles are refused by VCF Operations no longer.** Every bundle this tool
+  had built was rejected with `INVALID_FILE_FORMAT` and an empty operation
+  list, on any source version, including one built from an instance's own
+  export and fed straight back to it. The cause was the two zip directory
+  entries: an export carries `dashboards/` and `dashboardsharings/` as
+  zero-length entries, the reader dropped every entry whose name ends in `/`,
+  and the writer never put them back. The factory's own packager writes them
+  with the comment "Explicit directory entries mirror the real export shape",
+  above a docstring recording an earlier version rejected with that same code.
+
+  A bundle now carries a directory entry for every directory it writes into,
+  in the source's own spelling, and never one with nothing under it. Where a
+  source has no `dashboardsharings/<owner>` (the 8.18.7 export carries the
+  directory and no file in it) the bundle synthesizes an empty sharing list,
+  which is the container half of the contract: the document is the source's,
+  the scaffolding is the tool's.
+
+  **The check that was lying.** Every comparison went through the reader, which
+  dropped directory entries on both sides, so the tool agreed with itself about
+  something neither side could see. `corpus-check` and the suite now compare the
+  two zips' own entry lists with `zipfile`: a select-all bundle must carry every
+  entry the export has except the members this tool never carries, must add
+  nothing but a scaffolding member the target requires, and must have a
+  directory entry for everything it writes.
+
+- `preview`: three reads of a field corrected, all the same shape as the
+  `instanced="false"` finding, a field's truthiness taken for its content.
+  `viewModeHTML` is a flag saying a text widget's words are markup, not the
+  words: all 25 TextDisplay widgets in the corpus carry it as `True` with the
+  text in `editorData`, so every one of them rendered as the single word
+  "True". A heatmap's `colorBy` and `sizeBy` are `{metricKey, value}` pairs on
+  all 41 corpus heatmaps, and `str()` on one printed the document itself onto
+  the page. Both now go through one reader that the renderer and the emptiness
+  rule share. A health chart no longer draws in the product's healthy green
+  over a value this page invented.
+
+- `preview`: heatmaps draw in the colours the widget declares in
+  `color.thresholds.colors`, and in VCF Operations' own green-to-red ramp where
+  it declares none. The page's blue is chart ink and no longer appears in a
+  heat scale. Table headers wrap instead of being cut mid-word.
+
+- `--log FILE`: a run log, off until asked for, with `--log-level`
+  (error, warn, info, detail, debug; detail by default) and `--log-format`
+  (`jsonl`, one JSON object per line, or `text`, the same events as lines a
+  person reads). `log-render FILE` turns a captured jsonl log into that text.
+  Both flags work before or after the subcommand, and the page has a control
+  for each.
+
+  The bar is a support case: a log plus whatever VCF Operations said when an
+  import failed has to be enough to say what the tool did and why, without the
+  export. So the log carries the run header (tool, library, Python, platform,
+  the argument vector, the declared source version and where it came from, and
+  a fingerprint of the input), every decision with the object it concerns and
+  the reason for it, every refusal and every swallowed failure, per-phase
+  counts and timings, and the output fingerprint with a hash per member.
+
+  What it never carries is enforced by the logging layer rather than by each
+  call site: credentials and encrypted values, people, and metric or mock
+  values. Key rules exclude a field by its name whatever it holds; values
+  harvested from the export's own user documents are replaced everywhere they
+  appear; and a uuid that was never declared to be a content identifier is
+  excluded, so a caller cannot log an account uuid by accident. Dashboard
+  owners appear as `owner-1`, `owner-2`, stable within a run, with no table
+  written anywhere. The log says in its first line what classes of thing it
+  holds, so an admin can decide before sending it.
+
+  The page also writes one diagnostics file, holding the run header, the input
+  fingerprint, every event and the bundle's manifest, with the button naming
+  what is in it.
 
 - `preview`: an HTML page per object, so an admin can recognise it before
   deciding to carry it. A dashboard is laid out widget by widget in the

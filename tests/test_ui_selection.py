@@ -364,11 +364,12 @@ ENDPOINT_FORMS = [
     ("/inspect", {"zip": "/tmp/whatever.zip"}),
     ("/settings", {"corpus_dir": "/pwned"}),
     ("/run", {"cmd": "tree"}),
+    ("/diagnostics", {"out": "/tmp/pwned-diagnostics.jsonl"}),
 ]
 
 
 def test_the_cross_origin_test_covers_every_endpoint_the_server_has():
-    """The list above is derived, not remembered. A fourteenth entry in
+    """The list above is derived, not remembered. A fifteenth entry in
     ``ui.ACTIONS`` fails here until it is covered, which is the same
     derive-do-not-hand-copy rule ``tests/fixtures/ci_checks.py`` exists for."""
     assert {path for path, _form in ENDPOINT_FORMS} == set(POST_PATHS) == set(ACTIONS)

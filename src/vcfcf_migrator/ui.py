@@ -44,8 +44,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Optional
 
+import vcfcf_core
+
+from vcfcf_migrator import __version__
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import graph as _graph
+from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator import settings as _settings
 from vcfcf_migrator import uipage
@@ -101,10 +105,23 @@ class PageState:
     """What the page shows, and every action it can take. One per server."""
 
     def __init__(self, zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,
-                 source_version_cli: Optional[str] = None):
+                 source_version_cli: Optional[str] = None, log_cli: Optional[str] = None,
+                 log_level_cli: Optional[str] = None, log_format_cli: Optional[str] = None):
+        # The page always keeps its events in memory, whether or not a file is
+        # asked for, because "save diagnostics" has to be answerable after the
+        # run that went wrong rather than only before it.
+        self.log = _runlog.NULL
         self.zip_path = zip_path or ""
         self.corpus_cli = corpus_cli
         self.source_version_cli = source_version_cli
+        # The command line's log settings, threaded in the way the corpus
+        # directory and the source version already were. Without this the page
+        # resolved from the environment and the settings file only, so
+        # ``ui --log run.log`` was accepted, advertised in --help and in the
+        # README, and wrote a four line file with nothing the page did in it.
+        self.log_cli = log_cli
+        self.log_level_cli = log_level_cli
+        self.log_format_cli = log_format_cli
         self.origins = ()  # set once the server is bound: 127.0.0.1 and localhost on this port
         self.message = ""
         self.error = ""
@@ -119,8 +136,85 @@ class PageState:
         self.graph = None
         self.picked: List[str] = []
         self.selection: Optional[_selection.Selection] = None
+        self.diagnostics_out = ""
+        self.open_log()
         if self.zip_path:
             self.open_export(self.zip_path)
+
+    # -- the log -----------------------------------------------------------
+
+    def open_log(self) -> None:
+        """Open (or re-open) this page's log from the current settings.
+
+        **The redactor carries over.** It holds everything harvested from the
+        export that is open: the owners, their pseudonyms and every person in
+        the export's user documents. A fresh one knows none of that, so a log
+        opened after the admin changed a setting logged the names the previous
+        one excluded, and the diagnostics file the README tells a customer to
+        mail carried them too.
+        """
+        destination, self.log_from = _runlog.resolve_destination(self.log_cli)
+        level, self.log_level_from = _runlog.resolve_level(self.log_level_cli)
+        fmt, _fmt_from = _runlog.resolve_format(self.log_format_cli)
+        old = self.log
+        try:
+            self.log = _runlog.open_log(destination, level=level, fmt=fmt,
+                                        keep_events=True,
+                                        redactor=old.redactor if old else None)
+        except (_runlog.BadLogSetting, OSError) as e:
+            self.error = f"cannot write the log to {destination}: {e}"
+            return
+        if old is not None and getattr(old, "events", None):
+            # A level or destination change mid-session keeps the story so far.
+            self.log.events = list(old.events) + self.log.events
+        if old is not _runlog.NULL:
+            old.close()
+        _runlog.set_current(self.log)
+        self.log.header(["ui"], tool_version=__version__,
+                        core_version=vcfcf_core.__version__,
+                        source_version=self._declared())
+
+    def log_settings(self):
+        """Destination, level and where each came from, for the page."""
+        destination, destination_from = _runlog.resolve_destination(self.log_cli)
+        level, level_from = _runlog.resolve_level(self.log_level_cli)
+        return destination, destination_from, level, level_from
+
+    def _last_event(self, code: str) -> Optional[dict]:
+        for event in reversed(self.log.events or []):
+            if event.get("event") == code:
+                return event
+        return None
+
+    def save_diagnostics(self, out_path: str) -> None:
+        """One file holding the run header, the input fingerprint, every log
+        event and the bundle's manifest, ready to attach to a mail."""
+        out = (out_path or "").strip() or self.default_diagnostics_out()
+        header = self._last_event("run.start")
+        source = self._last_event("input.fingerprint")
+        bundle = self._last_event("output.fingerprint")
+        document = _runlog.diagnostics_document(list(self.log.events or []),
+                                                header=header, source=source,
+                                                bundle=bundle)
+        try:
+            target = Path(out)
+            if target.parent and str(target.parent):
+                target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(document, encoding="utf-8")
+        except OSError as e:
+            _runlog.error("output.unwritable", path=out, reason=str(e))
+            self.error = f"cannot write {out}: {e}"
+            return
+        self.diagnostics_out = str(target)
+        self.message = (f"diagnostics written to {target}: "
+                        f"{plural(len(self.log.events or []), 'event')}, "
+                        + _runlog.DIAGNOSTICS_CONTENTS)
+
+    def default_diagnostics_out(self) -> str:
+        if not self.zip_path:
+            return "vcfcf-migrator-diagnostics.jsonl"
+        source = Path(self.zip_path)
+        return str(source.with_name(source.stem + "-diagnostics.jsonl"))
 
     # -- loading -----------------------------------------------------------
 
@@ -342,7 +436,9 @@ class PageState:
         self.build_out = out
         try:
             result = _bundle.build_bundle(self.members.data, self.members.order, self.graph,
-                                          self.selection, out, marker=self.members.marker)
+                                          self.selection, out, marker=self.members.marker,
+                                          directories=self.members.directories,
+                                          directory_order=self.members.directory_order)
         except OSError as e:
             self.error = f"cannot write {out}: {e}"
             return
@@ -410,6 +506,24 @@ class PageState:
                 # keeps claiming what was true before the save.
                 self.run_inspect(self.zip_path, self.as_json)
             return
+        if "log_file" in form:
+            value = form.get("log_file", "").strip()
+            _settings.save_settings({"log_file": value})
+            self.open_log()
+            self.message = (f"the run log goes to {value}" if value
+                            else "the run log is off; the page still keeps this session's "
+                                 "events for the diagnostics file")
+            return
+        if "log_level" in form:
+            value = form.get("log_level", "").strip().lower()
+            if value not in _runlog.LEVELS:
+                self.error = (f"log level {value!r} is not one of "
+                              + ", ".join(_runlog.LEVEL_NAMES))
+                return
+            _settings.save_settings({"log_level": value})
+            self.open_log()
+            self.message = f"log level {value}"
+            return
         self.error = "nothing to save"
 
     def command_line(self, cmd: str) -> str:
@@ -440,7 +554,16 @@ class PageState:
         return f"{head} {cmd} {target}"
 
     def render(self) -> str:
-        return uipage.render(self)
+        """The page, and the end of the story so far.
+
+        A page can be closed at any moment, so a log it wrote has to end. The
+        page renders after every action, so ``run.end`` goes here: without it a
+        truncated log and a finished one look the same, which is the one thing
+        a log must never be ambiguous about.
+        """
+        page = uipage.render(self)
+        self.log.finish(1 if self.error else 0, what="page")
+        return page
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +636,11 @@ def _act_corpus_check(state: "PageState", form: dict) -> str:
     return ""
 
 
+def _act_diagnostics(state: "PageState", form: dict) -> str:
+    state.save_diagnostics(form.get("out", ""))
+    return ""
+
+
 def _act_run(state: "PageState", form: dict) -> str:
     cmd = form.get("cmd", "")
     if cmd in COMMANDS:
@@ -535,6 +663,7 @@ ACTIONS = {
     "/filter": _act_filter,
     "/build": _act_build,
     "/corpus-check": _act_corpus_check,
+    "/diagnostics": _act_diagnostics,
     "/run": _act_run,
 }
 POST_PATHS = tuple(sorted(ACTIONS))
@@ -598,15 +727,26 @@ def _handler_for(state: PageState):
                 return
             form = self._form()
             state.message, state.error = "", ""
-            self._redirect_home(action(state, form) or "")
+            # The page is a second way in to the same commands, so what it was
+            # asked to do belongs in the same log the CLI writes. Form values
+            # go through the same exclusion rules as everything else.
+            _runlog.set_current(state.log)
+            _runlog.info("page.action", action=path,
+                         fields={k: v for k, v in form.items() if k != "lines"})
+            with state.log.phase("page", action=path):
+                anchor = action(state, form) or ""
+            self._redirect_home(anchor)
 
     return Handler
 
 
 def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optional[str] = None,
-                source_version_cli: Optional[str] = None) -> ThreadingHTTPServer:
+                source_version_cli: Optional[str] = None, log_cli: Optional[str] = None,
+                log_level_cli: Optional[str] = None,
+                log_format_cli: Optional[str] = None) -> ThreadingHTTPServer:
     """A bound server on 127.0.0.1; the caller runs it. Tests use this."""
-    state = PageState(zip_path, corpus_cli, source_version_cli)
+    state = PageState(zip_path, corpus_cli, source_version_cli,
+                      log_cli, log_level_cli, log_format_cli)
     server = ThreadingHTTPServer(("127.0.0.1", port), _handler_for(state))
     server.daemon_threads = True
     port = server.server_address[1]
@@ -616,8 +756,11 @@ def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optio
 
 
 def serve(zip_path: Optional[str] = None, port: int = 0, open_browser: bool = True,
-          corpus_cli: Optional[str] = None, source_version_cli: Optional[str] = None) -> int:
-    server = make_server(zip_path, port, corpus_cli, source_version_cli)
+          corpus_cli: Optional[str] = None, source_version_cli: Optional[str] = None,
+          log_cli: Optional[str] = None, log_level_cli: Optional[str] = None,
+          log_format_cli: Optional[str] = None) -> int:
+    server = make_server(zip_path, port, corpus_cli, source_version_cli,
+                         log_cli, log_level_cli, log_format_cli)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"vcfcf-migrator ui: {url} (Ctrl-C to stop)", flush=True)
     if open_browser:

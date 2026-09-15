@@ -27,7 +27,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from vcfcf_migrator import rawdoc
-from vcfcf_migrator.containers import Container, zip_entry
+from vcfcf_migrator import runlog
+from vcfcf_migrator import containers as _containers
+from vcfcf_migrator.containers import Container, zip_directory_entry, zip_entry
 from vcfcf_migrator.graph import Graph
 from vcfcf_migrator.selection import Selection
 
@@ -54,10 +56,12 @@ class BuildResult:
     members: List[str] = field(default_factory=list)
     skipped_members: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    directories: List[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {"path": self.path, "counts": self.counts, "members": self.members,
-                "skipped_members": self.skipped_members, "notes": self.notes}
+                "skipped_members": self.skipped_members, "notes": self.notes,
+                "directories": self.directories}
 
 
 def _entry_key(kind: str, ident: str, owner: str) -> str:
@@ -164,9 +168,47 @@ def _narrow_sharings(data: bytes, dashboard_uuids: Sequence[str]) -> Optional[by
     return rawdoc.build_array(out).encode("utf-8")
 
 
+def directory_entries(written: Sequence[str], source_directories: Sequence[str] = ()
+                      ) -> List[str]:
+    """The zip directory entries a bundle needs: one per directory it puts a
+    member in, plus any the source declared above those.
+
+    A bundle that writes ``dashboards/<owner>`` and no ``dashboards/`` entry is
+    refused by VCF Operations before a document is read. The entries are
+    derived from what the bundle actually carries rather than copied wholesale,
+    so a bundle never declares a directory it has nothing in.
+    """
+    needed: List[str] = []
+    for name in written:
+        parts = name.split("/")[:-1]
+        for depth in range(1, len(parts) + 1):
+            entry = "/".join(parts[:depth]) + "/"
+            if entry not in needed:
+                needed.append(entry)
+    for name in source_directories:
+        # A source entry above a directory the bundle uses (``a/`` where the
+        # bundle writes ``a/b/c``) is kept in the source's own spelling.
+        if name in needed:
+            continue
+        if any(other.startswith(name) for other in needed):
+            needed.append(name)
+    return needed
+
+
 def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
-                 selection: Selection, out_path, marker: Optional[str] = None) -> BuildResult:
+                 selection: Selection, out_path, marker: Optional[str] = None,
+                 directories: Sequence[str] = (),
+                 directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
     """Write the bundle for *selection* and report what went into it."""
+    with runlog.phase("build", out=str(out_path), carrying=len(selection.keys)):
+        return _build_bundle(members, member_order, graph, selection, out_path, marker,
+                             directories, directory_order or {})
+
+
+def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
+                  selection: Selection, out_path, marker: Optional[str] = None,
+                  directories: Sequence[str] = (),
+                  directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
     result = BuildResult(path=str(out_path))
     picked = _picked_indexes(graph.containers, selection.keys)
     by_owner, dashboard_uuids = _carried_dashboards(graph, selection.keys)
@@ -184,27 +226,89 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
         # A container that had to judge material it does not fully understand
         # says so; nothing is dropped quietly.
         result.notes.extend(getattr(container, "notes", []))
+        for note in getattr(container, "notes", []):
+            runlog.warn("container.judged", member=container.member, note=note,
+                        reason=runlog.prose("the container had to decide about material this tool does "
+                               "not fully understand, and says so rather than dropping it "
+                               "quietly"))
+        runlog.detail("container.rebuilt", member=container.member,
+                      container=type(container).__name__,
+                      entries_kept=len(set(indexes)),
+                      entries_total=len(container.entries()),
+                      bytes=len(data) if data else 0,
+                      reason=runlog.prose("containers are rebuilt around the documents kept; the "
+                             "documents themselves are copied byte for byte"))
         if data:
             written[container.member] = data
 
     if marker and marker in members:
         written[marker] = members[marker]
+        runlog.detail("marker.copied", marker=marker, bytes=len(members[marker]),
+                      reason=runlog.prose("copied byte for byte; its content is the source instance's "
+                             "owner uuid, which this log does not carry"))
     else:
+        runlog.warn("marker.absent",
+                    reason=runlog.prose("the source carried no <digits>L.v1 marker, so the bundle has none"))
         result.notes.append("the source carried no <digits>L.v1 marker, so the bundle has none")
 
     owners = [o for o in by_owner if o]
+    # The keys go through the layer like everything else. This line used to
+    # call runlog.owner() itself, which is the "a rule a caller can forget"
+    # the layer disclaims: it was correct only because this caller remembered.
+    runlog.detail("owners.carried", owners=owners,
+                  dashboards_by_owner={o: c for o, c in sorted(by_owner.items())},
+                  reason=runlog.prose("one dashboard member per owner, and the manifest counts them "
+                         "the same way"))
     if owners and "usermappings.json" in members:
         narrowed = _narrow_usermappings(members["usermappings.json"], owners)
         if narrowed is not None:
             written["usermappings.json"] = narrowed
-    for name, data in members.items():
-        if not name.startswith("dashboardsharings/"):
-            continue
-        if name.split("/", 1)[1] not in owners:
-            continue
-        narrowed = _narrow_sharings(data, dashboard_uuids)
+            runlog.detail("scaffolding.narrowed", member="usermappings.json",
+                          bytes=len(narrowed), owners=owners,
+                          reason=runlog.prose("narrowed to the owners whose dashboards are carried, so "
+                                 "no scaffolding points at something the bundle does not hold"))
+        else:
+            runlog.warn("scaffolding.dropped", member="usermappings.json",
+                        reason=runlog.prose("nothing in it matched the owners carried, or it did not "
+                               "parse, so the bundle carries none of it"))
+    # One rule, one loop: **every carried owner gets a sharing member**,
+    # whatever the source held. It used to be two loops, one synthesizing where
+    # the source had no member at all and one narrowing where it did, and the
+    # gap between them was a real bundle the target refuses: a source member
+    # that is empty, that does not parse, or that names only dashboards this
+    # selection left behind narrows to nothing, and the old code had already
+    # skipped synthesis for that owner. An empty list shares with nobody, which
+    # imports the dashboards private to whoever imports them. Choosing who else
+    # may see an admin's content is not this tool's decision to make, so where
+    # it must write something it writes the smallest thing.
+    for owner in owners:
+        member = f"dashboardsharings/{owner}"
+        source = members.get(member)
+        narrowed = _narrow_sharings(source, dashboard_uuids) if source else None
         if narrowed is not None:
-            written[name] = narrowed
+            written[member] = narrowed
+            runlog.detail("scaffolding.narrowed", member=member, bytes=len(narrowed),
+                          dashboards=len(dashboard_uuids),
+                          reason=runlog.prose("narrowed to the dashboards the bundle carries"))
+            continue
+        written[member] = b"[]"
+        why = ("carried no sharing member for this owner" if source is None else
+               "carried a sharing member with nothing in it for the dashboards this "
+               "bundle holds, or one that did not parse")
+        result.notes.append(
+            f"the source {why}, and the target needs one beside every dashboards "
+            f"member, so the bundle carries an empty {member}: the dashboards import "
+            "private to whoever imports them, and sharing is set on the target")
+        runlog.detail("scaffolding.synthesized", member=member,
+                      had_source=source is not None,
+                      reason=runlog.prose(
+                          "every carried owner needs a sharing member beside its "
+                          "dashboards member; nothing in the source could be narrowed "
+                          "into one, so this is an empty list, which shares with nobody"))
+    for name in members:
+        if name.startswith("dashboardsharings/") and name.split("/", 1)[1] not in owners:
+            runlog.detail("scaffolding.skipped", member=name,
+                          reason=runlog.prose("this owner has no dashboard in the bundle"))
 
     counts = selection.counts(graph)
     manifest: Dict[str, object] = {"type": "CUSTOM"}
@@ -215,6 +319,11 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
         manifest["dashboardsByOwner"] = [{"owner": o, "count": c}
                                          for o, c in sorted(by_owner.items())]
     written["configuration.json"] = (json.dumps(manifest, indent=3) + "\n").encode("utf-8")
+    runlog.detail("manifest.written", member="configuration.json",
+                  manifest={k: v for k, v in manifest.items() if not isinstance(v, list)},
+                  owners=len(by_owner),
+                  reason=runlog.prose("written fresh with the counts actually carried, because the "
+                         "source's counts describe the source"))
     result.notes.append(
         "configuration.json is written fresh with the counts actually carried, and with no "
         "signature: the factory's own content-import path writes it the same way "
@@ -226,16 +335,79 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
             "verification list")
 
     ordered = [n for n in member_order if n in written]
-    ordered += [n for n in sorted(written) if n not in ordered]
+    # A member the source did not have goes beside the member it belongs to,
+    # not on the end: a synthesized dashboardsharings/<owner> sits after its
+    # dashboards/<owner>, which is where every export puts it and where the
+    # factory's own packager writes it.
+    for name in sorted(written):
+        if name in ordered:
+            continue
+        sibling = ("dashboards/" + name.split("/", 1)[1]
+                   if name.startswith("dashboardsharings/") else "")
+        if sibling and sibling in ordered:
+            ordered.insert(ordered.index(sibling) + 1, name)
+        else:
+            ordered.append(name)
+
+    # Directory entries, in the place the source put them: before the members
+    # that sit under them, which is where every corpus export writes them.
+    needed_dirs = directory_entries(ordered, directories)
+    positions = directory_order or {}
+    placed: List[str] = []
+    for name in ordered:
+        for entry in needed_dirs:
+            if entry in placed or not name.startswith(entry):
+                continue
+            placed.append(entry)
+        placed.append(name)
+    for entry in needed_dirs:
+        if entry not in placed:
+            placed.append(entry)
+    ordered = placed
+    result.directories = [n for n in ordered if n.endswith("/")]
+    runlog.detail("bundle.directories", directories=result.directories,
+                  from_source=[d for d in result.directories if d in (directories or ())],
+                  reason=runlog.prose("a zip directory entry per directory the bundle writes into; "
+                         "without them VCF Operations refuses the bundle as an invalid "
+                         "file format before it reads a document"))
 
     out_path = Path(out_path)
-    if out_path.parent and str(out_path.parent):
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in ordered:
-            z.writestr(zip_entry(name), written[name])
-    out_path.write_bytes(buf.getvalue())
+    try:
+        if out_path.parent and str(out_path.parent):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for name in ordered:
+                if name.endswith("/"):
+                    z.writestr(zip_directory_entry(name), b"")
+                    continue
+                z.writestr(zip_entry(name), written[name])
+        out_path.write_bytes(buf.getvalue())
+    except OSError as e:
+        runlog.error("bundle.unwritable", path=str(out_path), reason=str(e),
+                     members=len(ordered))
+        raise
+    # The spec asks the build fingerprint for "the hash of each carried
+    # document", and a member is not a document: views.zip is one entry over
+    # every view the bundle carries, so a member hash cannot answer "what did
+    # it write for the view Ops just rejected".
+    documents = []
+    for (member, kind, ident, owner), raw in sorted(
+            _containers.documents({k: v for k, v in written.items()
+                                   if not k.endswith("/")}).items()):
+        node = graph.nodes.get(_entry_key(kind, ident, owner))
+        documents.append({"member": member, "kind": kind,
+                          "uuid": (node.uuid if node else "") or ident,
+                          "name": node.name if node else "",
+                          "owner": owner or None,
+                          "bytes": len(raw), "sha256": runlog.sha256(raw)})
+    runlog.info("output.fingerprint", path=str(out_path),
+                zip_bytes=len(buf.getvalue()),
+                zip_sha256=runlog.sha256(buf.getvalue()),
+                documents=len(documents),
+                **runlog.output_fingerprint(written, ordered))
+    for document in documents:
+        runlog.detail("output.document", **document)
 
     result.counts = counts
     result.members = ordered
@@ -244,6 +416,15 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
     if result.skipped_members:
         result.notes.append("members this tool does not understand were not carried "
                             "(they cannot be selected): " + ", ".join(result.skipped_members))
+    for name in result.skipped_members:
+        runlog.detail("member.not_carried", member=name,
+                      reason=runlog.prose("this tool does not understand the member, so it cannot be "
+                             "selected and carrying it would be the tool deciding for the "
+                             "admin"))
+    runlog.info("bundle.written", path=str(out_path), counts=result.counts,
+                members=len(result.members), skipped=len(result.skipped_members),
+                notes=len(result.notes))
+    runlog.count("members_written", len(result.members))
     return result
 
 

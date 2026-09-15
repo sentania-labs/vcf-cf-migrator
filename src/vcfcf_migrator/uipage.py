@@ -24,6 +24,7 @@ import html
 from typing import Dict, List, Optional, Sequence
 
 from vcfcf_migrator import preview as _preview
+from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import settings as _settings
 from vcfcf_migrator.cli import version_lines
 from vcfcf_migrator.export_reader import VERSION_FLOOR_TEXT
@@ -510,6 +511,54 @@ def _commands_panel(state) -> str:
     return "".join(parts)
 
 
+def _log_controls(state) -> str:
+    """The run log's destination and level, and the diagnostics file.
+
+    Every setting has a GUI option, and a log an admin cannot turn on from the
+    page is a setting that lives only in a flag.
+    """
+    destination, destination_from, level, level_from = state.log_settings()
+    options = "".join(
+        f"<option value='{e(name)}'{' selected' if name == level else ''}>{e(name)}</option>"
+        for name in _runlog.LEVEL_NAMES)
+    return "".join([
+        "<form method='post' action='/settings' class='field'>",
+        "<label for='log_file'>Run log file (empty for none; - writes to the terminal)"
+        "</label>",
+        f"<input type='text' name='log_file' id='log_file' value='{e(destination or '')}' "
+        "placeholder='run.log'>",
+        f"<p class='note'><small>current value from: {e(destination_from)}. The log records "
+        "what the tool did and why: content names, uuids and metric keys, member names, "
+        "counts and timings. It never records credentials, the export password, encrypted "
+        "values, or anything about people; dashboard owners appear as owner-1, owner-2. "
+        "This page keeps the events of this session whether or not a file is set, so "
+        "diagnostics can be saved after something goes wrong."
+        "</small></p>",
+        _button("Save log file"),
+        "</form>",
+        "<form method='post' action='/settings' class='field'>",
+        "<label for='log_level'>Log level</label>",
+        f"<select name='log_level' id='log_level'>{options}</select>",
+        f"<p class='note'><small>current value from: {e(level_from)}. error is the failure "
+        "that ended the command, warn adds every refusal and every swallowed failure, info "
+        "adds the run header, the per-phase counts and timings and the fingerprints, detail "
+        "adds every decision with its object and its reason, debug adds the per-reference "
+        "and per-widget detail behind them.</small></p>",
+        _button("Save log level"),
+        "</form>",
+        "<form method='post' action='/diagnostics' class='field'>",
+        "<label for='diag_out'>Diagnostics file</label>",
+        f"<input type='text' name='out' id='diag_out' "
+        f"value='{e(state.diagnostics_out or state.default_diagnostics_out())}'>",
+        _button("Save the run header, the export's fingerprint, every log event and the "
+                "bundle's manifest to one file"),
+        "<p class='note'><small>One file, ready to attach to a mail. It holds content "
+        "names, uuids and metric keys and no people and no credentials, so it can be sent "
+        "as it is.</small></p>",
+        "</form>",
+    ])
+
+
 def _settings_panel(state) -> str:
     corpus, source = _settings.corpus_dir(state.corpus_cli)
     declared, declared_source = _settings.source_version(state.source_version_cli)
@@ -536,6 +585,7 @@ def _settings_panel(state) -> str:
         "flag override the saved value.</small></p>",
         _button("Save source version"),
         "</form>",
+        _log_controls(state),
         "<p class='note'><small>This page listens on 127.0.0.1 only, and a same-origin "
         "check stops another web page in your browser from driving it. That is a CSRF "
         "control, not an access control: any process on this machine can reach the port "

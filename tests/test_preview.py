@@ -225,6 +225,111 @@ def test_text_widget_markup_is_shown_as_text_never_injected(built):
     assert "Read the runbook first" in page
 
 
+def test_a_heatmap_draws_in_the_products_heat_colours_never_in_the_pages_blue(built):
+    """VCF Operations heat scales run red to green and never show blue; the
+    page's blue is chart ink and says nothing about a value."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    heat = page.split("<div class='pv-heat'>")[1].split("</div>")[0]
+    assert _preview.HEAT_GOOD in heat or _preview.HEAT_BAD in heat
+    assert "--pv-accent" not in heat and "--pv-ok" not in heat
+
+
+def test_a_heatmap_keeps_the_colours_the_widget_declares():
+    """The scale runs either way round depending on the metric, so the widget's
+    own list wins over the default ramp."""
+    reversed_scale = ["#DE3F30", "#ECC33E", "#74B43B"]
+    cfg = {"configs": [{"colorBy": "cpu|demandPct",
+                        "color": {"thresholds": {"values": [0, 50, 100],
+                                                 "colors": reversed_scale}}}]}
+    assert _preview.heatmap_palette(cfg) == tuple(reversed_scale)
+    assert _preview.heatmap_palette({"configs": [{}]}) == _preview.HEAT_RAMP
+    # Anything that is not a plain hex colour is ignored rather than injected.
+    assert _preview.heatmap_palette(
+        {"configs": [{"color": {"thresholds": {"colors": ["url(x)", 3]}}}]}
+    ) == _preview.HEAT_RAMP
+
+
+def test_a_health_chart_does_not_claim_health_it_has_not_read(built):
+    """Its values are invented, so drawing it in the product's healthy green
+    would be a verdict this page cannot reach."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    body = page.split("<body>")[1]
+    cell = body.split("HealthChart</span></h3>")[1][:900]
+    assert "polyline" in cell
+    assert "--pv-ok" not in cell
+
+
+@pytest.mark.parametrize("value,label,key", [
+    ({"metricKey": "cpu|demandPct", "value": "CPU Demand %"}, "CPU Demand %", "cpu|demandPct"),
+    ("cpu|usage_average", "", "cpu|usage_average"),
+    ({}, "", ""),
+    (None, "", ""),
+])
+def test_a_metric_reference_reads_as_a_pair_or_as_a_bare_key(value, label, key):
+    assert _preview.metric_ref(value) == (label, key)
+
+
+def test_a_heatmap_names_its_metric_rather_than_printing_the_document(built):
+    """The corpus writes colorBy as {metricKey, value}; ``str()`` on it put the
+    braces and quotes on the page under every heatmap."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    assert "CPU Usage %" in page and "cpu|usage_average" in page
+    assert "{&#x27;metricKey&#x27;" not in page and "{'metricKey'" not in page
+
+
+def test_a_heatmap_whose_block_names_no_metric_carries_nothing():
+    cfg = {"configs": [{"colorBy": {}, "sizeBy": None}]}
+    code, _sentence = _preview._widget_nothing("Heatmap", cfg, {"type": "Heatmap"})
+    assert code == "widget-no-heatmap-metric"
+    assert _preview.heatmap_metrics(cfg) == []
+
+
+def test_a_text_widget_reads_its_words_from_editor_data_not_from_the_flag(built):
+    """``viewModeHTML`` is a flag saying the words are markup, not the words.
+
+    Every TextDisplay in the corpus carries it as the boolean ``True`` with the
+    text in ``editorData``, and reading it as content drew all 25 of them as
+    the single word "True".
+    """
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    assert "Cluster headroom is measured after HA." in page
+    assert ">True<" not in page
+
+
+def test_a_flag_over_an_empty_body_is_a_text_widget_with_no_text(built):
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    empty = [title for title, _kind, reason in preview.empty_widgets
+             if "carries no text" in reason]
+    assert "[Fixture] Flagged but empty" in empty, preview.empty_widgets
+    assert "[Fixture] About these metrics" not in empty
+
+
+@pytest.mark.parametrize("cfg,expected", [
+    ({"viewModeHTML": True, "editorData": "<p>words</p>"}, "words"),
+    ({"viewModeHTML": False, "editorData": "plain words"}, "plain words"),
+    ({"viewModeHTML": "<p>markup here</p>"}, "markup here"),
+    ({"viewModeHTML": True, "editorData": ""}, ""),
+    ({"viewModeHTML": True}, ""),
+    ({"editorData": {"blocks": ["structured"]}}, "structured"),
+])
+def test_text_widget_content_reads_every_shape_the_key_pair_is_written_in(cfg, expected):
+    assert expected in _preview.text_widget_words(cfg)
+
+
+def test_the_renderer_and_the_emptiness_rule_read_the_text_the_same_way():
+    """One reader, so the page cannot draw words the roll-up calls missing."""
+    cfg = {"viewModeHTML": True, "editorData": ""}
+    code, _sentence = _preview._widget_nothing("TextDisplay", cfg, {"type": "TextDisplay"})
+    assert code == "widget-no-text"
+    assert _preview.text_widget_words(cfg) == ""
+
+
 def test_view_preview_shows_its_columns_with_mock_rows(built):
     _members, graph = built
     node = node_for(graph, f"view:{VIEW_IDS[0]}")

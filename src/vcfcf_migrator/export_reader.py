@@ -38,13 +38,15 @@ import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from vcfcf_core.extractor.extractor import (
     _content_xml_from_export_zip,
     _dashboards_from_export_zip,
     _supermetrics_from_export_zip,
 )
+
+from vcfcf_migrator import runlog
 
 VERSION_FLOOR = (8, 10)
 VERSION_FLOOR_TEXT = "8.10"
@@ -134,6 +136,90 @@ class Export:
 
 
 # ---------------------------------------------------------------------------
+# Teaching the log what in this export is a person and what is content
+# ---------------------------------------------------------------------------
+
+# Keys whose value is an account identifier: pseudonymised rather than dropped,
+# so two owners stay two owners in the log.
+_OWNER_ID_KEYS = ("userid", "owneruserid", "owneruuid", "owner", "ownerid",
+                  "createdby", "modifiedby", "lastmodifiedby")
+
+
+def _teach_people(doc, redactor, depth: int = 0) -> None:
+    """Walk a parsed document and teach the redactor every person in it.
+
+    Keyed, not shaped: any key naming an account, a name, a login or a mail
+    address hands its value over, so a member nobody has enumerated (an export
+    carries ``users.json`` as well as ``usermappings.json``, and neither is
+    read for content) still gets its people excluded.
+    """
+    if depth > 12:
+        return
+    if isinstance(doc, dict):
+        for key, value in doc.items():
+            name = str(key)
+            if isinstance(value, str) and value.strip():
+                if name.lower() in _OWNER_ID_KEYS:
+                    redactor.owner(value)
+                elif runlog.PERSON_KEY_RE.search(name):
+                    redactor.person(value)
+            _teach_people(value, redactor, depth + 1)
+    elif isinstance(doc, list):
+        for item in doc:
+            _teach_people(item, redactor, depth + 1)
+
+
+def harvest_identity(data: Dict[str, bytes], marker: Optional[str] = None) -> None:
+    """Teach the run's log who the people in this export are, before anything
+    about the export is logged.
+
+    Three sources: the marker, whose whole content is the source instance's
+    owner uuid; the ``dashboards/<owner>`` and ``dashboardsharings/<owner>``
+    member names; and every JSON document in the export, nested zips included,
+    walked for keys that name a person. Nothing here reads a credential: the
+    key rules in ``runlog`` exclude those by name wherever they appear.
+    """
+    redactor = runlog.current().redactor
+    if marker and marker in data:
+        redactor.owner(data[marker].decode("utf-8", "replace").strip())
+    for name in data:
+        head, _sep, tail = name.partition("/")
+        if head in ("dashboards", "dashboardsharings") and tail:
+            redactor.owner(tail)
+    for name, raw in data.items():
+        lower = name.lower()
+        if lower.endswith(".json"):
+            try:
+                _teach_people(json.loads(raw), redactor)
+            except ValueError:
+                continue
+        elif lower.endswith(".zip") or "/" in name:
+            # A dashboards member is a nested zip whose documents carry the
+            # owner again; a UI export nests one under any name at all.
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw)) as inner:
+                    for inner_name in inner.namelist():
+                        if not inner_name.lower().endswith(".json"):
+                            continue
+                        try:
+                            _teach_people(json.loads(inner.read(inner_name)), redactor)
+                        except ValueError:
+                            continue
+            except (zipfile.BadZipFile, OSError, ValueError):
+                continue
+
+
+def teach_content(items: Sequence["Item"]) -> None:
+    """Every uuid this export gives a content object is allowed in the log.
+    Anything uuid-shaped that was never taught here is excluded, which is what
+    stops an account uuid reaching a log line by accident."""
+    redactor = runlog.current().redactor
+    for item in items:
+        if item.uuid:
+            redactor.content_id(item.uuid)
+
+
+# ---------------------------------------------------------------------------
 # Version handling
 # ---------------------------------------------------------------------------
 
@@ -153,16 +239,24 @@ def check_source_version(declared: Optional[str]) -> Optional[str]:
     it is below the floor.
     """
     if declared is None or not str(declared).strip():
+        runlog.detail("version.not_declared", floor=VERSION_FLOOR_TEXT,
+                      reason=runlog.prose("no export carries a product version, so the admin declares it"))
         return None
     parsed = parse_version(declared)
     if parsed is None:
+        runlog.warn("version.refused", declared=str(declared),
+                    reason=runlog.prose("not major.minor[.patch]"))
         raise BadSourceVersion(
             f"source version {declared!r} is not major.minor[.patch] (for example 8.18.7)"
         )
     if parsed < VERSION_FLOOR:
+        runlog.warn("version.refused", declared=str(declared).strip(),
+                    floor=VERSION_FLOOR_TEXT, reason=runlog.prose("below the floor"))
         raise UnsupportedExport(
             f"refused: declared source version {str(declared).strip()} is below the floor {VERSION_FLOOR_TEXT}"
         )
+    runlog.detail("version.accepted", declared=str(declared).strip(),
+                  floor=VERSION_FLOOR_TEXT)
     return str(declared).strip()
 
 
@@ -339,18 +433,28 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
     when the declared version is below the floor. With no declaration the
     export is read anyway and the listing says so.
     """
+    with runlog.phase("read", zip=str(path), command="inspect"):
+        return _read_export(path, source_version)
+
+
+def _read_export(path, source_version: Optional[str] = None) -> Export:
     declared = check_source_version(source_version)
     path = Path(path)
     try:
         data = path.read_bytes()
     except OSError as e:
+        runlog.error("input.unreadable", path=str(path), reason=str(e))
         raise NotAnExport(f"cannot read {path}: {e}") from e
     if not zipfile.is_zipfile(io.BytesIO(data)):
+        runlog.error("input.not_a_zip", path=str(path), bytes=len(data),
+                     reason=runlog.prose("the file does not open as a zip archive"))
         raise NotAnExport(f"{path} is not a zip file")
 
     export = Export(path=str(path), source_version=declared)
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/") and not n.startswith("__MACOSX/")]
+        if runlog.current().on:
+            harvest_identity({n: zf.read(n) for n in names})
 
         # Marker and manifest first: they decide whether to continue.
         for name in names:
@@ -367,12 +471,24 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
                 except ValueError:
                     export.notes.append("configuration.json is not valid JSON")
 
+        runlog.info("input.fingerprint",
+                    **runlog.input_fingerprint(path, data, names, export.manifest))
         if export.marker is None and not export.manifest:
+            runlog.error("input.not_an_export", path=str(path), members=len(names),
+                         reason=runlog.prose("no <digits>L.v1 marker and no configuration.json"))
             raise NotAnExport(f"{path} is not a content export: no <digits>L.v1 marker and no configuration.json")
         if export.marker is None:
+            runlog.warn("marker.absent",
+                        reason=runlog.prose("no <digits>L.v1 marker in this export"))
             export.notes.append("no <digits>L.v1 marker found")
         elif export.marker_format != "v1":
+            runlog.warn("marker.unknown_format", marker=export.marker,
+                        marker_format=export.marker_format,
+                        reason=runlog.prose("the only format this tool has seen is v1"))
             export.notes.append(f"marker format {export.marker_format} is not the known v1")
+        else:
+            runlog.detail("marker.read", marker=export.marker, marker_format="v1",
+                          owner=export.owner or "")
         if declared is None:
             export.notes.append("source version not declared (--source-version); the 8.10 floor was not checked")
 
@@ -386,7 +502,9 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
                     dashes = _dashboards_from_inner_zip(zf.read(name))
                     export.items.extend(_dashboard_items(dashes, name))
                     export.navigation_gaps += navigation_gaps(dashes)
-                except ValueError:
+                except ValueError as e:
+                    runlog.warn("member.unreadable", member=name, kind="dashboard",
+                                reason=f"the nested dashboard zip did not open: {e}")
                     export.carried.append(name)
         if "supermetrics.json" in names:
             for sm in _supermetrics_from_export_zip(data).values():
@@ -478,6 +596,22 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
             seen.add(key)
         unique.append(it)
     export.items = unique
+    teach_content(export.items)
+    counts = export.counts()
+    for item in export.sorted_items():
+        runlog.debug("item.listed", kind=item.kind, uuid=item.uuid or "",
+                     name=item.name, member=item.source)
+    for name in export.carried:
+        runlog.detail("member.carried_not_inspected", member=name,
+                      reason=runlog.prose("this tool does not read this member's content, so it is "
+                             "listed and never carried into a bundle"))
+    for note in export.notes:
+        runlog.warn("input.note", note=note)
+    runlog.info("input.listed", items=len(export.items), counts=counts,
+                carried=len(export.carried),
+                navigation_gaps=export.navigation_gaps,
+                source_version=export.source_version)
+    runlog.count("items", len(export.items))
     return export
 
 
@@ -485,11 +619,23 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
 class Members:
     """An export's members in memory: the bytes, the order the zip wrote them
     in, and the marker's name. ``tree`` and ``build`` work from this, so both
-    read the zip exactly once."""
+    read the zip exactly once.
+
+    ``directories`` is the export's zip directory entries, the zero length
+    entries whose name ends in ``/``. They carry no content, which is why they
+    were dropped here and stayed invisible to every comparison this tool makes,
+    and VCF Operations refuses a bundle that has no ``dashboards/`` and
+    ``dashboardsharings/`` entry with ``INVALID_FILE_FORMAT`` before it reads a
+    single document. They are scaffolding, so the bundle writer puts them back.
+    """
     path: str
     data: dict = field(default_factory=dict)
     order: List[str] = field(default_factory=list)
     marker: Optional[str] = None
+    directories: List[str] = field(default_factory=list)
+    # Directory entry name -> the order position it had in the source, so a
+    # bundle writes them where the export wrote them.
+    directory_order: dict = field(default_factory=dict)
 
 
 def read_members(path, source_version: Optional[str] = None) -> Members:
@@ -498,26 +644,58 @@ def read_members(path, source_version: Optional[str] = None) -> Members:
     Same refusals as ``read_export``: not a zip, no marker and no
     ``configuration.json``, a declared version below the floor.
     """
+    with runlog.phase("read", zip=str(path)):
+        return _read_members(path, source_version)
+
+
+def _read_members(path, source_version: Optional[str] = None) -> Members:
     check_source_version(source_version)
     path = Path(path)
     try:
         raw = path.read_bytes()
     except OSError as e:
+        runlog.error("input.unreadable", path=str(path), reason=str(e))
         raise NotAnExport(f"cannot read {path}: {e}") from e
     if not zipfile.is_zipfile(io.BytesIO(raw)):
+        runlog.error("input.not_a_zip", path=str(path), bytes=len(raw),
+                     reason=runlog.prose("the file does not open as a zip archive"))
         raise NotAnExport(f"{path} is not a zip file")
     members = Members(path=str(path))
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-        for name in zf.namelist():
-            if name.endswith("/") or name.startswith("__MACOSX/"):
+        for position, name in enumerate(zf.namelist()):
+            if name.startswith("__MACOSX/"):
+                continue
+            if name.endswith("/"):
+                members.directories.append(name)
+                members.directory_order[name] = position
                 continue
             members.data[name] = zf.read(name)
             members.order.append(name)
             if "/" not in name and _MARKER_RE.match(Path(name).name):
                 members.marker = name
+    harvest_identity(members.data, members.marker)
+    manifest = {}
+    if "configuration.json" in members.data:
+        try:
+            loaded = json.loads(members.data["configuration.json"])
+            manifest = loaded if isinstance(loaded, dict) else {}
+        except ValueError:
+            runlog.warn("member.unreadable", member="configuration.json",
+                        reason=runlog.prose("configuration.json is not valid JSON"))
+    runlog.info("input.fingerprint",
+                **runlog.input_fingerprint(path, raw, members.order, manifest))
+    for name in members.order:
+        runlog.debug("member.read", member=name, bytes=len(members.data[name]))
+    if members.directories:
+        runlog.detail("input.directories", directories=list(members.directories),
+                      reason=runlog.prose("zip directory entries the export carries; the importer "
+                             "refuses a bundle without the ones its content sits under"))
     if members.marker is None and "configuration.json" not in members.data:
+        runlog.error("input.not_an_export", path=str(path), members=len(members.order),
+                     reason=runlog.prose("no <digits>L.v1 marker and no configuration.json"))
         raise NotAnExport(
             f"{path} is not a content export: no <digits>L.v1 marker and no configuration.json")
+    runlog.count("members", len(members.order))
     return members
 
 

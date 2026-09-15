@@ -76,6 +76,11 @@ def test_the_census_reports_copies_of_one_identity_that_disagree(tmp_path):
     with zipfile.ZipFile(out, "w") as z:
         for name in src.namelist():
             data = src.read(name)
+            if name.endswith("/"):
+                # A zip directory entry, which every real export carries and
+                # which is not a nested zip: copied across untouched.
+                z.writestr(name, data)
+                continue
             if name.startswith("dashboards/"):
                 inner = io.BytesIO()
                 with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:
@@ -131,6 +136,11 @@ def _two_copies_classifying_differently(tmp_path):
         with zipfile.ZipFile(out, "w") as z:
             for name in src.namelist():
                 data = src.read(name)
+                if name.endswith("/"):
+                    # A zip directory entry, which every real export carries
+                    # and which is not a nested zip: copied across untouched.
+                    z.writestr(name, data)
+                    continue
                 if name.startswith("dashboards/"):
                     inner = io.BytesIO()
                     with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:
@@ -187,6 +197,11 @@ def _two_copies_disagreeing_on_code_and_subject(tmp_path):
     with zipfile.ZipFile(out, "w") as z:
         for name in src.namelist():
             data = src.read(name)
+            if name.endswith("/"):
+                # A zip directory entry, which every real export carries and
+                # which is not a nested zip: copied across untouched.
+                z.writestr(name, data)
+                continue
             if name.startswith("dashboards/"):
                 inner = io.BytesIO()
                 with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:
@@ -403,6 +418,11 @@ def test_a_widget_whose_subject_differs_between_copies_is_excluded_too(tmp_path)
     with zipfile.ZipFile(out, "w") as z:
         for name in src.namelist():
             data = src.read(name)
+            if name.endswith("/"):
+                # A zip directory entry, which every real export carries and
+                # which is not a nested zip: copied across untouched.
+                z.writestr(name, data)
+                continue
             if name.startswith("dashboards/"):
                 inner = io.BytesIO()
                 with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:

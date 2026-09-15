@@ -61,6 +61,32 @@ ALERT_CONTENT_TAGS = (
 ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 
+def zip_directory_entry(name: str) -> zipfile.ZipInfo:
+    """A zip directory entry: zero length, stored, name ending in ``/``.
+
+    VCF Operations refuses a bundle whose content sits under ``dashboards/``
+    and ``dashboardsharings/`` without those two entries, with
+    ``INVALID_FILE_FORMAT`` and an empty operation list, before it reads any
+    document. The factory's own packager writes them for the same reason
+    (``vcfcf_core/dashboards/packager.py``: "Explicit directory entries mirror
+    the real export shape", above a docstring recording an earlier version
+    rejected with that code).
+
+    Stored, with the directory bit set. That is not what an export writes: a
+    real export's entries are deflated with external_attr 0, because Java wrote
+    them. It is what the packager writes, and what a bundle this tool built was
+    imported with, so it is the shape with evidence behind it rather than the
+    shape that matches the export byte for byte. What matters to the importer
+    is that the entry exists.
+    """
+    info = zipfile.ZipInfo(name if name.endswith("/") else name + "/",
+                           date_time=ZIP_EPOCH)
+    info.compress_type = zipfile.ZIP_STORED
+    info.external_attr = (0o40700 << 16) | 0x10  # directory bit, both conventions
+    info.create_system = 3
+    return info
+
+
 def zip_entry(name: str) -> zipfile.ZipInfo:
     """A deflated entry at a fixed timestamp, so a bundle is reproducible.
 

@@ -22,6 +22,18 @@ import sys
 import zipfile
 from pathlib import Path
 
+# Invented people and invented secrets. Nothing here comes from any instance:
+# the log's exclusion rules are a correctness requirement, so the committed
+# fixture has to carry something of every excluded class for the suite to
+# prove they are excluded.
+PERSON_USER_NAME = "fixture-operator"
+PERSON_DISPLAY_NAME = "Fixture Owner One"
+PERSON_DISPLAY_NAME_2 = "Fixture Owner Two"
+PERSON_MAIL = "fixture.admin@example.invalid"
+PERSON_SERVICE_ACCOUNT = "fixture-service-account"
+SECRET_CIPHER_TEXT = "ENC(invented-cipher-text-not-a-secret)"
+SECRET_TOKEN = "invented-bearer-token-not-a-secret"
+
 OWNER = "aaaa1111-0000-4000-8000-00000000000a"
 OWNER_2 = "bbbb2222-0000-4000-8000-00000000000b"  # shares the dashboard with OWNER
 MARKER = "1757800000000000000L.v1"
@@ -349,8 +361,13 @@ def _laid_out_widgets() -> list:
         {"type": "Heatmap", "title": "[Fixture] Cluster heat", "id": WIDGET_HEATMAP,
          "gridsterCoords": {"x": 5, "y": 13, "w": 4, "h": 6},
          "config": {"title": "[Fixture] Cluster heat", "mode": "all",
-                    "configs": [{"colorBy": "cpu|usage_average",
-                                 "sizeBy": "cpu|demandmhz"}]}},
+                    # The shape all 41 corpus heatmaps carry: the metric is a
+                    # pair of key and label, not a bare key. Reading it with
+                    # str() printed the dict onto the page.
+                    "configs": [{"colorBy": {"metricKey": "cpu|usage_average",
+                                             "value": "CPU Usage %"},
+                                 "sizeBy": {"metricKey": "cpu|demandmhz",
+                                            "value": "CPU Demand"}}]}},
         # The bare selector and the widget it drives: config {} on the
         # selector, and a state blob carrying its column layout.
         {"type": "ResourceList", "title": "[Fixture] Bare selector",
@@ -471,6 +488,21 @@ def _laid_out_widgets() -> list:
         {"type": "TextDisplay", "title": "[Fixture] Text with no text",
          "gridsterCoords": {"x": 5, "y": 45, "w": 4, "h": 4},
          "config": {"title": "[Fixture] Text with no text", "viewModeHTML": "",
+                    "editorData": ""}},
+        # The shape every TextDisplay in the corpus actually has: viewModeHTML
+        # is the boolean flag saying the words are markup, and the words are in
+        # editorData. Reading the flag as the content rendered all 25 corpus
+        # text widgets as "True", so the fixture carries the shape now.
+        {"type": "TextDisplay", "title": "[Fixture] About these metrics",
+         "gridsterCoords": {"x": 1, "y": 49, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] About these metrics", "viewModeHTML": True,
+                    "editorData": "<p>Cluster headroom is measured "
+                                  "<strong>after HA</strong>.</p>"}},
+        # And the same shape with nothing in it: a flag saying "this is markup"
+        # over an empty body is a widget with no text, not a widget with text.
+        {"type": "TextDisplay", "title": "[Fixture] Flagged but empty",
+         "gridsterCoords": {"x": 5, "y": 49, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] Flagged but empty", "viewModeHTML": True,
                     "editorData": ""}},
         {"type": "Section", "title": "",
          "gridsterCoords": {"x": 9, "y": 45, "w": 4, "h": 1},
@@ -712,26 +744,43 @@ def build_export_zip(without=()) -> bytes:
             {"id": TEMPLATE_ID_2, "Name": "[Fixture] Host template", "pluginTypeId": "StandardEmailPlugin"},
         ],
     }]}}
-    outbound = {"serviceCredentials": [], "exportId": "fixture", "plugins": [{
+    # An invented cipher text and an invented token, so the committed tier can
+    # prove the log excludes an export's encrypted values as well as its
+    # people. Neither is a real secret and neither decrypts to anything.
+    outbound = {"serviceCredentials": [
+        {"id": "c0ffee00-0000-4000-8000-00000000c0de",
+         "userName": PERSON_SERVICE_ACCOUNT, "password": SECRET_CIPHER_TEXT}],
+        "exportId": "fixture", "plugins": [{
         "pluginType": "StandardEmailPlugin",
         # "false" as a string: JSON writes real booleans today, and nothing
         # stops an export writing the word.
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": "false",
-                         "resIdent": []},
+                         "authToken": SECRET_TOKEN, "resIdent": []},
     }]}
     manifest = {"dashboards": 4, "views": 4, "superMetrics": 4, "customGroups": 3, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
                 "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 3}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'
 
+    # Zip directory entries, as every real export carries them. They hold
+    # nothing, which is exactly why a bundle missing them went unnoticed here
+    # and was refused by VCF Operations with INVALID_FILE_FORMAT.
+    directories = ["dashboards/", "dashboardsharings/"]
+
     members = [
         (MARKER, OWNER),
         ("configuration.json", json.dumps(manifest)),
         ("views.zip", views_inner.getvalue()),
         # Real exports write {"sources": [], "users": [{"userId": ...}, ...]}.
+        # Every person value here is invented. They exist so the log's
+        # exclusion rules have something to exclude in the committed tier:
+        # a user name, a display name and a mail address, none of them from
+        # any real instance.
         ("usermappings.json", json.dumps({"sources": [], "users": [
-            {"userName": "admin", "userId": OWNER},
-            {"userName": "operator", "userId": OWNER_2}]})),
+            {"userName": "admin", "userId": OWNER, "displayName": PERSON_DISPLAY_NAME,
+             "emailAddress": PERSON_MAIL},
+            {"userName": PERSON_USER_NAME, "userId": OWNER_2,
+             "displayName": PERSON_DISPLAY_NAME_2}]})),
         (f"dashboards/{OWNER}", dash_inner),
         (f"dashboardsharings/{OWNER}",
          json.dumps([{"groupName": "Everyone", "sourceType": "LOCAL",
@@ -755,9 +804,14 @@ def build_export_zip(without=()) -> bytes:
     skip = set(without)
     outer = io.BytesIO()
     with zipfile.ZipFile(outer, "w", zipfile.ZIP_DEFLATED) as z:
+        written_dirs = set()
         for name, data in members:
             if name in skip:
                 continue
+            for directory in directories:
+                if name.startswith(directory) and directory not in written_dirs:
+                    z.writestr(zipfile.ZipInfo(directory), b"")
+                    written_dirs.add(directory)
             z.writestr(name, data)
     return outer.getvalue()
 

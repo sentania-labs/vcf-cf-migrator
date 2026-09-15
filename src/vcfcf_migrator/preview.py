@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from urllib.parse import unquote
@@ -56,6 +57,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from vcfcf_migrator import mockdata
+from vcfcf_migrator import runlog
 from vcfcf_migrator.wording import plural
 from vcfcf_migrator.graph import Graph, Node
 
@@ -141,7 +143,8 @@ PREVIEW_CSS = """
   grid-auto-rows:minmax(26px,auto); gap:8px; align-items:start }
 .pv .pv-w { background:var(--pv-panel); border:1px solid var(--pv-line); border-radius:4px;
   padding:8px 10px; overflow:hidden; min-height:64px }
-.pv .pv-w > h3 { font-size:12px; font-weight:600; margin:0 0 6px; display:flex; gap:8px; align-items:baseline }
+.pv .pv-w > h3 { font-size:12px; font-weight:600; margin:0 0 6px; display:flex; gap:8px;
+  align-items:baseline; flex-wrap:wrap }
 .pv .pv-w > h3 .pv-type { margin-left:auto; font-weight:400; font-size:10px; color:var(--pv-ink3);
   text-transform:uppercase; letter-spacing:.04em; white-space:nowrap }
 .pv .pv-flow { font-size:10px; font-weight:500; padding:1px 6px; border-radius:9px;
@@ -159,10 +162,12 @@ PREVIEW_CSS = """
 .pv .pv-wiring .arrow { color:var(--pv-accent); font-weight:600 }
 .pv .pv-key { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px; color:var(--pv-ink3);
   word-break:break-all }
-.pv table.pv-tbl { width:100%; border-collapse:collapse; font-size:11.5px }
+.pv table.pv-tbl { width:100%; table-layout:fixed; border-collapse:collapse; font-size:11.5px }
 .pv table.pv-tbl th { text-align:left; color:var(--pv-ink3); font-weight:500; font-size:10.5px;
-  padding:3px 6px; border-bottom:1px solid var(--pv-line); white-space:nowrap }
-.pv table.pv-tbl td { padding:3px 6px; border-bottom:1px solid var(--pv-line); color:var(--pv-ink2) }
+  padding:3px 6px; border-bottom:1px solid var(--pv-line); white-space:normal;
+  overflow-wrap:anywhere }
+.pv table.pv-tbl td { padding:3px 6px; border-bottom:1px solid var(--pv-line); color:var(--pv-ink2);
+  overflow-wrap:anywhere }
 .pv table.pv-tbl td.num { text-align:right; font-variant-numeric:tabular-nums }
 .pv .pv-scroll { overflow-x:auto }
 .pv .pv-tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:6px }
@@ -203,7 +208,8 @@ PREVIEW_CSS = """
 .pv .pv-notes { margin:14px 0 0; padding:8px 10px; background:var(--pv-panel2); border-radius:4px;
   color:var(--pv-ink2); font-size:11px }
 .pv .pv-notes ul { margin:4px 0 0; padding-left:18px }
-.pv .pv-text { color:var(--pv-ink2); font-size:12px; white-space:pre-wrap }
+.pv .pv-text { color:var(--pv-ink2); font-size:12px; white-space:pre-wrap;
+  max-height:100%; overflow:auto }
 @media (max-width: 720px) {
   .pv .pv-grid { display:block }
   .pv .pv-grid > .pv-w { margin-bottom:8px }
@@ -351,6 +357,10 @@ def raw_document(graph: Graph, node: Node) -> bytes:
             if (entry.kind == node.kind and entry.index == node.index
                     and entry.ident == node.ident and entry.owner == node.owner):
                 return entry.raw
+    runlog.warn("document.absent", kind=node.kind, uuid=node.uuid or "", name=node.name,
+                member=node.member, index=node.index, owner=node.owner or None,
+                reason=runlog.prose("the graph places this object in a member that holds no document "
+                       "matching its kind, index and identifier"))
     raise PreviewError(f"{node.label()} has no document in {node.member}")
 
 
@@ -358,6 +368,8 @@ def _json_doc(raw: bytes):
     try:
         return json.loads(raw)
     except ValueError as e:
+        runlog.warn("document.unreadable", format="json", detail=str(e),
+                    document_bytes=len(raw))
         raise PreviewError(f"the document is not readable JSON: {e}") from e
 
 
@@ -365,6 +377,8 @@ def _xml_doc(raw: bytes) -> ET.Element:
     try:
         return ET.fromstring(raw)
     except ET.ParseError as e:
+        runlog.warn("document.unreadable", format="xml", detail=str(e),
+                    document_bytes=len(raw))
         raise PreviewError(f"the document is not readable XML: {e}") from e
 
 
@@ -492,6 +506,10 @@ def _columns_table(columns: Sequence[Column], rows: int = MOCK_ROWS,
             cells.append(f"<td class='num'>{_e(text)}</td>" if numeric
                          else f"<td>{_e(text)}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
+    # Fixed layout and wrapping headers rather than one nowrap row: a column
+    # header wider than the widget used to be cut mid-word ("vCPU:pCPU Rat"),
+    # which reads as a broken tool rather than as a narrow widget. The columns
+    # now share the width and wrap; pv-scroll stays as the backstop.
     return ("<div class='pv-scroll'><table class='pv-tbl'><thead><tr>" + head
             + "</tr></thead><tbody>" + "".join(body) + "</tbody></table></div>")
 
@@ -610,6 +628,12 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
     try:
         root = _xml_doc(raw_document(graph, node))
     except PreviewError as e:
+        runlog.warn("swallowed.widget_view_unreadable", kind=node.kind,
+                    uuid=node.uuid or "", name=node.name, member=node.member,
+                    detail=str(e),
+                    reason=runlog.prose("the view this widget shows has a document the page cannot "
+                           "read; the widget draws a placeholder rather than failing the "
+                           "whole preview"))
         return f"<div class='pv-placeholder'>{_e(str(e))}</div>"
     columns = view_columns(root)
     presentation = (root.find("Presentation").get("type")
@@ -667,15 +691,90 @@ def _widget_pareto(cfg: dict, ctx: dict) -> str:
             + _bars(key or label, count, unit))
 
 
-def _widget_heatmap(cfg: dict, ctx: dict) -> str:
+def metric_ref(value) -> Tuple[str, str]:
+    """``(label, key)`` for a metric reference, however the export writes it.
+
+    A heatmap names what it colours and sizes by in two shapes: the flat string
+    ``"cpu|usage_average"``, and the pair ``{"metricKey": "...", "value":
+    "CPU Contention %"}``, which is what all 41 heatmaps in the corpus carry.
+    Reading the second with ``str()`` printed the dict itself onto the page,
+    braces and quotes and all, under every corpus heatmap.
+    """
+    if isinstance(value, dict):
+        key = str(value.get("metricKey") or value.get("key") or "")
+        label = str(value.get("value") or value.get("metricName")
+                    or value.get("name") or "")
+        return label, key
+    return "", str(value or "")
+
+
+def heatmap_metrics(cfg: dict) -> List[Tuple[str, str]]:
+    """What a heatmap colours and sizes by: ``(label, key)`` for each, skipping
+    the ones the export leaves empty. The renderer and the emptiness rule both
+    read it, so neither can call a heatmap configured that the other draws
+    blank."""
     configs = cfg.get("configs")
-    label = ""
+    out: List[Tuple[str, str]] = []
     if isinstance(configs, list) and configs and isinstance(configs[0], dict):
         first = configs[0]
-        label = str(first.get("colorBy") or first.get("sizeBy") or "")
+        for field in ("colorBy", "sizeBy"):
+            label, key = metric_ref(first.get(field))
+            if label or key:
+                out.append((label, key))
+    return out
+
+
+# VCF Operations' heat colours, green at the good end and red at the bad end.
+# Not invented here and not the page's own chrome: these are the hex values the
+# corpus's own heatmaps carry in ``config.configs[].color.thresholds.colors``
+# (the shape documented in the factory's
+# knowledge/context/api-surface/widget_types_survey.md, "Heatmap"), and they are
+# the product's badge scale. The page's blue accent is chart ink and says
+# nothing about a value, so it never appears in a heat scale: a VCF Operations
+# heatmap runs red to green and never shows blue.
+HEAT_GOOD = "#74B43B"    # green, the good end
+HEAT_FAIR = "#ECC33E"    # yellow
+HEAT_POOR = "#E07720"    # orange
+HEAT_BAD = "#DE3F30"     # red, the bad end
+HEAT_RAMP = (HEAT_GOOD, HEAT_GOOD, HEAT_FAIR, HEAT_POOR, HEAT_BAD)
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def heatmap_palette(cfg: dict) -> Tuple[str, ...]:
+    """The colours to draw a heatmap in: the widget's own, where the export
+    carries them.
+
+    A heatmap declares its scale, thresholds and colours both, and the scale
+    runs either way round depending on the metric (high CPU contention is bad,
+    high free capacity is good). Twenty of the corpus's heatmap layers carry a
+    green-to-red list and several carry the reverse, so taking the widget's own
+    list keeps each one pointing the way its author meant. Anything not a plain
+    hex colour is ignored, and a widget that declares none gets the product
+    ramp, good to bad.
+    """
+    configs = cfg.get("configs")
+    if isinstance(configs, list):
+        for block in configs:
+            if not isinstance(block, dict):
+                continue
+            colour = block.get("color")
+            thresholds = colour.get("thresholds") if isinstance(colour, dict) else None
+            colours = thresholds.get("colors") if isinstance(thresholds, dict) else None
+            kept = tuple(c for c in colours or [] if isinstance(c, str) and _HEX.match(c))
+            if kept:
+                return kept
+    return HEAT_RAMP
+
+
+def _widget_heatmap(cfg: dict, ctx: dict) -> str:
+    metrics = heatmap_metrics(cfg)
+    label, key = metrics[0] if metrics else ("", "")
+    if key and label:
+        label = f"{label} | {key}"
+    else:
+        label = label or key
     cells = []
-    palette = ("var(--pv-ok)", "var(--pv-ok)", "var(--pv-warn)", "var(--pv-bad)",
-               "var(--pv-accent)")
+    palette = heatmap_palette(cfg)
     for i in range(24):
         colour = mockdata.pick(palette, "heat", ctx["seed"], i)
         cells.append(f"<i style='background:{colour}'></i>")
@@ -747,18 +846,57 @@ def _widget_resourcelist(cfg: dict, ctx: dict) -> str:
             + "".join(rows) + "</tbody></table>")
 
 
-def _widget_text(cfg: dict, ctx: dict) -> str:
-    """The widget's own text, shown as text.
+def text_widget_content(cfg: dict) -> Tuple[str, Optional[bool]]:
+    """A text widget's words, and whether the export says they are markup.
 
-    ``viewModeHTML`` is markup the export carries, and this page never injects
-    it: the preview is a local file an admin opens, and pasting a document's
-    markup into it would let an export decide what the admin's browser runs.
-    The tags are stripped for readability and the result is escaped.
+    **``viewModeHTML`` is a flag, not the text.** Every one of the 25
+    TextDisplay widgets in the corpus carries it as the boolean ``True``, with
+    the words themselves in ``editorData`` (682, 671, 808, 382, 139, 262, 364,
+    631 and 715 characters of them, and seven widgets where it is empty). The
+    first version of this read ``viewModeHTML or editorData``, so the flag won
+    the ``or`` on all 25 and every text widget on every dashboard rendered as
+    the single word ``True``, including the one in the README's own screenshot.
+    That is the same mistake ``instanced="false"`` was: a field's truthiness
+    taken for its content, which is what ``declared_flag`` exists to stop.
+
+    So the content comes from ``editorData``, and the flag says how to read it.
+    A string in ``viewModeHTML`` is still accepted as content, because a flag
+    and a body sharing one key is exactly the kind of shape an export turns out
+    to write two ways, and nothing here may assume the corpus has shown all of
+    them.
+
+    Returns the raw content and the flag (``None`` where the export does not
+    say). One function, because the renderer and the emptiness rule have to
+    agree about what "carries no text" means.
     """
-    raw = cfg.get("viewModeHTML") or cfg.get("editorData") or ""
+    raw = cfg.get("editorData")
     if isinstance(raw, dict):
         raw = json.dumps(raw)
-    text = _strip_tags(str(raw))
+    if not isinstance(raw, str) or not raw.strip():
+        other = cfg.get("viewModeHTML")
+        raw = other if isinstance(other, str) else ""
+    return str(raw or ""), declared_flag(cfg.get("viewModeHTML"), key="viewModeHTML")
+
+
+def text_widget_words(cfg: dict) -> str:
+    """The readable words of a text widget, however the export wrote them.
+
+    The page never injects an export's markup: the preview is a local file an
+    admin opens, and pasting a document's markup into it would let an export
+    decide what the admin's browser runs. So markup has its tags stripped and
+    the result is escaped by the caller. Text the export says is *not* markup
+    keeps its own characters, since stripping there would eat any ``<`` the
+    admin wrote on purpose.
+    """
+    raw, is_html = text_widget_content(cfg)
+    if is_html is False and "<" not in raw:
+        return " ".join(raw.split())
+    return _strip_tags(raw)
+
+
+def _widget_text(cfg: dict, ctx: dict) -> str:
+    """The widget's own text, shown as text."""
+    text = text_widget_words(cfg)
     if not text:
         location = cfg.get("locationUrl") or cfg.get("locationFile") or ""
         if location:
@@ -767,7 +905,17 @@ def _widget_text(cfg: dict, ctx: dict) -> str:
                     "not fetch</div>")
         return _record_empty(ctx, "widget-no-text",
                              "this text widget carries no text and points at no file")
-    return f"<div class='pv-text'>{_e(text[:600])}</div>"
+    # Long text is cut at a length the widget can show, and says so: a
+    # paragraph ending mid-word with nothing to explain it reads as a fault in
+    # the tool rather than as a widget with more text in it than fits.
+    shown = text[:600]
+    if len(text) > len(shown):
+        # Back to the last word break, unless there is not one: text with no
+        # spaces in its first 600 characters (one long token, or a language
+        # that does not space its words) would otherwise lose the lot.
+        head = shown.rsplit(" ", 1)[0] if " " in shown else shown
+        shown = head + f" ... ({len(text)} characters in all)"
+    return f"<div class='pv-text'>{_e(shown)}</div>"
 
 
 class _TextOnly(HTMLParser):
@@ -800,9 +948,24 @@ def _strip_tags(markup: str) -> str:
     try:
         parser.feed(markup)
         parser.close()
-    except Exception:  # noqa: BLE001 - a broken fragment still has to render
-        return " ".join(markup.split())
-    return " ".join("".join(parser.parts).split())
+    except Exception as e:  # noqa: BLE001 - a broken fragment still has to render
+        # The page stays quiet about this on purpose: a text widget whose
+        # markup does not parse still has to render, and an admin looking at a
+        # dashboard preview cannot act on a parser error. Quiet in the output
+        # is not quiet in the log, which is the whole point of the log.
+        runlog.warn("swallowed.markup_unparsed", failure=type(e).__name__,
+                    detail=str(e), markup_bytes=len(markup),
+                    reason=runlog.prose("the text widget's markup did not parse, so its words are shown "
+                           "with the tags stripped by hand; nothing is said on the page "
+                           "because the page cannot be acted on"))
+        return _tidy(" ".join(markup.split()))
+    return _tidy(" ".join("".join(parser.parts).split()))
+
+
+def _tidy(text: str) -> str:
+    """A tag break is a word break, which puts a space before the full stop of
+    ``<strong>after HA</strong>.`` Closing punctuation keeps its place."""
+    return re.sub(r"\s+([,.;:!?%)\]])", r"\1", text)
 
 
 def _widget_healthchart(cfg: dict, ctx: dict) -> str:
@@ -811,7 +974,10 @@ def _widget_healthchart(cfg: dict, ctx: dict) -> str:
     unit = _cfg_unit(cfg)
     head = (f"<div class='pv-key'>{_e(label)}{(' | ' + _e(key)) if key else ''}</div>"
             if (label or key) else "")
-    return head + _sparkline(key or label or ctx["seed"], unit, "var(--pv-ok)")
+    # Chart ink, not a verdict. This used to draw in the page's green, which
+    # is the product's "healthy" colour, over a value this page invented: a
+    # health chart cannot claim health it has not read.
+    return head + _sparkline(key or label or ctx["seed"], unit)
 
 
 def _widget_section(cfg: dict, ctx: dict) -> str:
@@ -933,16 +1099,19 @@ def _widget_nothing(widget_type: str, cfg: dict, widget: dict) -> Tuple[str, str
             return ("widget-no-health-metric",
                     "this chart names no metric, so it shows nothing until someone picks one")
     elif widget_type == "Heatmap":
-        configs = cfg.get("configs")
-        if not (isinstance(configs, list) and any(isinstance(c, dict) and c for c in configs)):
+        # Through the same reader as the renderer: a configs list holding a
+        # block that names neither a colour nor a size metric is a heatmap with
+        # nothing to draw, however full the block looks.
+        if not heatmap_metrics(cfg):
             return ("widget-no-heatmap-metric",
                     "this heatmap declares no colour or size metric, so it shows nothing "
                     "until someone picks them")
     elif widget_type == "TextDisplay":
-        raw = cfg.get("viewModeHTML") or cfg.get("editorData") or ""
-        if isinstance(raw, dict):
-            raw = json.dumps(raw)
-        if not _strip_tags(str(raw)) and not (cfg.get("locationUrl") or cfg.get("locationFile")):
+        # Through the same reader as the renderer: a widget whose editorData is
+        # empty carries no text, whatever its viewModeHTML flag says, and the
+        # two surfaces may not disagree about that.
+        if (not text_widget_words(cfg)
+                and not (cfg.get("locationUrl") or cfg.get("locationFile"))):
             return ("widget-no-text",
                     "this text widget carries no text and points at no file")
     elif widget_type == "Section":
@@ -1037,8 +1206,12 @@ def _grid_columns(doc: dict, widgets: Sequence[dict]) -> int:
     moved it. Widening the grid keeps every widget its declared width and
     keeps their order; it only makes the neighbours proportionally narrower.
     """
-    columns = doc.get("gridsterMaxColumns")
+    declared = doc.get("gridsterMaxColumns")
+    columns = declared
     if not isinstance(columns, int) or not 1 <= columns <= MAX_GRID_COLUMNS:
+        runlog.detail("grid.columns_defaulted", declared=str(declared),
+                      columns=DEFAULT_GRID_COLUMNS,
+                      reason=runlog.prose("the dashboard declares no usable column count"))
         columns = DEFAULT_GRID_COLUMNS
     for widget in widgets:
         coords = widget.get("gridsterCoords")
@@ -1047,7 +1220,19 @@ def _grid_columns(doc: dict, widgets: Sequence[dict]) -> int:
         try:
             needed = int(coords.get("x", 1)) + int(coords.get("w", 1)) - 1
         except (TypeError, ValueError):
+            runlog.debug("grid.coords_unreadable", widget=str(widget.get("id") or ""),
+                         widget_type=str(widget.get("type") or ""),
+                         reason=runlog.prose("this widget's coordinates are not numbers, so it does not "
+                                "widen the grid and flows after the placed widgets"))
             continue
+        if needed > columns:
+            runlog.detail("grid.widened", declared=columns,
+                          columns=min(needed, MAX_GRID_COLUMNS),
+                          widget=str(widget.get("id") or ""),
+                          widget_type=str(widget.get("type") or ""),
+                          reason=runlog.prose("a widget runs past the grid the dashboard declares; "
+                                 "widening keeps every widget its declared width rather "
+                                 "than drawing this one as a sliver"))
         columns = max(columns, min(needed, MAX_GRID_COLUMNS))
     return columns
 
@@ -1269,6 +1454,11 @@ def _ordered_widgets(widgets: Sequence[dict]) -> List[dict]:
         try:
             return (int(coords.get("y", 1)), int(coords.get("x", 1)), index)
         except (TypeError, ValueError):
+            runlog.debug("widget.order_unreadable",
+                         widget=str(widget.get("id") or ""),
+                         widget_type=str(widget.get("type") or ""),
+                         reason=runlog.prose("this widget's coordinates are not numbers, so it is "
+                                "drawn after the placed widgets in document order"))
             return (1 << 30, 1 << 30, index)
 
     return [w for _pos, w in sorted(enumerate(widgets), key=position)]
@@ -1408,6 +1598,18 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
             elif len(preview.empty_codes) > before_empty:
                 state, code = "empty", preview.empty_codes[before_empty]
         preview.widget_verdicts[keys[id(widget)]] = (state, code, subject_kind)
+        # The widget classification, with the code and the evidence, at the one
+        # place the verdict is settled. Every surface reads this same verdict,
+        # so the log cannot drift from the page or from the census.
+        runlog.detail("widget.classified", widget=ident, widget_type=widget_type,
+                      title=title, state=state or "drawn", code=code or "",
+                      subject=subject_kind, drives=len(feeds), driven_by=len(driven_by),
+                      renderer=("none" if renderer is None else widget_type),
+                      state_blob_chars=len(widget_state_blob(widget)),
+                      config_keys=sorted(cfg) if isinstance(cfg, dict) else [],
+                      reason=(elsewhere or missing or never_shows
+                              or ("this preview does not lay out this type, so it is named "
+                                  "rather than drawn" if renderer is None else "")) or None)
         cells.append(_widget_cell(widget, widget_type, title, inner, columns, preview,
                                   driven_by=[wiring.title(pid) for pid, _k in driven_by],
                                   feeds=[wiring.title(rid) for rid, _k in feeds]))
@@ -1442,11 +1644,20 @@ def _widget_cell(widget: dict, widget_type: str, title: str, inner: str,
         try:
             raw_x, raw_w = int(coords.get("x", 1)), int(coords.get("w", columns))
         except (TypeError, ValueError):
+            runlog.debug("widget.placement_unreadable",
+                         widget=str(widget.get("id") or ""), widget_type=widget_type,
+                         reason=runlog.prose("this widget's coordinates are not numbers, so it flows "
+                                "after the placed widgets"))
             style = ""
         else:
             x = max(1, min(raw_x, columns))
             w = max(1, min(raw_w, columns - x + 1))
             if (x, w) != (max(1, raw_x), max(1, raw_w)):
+                runlog.detail("widget.clamped", widget=str(widget.get("id") or ""),
+                              widget_type=widget_type, declared_x=raw_x, declared_w=raw_w,
+                              drawn_x=x, drawn_w=w, columns=columns,
+                              reason=runlog.prose("the widget does not fit the grid even after widening, "
+                                     "so the preview moves it and says so"))
                 preview.notes.append(
                     f"{title or '(untitled widget)'} ({widget_type or 'no type'}) sits at "
                     f"column {raw_x} spanning {raw_w} of a {columns} column grid, so it is "
@@ -1948,6 +2159,10 @@ def build(graph: Graph, node: Node) -> Preview:
         preview.body = (f"<div class='pv-placeholder'>a {_e(node.kind)} object. This preview "
                         "does not lay out this kind, so it is named rather than drawn.</div>")
         preview.notes.append(f"no preview is written for {node.kind} objects")
+        runlog.detail("preview.kind_not_drawn", kind=node.kind, uuid=node.uuid or "",
+                      name=node.name,
+                      reason=runlog.prose("this preview does not lay out this kind, so the object is "
+                             "named rather than drawn"))
         return preview
     preview.body = renderer(graph, node, preview)
     if preview.selectors:
@@ -2004,6 +2219,24 @@ def build(graph: Graph, node: Node) -> Preview:
             "widget types named rather than drawn: "
             + ", ".join(f"{name} x{count}" for name, count
                         in sorted(preview.unhandled_types.items())))
+    if preview.empty_reason:
+        runlog.detail("object.carries_nothing", kind=node.kind, uuid=node.uuid or "",
+                      name=node.name, code=preview.empty_code,
+                      reason=preview.empty_reason)
+    runlog.detail("preview.built", kind=node.kind, uuid=node.uuid or "", name=node.name,
+                  owner=node.owner or None, member=node.member,
+                  widgets=sum(preview.widget_types.values()),
+                  widget_types=dict(preview.widget_types),
+                  empty_widgets=len(preview.empty_widgets),
+                  elsewhere_widgets=len(preview.elsewhere),
+                  unhandled_types=dict(preview.unhandled_types),
+                  selectors=preview.selectors, receivers=preview.receivers,
+                  providers=preview.providers,
+                  orphan_receivers=preview.orphan_receivers,
+                  context_driven=preview.context_driven,
+                  subjects=dict(preview.subjects),
+                  notes=len(preview.notes))
+    runlog.count("previews")
     return preview
 
 

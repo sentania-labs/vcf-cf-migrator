@@ -32,14 +32,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import zipfile
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, TextIO, Tuple
+from typing import Dict, List, Optional, Sequence, TextIO, Tuple
 
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator import graph as _graph
 from vcfcf_migrator import preview as _preview
+from vcfcf_migrator import runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator.export_reader import (
     NotAnExport,
@@ -65,6 +67,14 @@ def read_versions(directory: Path) -> Dict[str, str]:
 
 def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
     """One line for one zip. Never writes next to *path*."""
+    with runlog.phase("corpus-zip", zip=str(path), source_version=declared):
+        line = _check_one(path, declared, scratch)
+        runlog.info("corpus.zip_checked", zip=str(path), verdict=line.split()[0],
+                    line=line)
+        return line
+
+
+def _check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
     try:
         export = read_export(path, source_version=declared)
     except UnsupportedExport as e:
@@ -100,10 +110,19 @@ def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
         picked = _selection.select_all(graph)
         out = scratch / (path.stem + "-bundle.zip")
         result = _bundle.build_bundle(members.data, members.order, graph, picked,
-                                      out, marker=members.marker)
+                                      out, marker=members.marker,
+                                      directories=members.directories,
+                                      directory_order=members.directory_order)
         rebuilt = read_export(out, source_version=declared)
     except (RawDocError, NotAnExport, UnsupportedExport, ValueError, OSError) as e:
         return f"error    {path.name}: build failed: {e}"
+
+    synthesized = [n for n in result.members if n not in members.data
+                   and n not in ("configuration.json",) and not n.endswith("/")]
+    entry_problems = namelist_problems(path, out, graph.unknown_members, synthesized)
+    if entry_problems:
+        return (f"error    {path.name}: the bundle's zip entries do not match the export: "
+                + "; ".join(entry_problems[:4]))
 
     bundle_members = read_members(out, source_version=declared).data
     source_docs = _containers.documents(members.data)
@@ -138,9 +157,66 @@ def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
             if missing else "")
     return (f"ok       {path.name}: {_fmt(inspect_counts)}; "
             f"{plural(rendered, 'object')} previewed; "
-            f"select-all bundle round trips, {len(result.members)} members, "
+            f"select-all bundle round trips, {len(result.members)} members "
+            f"({len(result.directories)} directory entries), "
             f"{len(source_docs)} documents byte-identical, "
             f"{len(bundle_shapes)} containers unchanged{tail}")
+
+
+def namelist_problems(source: Path, bundle: Path, unknown_members: Sequence[str],
+                      synthesized: Sequence[str] = ()) -> List[str]:
+    """What a select-all bundle's zip entries say against the source export's.
+
+    **Read with zipfile, not with the reader.** Every comparison this tool made
+    before went through ``read_members``, which dropped zip directory entries
+    on both sides, so the two agreed about a thing neither could see. VCF
+    Operations refused every bundle this tool had ever built, with
+    ``INVALID_FILE_FORMAT`` and an empty operation list, because the
+    ``dashboards/`` and ``dashboardsharings/`` entries were missing, and no
+    check here could have noticed. So this one opens both zips itself.
+
+    On a select-all the bundle carries every member the tool understands, so
+    the two lists must agree except for: members this tool never carries, a
+    directory holding nothing but those, and a scaffolding member the target
+    requires that the source did not have.
+    """
+    with zipfile.ZipFile(source) as z:
+        src = z.namelist()
+    with zipfile.ZipFile(bundle) as z:
+        got = z.namelist()
+    unknown = set(unknown_members)
+    problems: List[str] = []
+    for name in src:
+        if name in got or name in unknown:
+            continue
+        if name.endswith("/"):
+            # A directory entry is required only where the bundle still has
+            # something under it.
+            if any(other.startswith(name) for other in got):
+                problems.append(f"the bundle is missing the directory entry {name}")
+            continue
+        problems.append(f"the bundle is missing {name}")
+    for name in got:
+        if name in src or name in synthesized:
+            continue
+        problems.append(f"the bundle carries {name}, which the source did not")
+    for name in got:
+        if name.endswith("/"):
+            if not any(other != name and other.startswith(name) for other in got):
+                problems.append(f"the bundle declares the empty directory {name}")
+            continue
+        if name.startswith("dashboards/"):
+            # Every carried owner has a sharing member beside its dashboards
+            # member, whatever the source held: a bundle without one is refused
+            # by the target, and the source can be empty, unparseable, or about
+            # dashboards this selection left behind.
+            sharing = "dashboardsharings/" + name.split("/", 1)[1]
+            if sharing not in got:
+                problems.append(f"the bundle carries {name} with no {sharing}")
+        parent = name.rsplit("/", 1)[0] + "/" if "/" in name else ""
+        if parent and parent not in got:
+            problems.append(f"the bundle writes {name} with no {parent} entry")
+    return problems
 
 
 def _preview_all(graph: _graph.Graph) -> Tuple[int, List[str]]:
@@ -148,14 +224,25 @@ def _preview_all(graph: _graph.Graph) -> Tuple[int, List[str]]:
     per failure naming the object and what went wrong."""
     rendered = 0
     failures: List[str] = []
+    with runlog.phase("preview-all", objects=len(graph.nodes)):
+        return _preview_each(graph, rendered, failures)
+
+
+def _preview_each(graph: _graph.Graph, rendered: int, failures: List[str]):
     for node in graph.ordered():
         try:
             page = _preview.render_page(graph, node)
         except (_preview.PreviewError, ValueError, KeyError, TypeError,
                 AttributeError, IndexError) as e:
+            runlog.error("preview.failed", kind=node.kind, uuid=node.uuid or "",
+                         name=node.name, member=node.member, owner=node.owner or None,
+                         failure=type(e).__name__, detail=str(e))
             failures.append(f"{node.label()}: {type(e).__name__}: {e}")
             continue
         if not page.startswith("<!doctype html>"):
+            runlog.error("preview.not_a_page", kind=node.kind, uuid=node.uuid or "",
+                         name=node.name,
+                         reason=runlog.prose("the rendered preview is not an HTML document"))
             failures.append(f"{node.label()}: the page is not an HTML document")
             continue
         rendered += 1
@@ -169,9 +256,13 @@ def _fmt(counts: Dict[str, int]) -> str:
 def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
     directory = Path(directory)
     if not directory.is_dir():
+        runlog.error("corpus.absent", dir=str(directory), dir_from=source,
+                     reason=runlog.prose("the corpus directory does not exist"))
         stream.write(f"corpus directory {directory} does not exist (from {source})\n")
         return 1
     zips = sorted(p for p in directory.iterdir() if p.suffix.lower() == ".zip")
+    runlog.info("corpus.walk", dir=str(directory), dir_from=source, zips=len(zips),
+                source_version=declared)
     stream.write(f"corpus: {directory} (from {source}), {plural(len(zips), 'zip')}\n")
     if not zips:
         return 0
@@ -186,6 +277,7 @@ def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
                 errors += 1
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+    runlog.info("corpus.checked", zips=len(zips), errors=errors)
     return 1 if errors else 0
 
 

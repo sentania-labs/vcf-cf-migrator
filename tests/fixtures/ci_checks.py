@@ -15,6 +15,7 @@ So the workflow asks here instead, and owns nothing:
     python tests/fixtures/ci_checks.py preview-object -> dashboard:<uuid>@<owner>
     python tests/fixtures/ci_checks.py python-floor   -> 3.9
     python tests/fixtures/ci_checks.py preview preview.html
+    python tests/fixtures/ci_checks.py log run.jsonl
 
 ``listing`` compares an ``inspect --json`` document against
 ``make_export_fixture.EXPECTED_ITEMS``, the same set the suite asserts on, so
@@ -110,6 +111,36 @@ def check_preview(text: str) -> str:
     return f"preview is self-contained HTML, {len(text)} bytes, no external reference"
 
 
+def check_log(text: str) -> str:
+    """A run log the installed binary wrote: one JSON object per line, a run
+    header, a fingerprint, and nothing excluded in it.
+
+    The needles are the fixture module's own invented people and secrets, so a
+    fixture that grows one cannot leave this behind.
+    """
+    import make_export_fixture as fixture
+
+    events = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        events.append(json.loads(line))
+    codes = {e["event"] for e in events}
+    for wanted in ("log.contents", "run.start", "input.fingerprint",
+                   "output.fingerprint", "run.end"):
+        assert wanted in codes, (wanted, sorted(codes))
+    assert "log.failed" not in codes, "a logging call failed"
+    ends = [e for e in events if e["event"] == "run.end"]
+    assert all(e["exit"] == 0 for e in ends), ends
+    needles = [getattr(fixture, name) for name in dir(fixture)
+               if name.startswith(("PERSON_", "SECRET_")) or name in ("OWNER", "OWNER_2")]
+    for needle in needles:
+        if isinstance(needle, str) and needle:
+            assert needle not in text, "an excluded value reached the log"
+    assert "owner-1" in text, "owners are logged as pseudonyms"
+    return f"log is {len(events)} events, {len(codes)} kinds, nothing excluded in it"
+
+
 def check_listing(doc: dict, bundle: bool = False) -> str:
     """Compare an ``inspect --json`` document with what the fixture holds.
 
@@ -151,6 +182,8 @@ def main(argv=None) -> int:
     sub.add_parser("floor", help="the lowest source version the tool accepts")
     sub.add_parser("preview-object", help="an object of the fixture to preview")
     sub.add_parser("python-floor", help="the oldest Python this package supports")
+    logs = sub.add_parser("log", help="check a run log the tool wrote")
+    logs.add_argument("path", help="the jsonl log, or - for stdin")
     prev = sub.add_parser("preview", help="check a preview HTML file")
     prev.add_argument("path", help="the HTML file, or - for stdin")
     sub.add_parser("below-floor", help="a source version the tool must refuse")
@@ -172,6 +205,11 @@ def main(argv=None) -> int:
         return 0
     if args.what == "preview-object":
         print(preview_object())
+        return 0
+    if args.what == "log":
+        text = (sys.stdin.read() if args.path == "-"
+                else Path(args.path).read_text(encoding="utf-8"))
+        print(check_log(text))
         return 0
     if args.what == "preview":
         text = (sys.stdin.read() if args.path == "-"
