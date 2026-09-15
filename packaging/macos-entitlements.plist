@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Notarization requires the hardened runtime, and the hardened runtime
+       enforces library validation: every dynamic library loaded into the
+       process must be signed by Apple or by this same team.
+
+       A PyInstaller one-file binary cannot satisfy that. It carries Python's
+       extension modules and their dependent dylibs inside itself, unpacks them
+       to a temporary directory at startup, and dlopens them from there. Those
+       files come out of upstream wheels carrying whoever built the wheel's
+       signature, or none at all, so library validation rejects them and the
+       binary dies before it prints anything.
+
+       This entitlement turns that one check off. It does not disable the
+       hardened runtime's other protections, and it does not weaken the
+       signature on the binary itself: the binary is still Developer ID signed,
+       still notarized, and still tamper-evident. It only says that the code
+       this process loads is vouched for by the outer signature rather than
+       checked one library at a time.
+
+       The smoke step in the release workflow runs the signed binary before it
+       is notarized, which is what proves this file is sufficient. If a future
+       build dies at startup on macOS with a code signature error, this is the
+       first place to look. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

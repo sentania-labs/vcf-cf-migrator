@@ -9,6 +9,19 @@
 # build one binary per OS (two for macOS) and smoke it (version, inspect on a generated
 # fixture) from a directory holding nothing but the binary; then build the
 # wheel and publish the GitHub Release, idempotently per tag.
+#
+# One consequence of the macOS signing steps is worth stating plainly: the
+# release now depends on Apple. If the notary service is down or slow, the
+# macOS leg fails, the binaries job fails, and publish is skipped, so nothing
+# ships at all, not even Linux. That is deliberate. The alternative is
+# publishing an unsigned macOS binary that no one can run, which is the exact
+# problem these steps exist to fix, and a half-published release is worse than
+# a late one. Recovery is one command against the same tag:
+#
+#     gh run rerun <run-id> --failed
+#
+# The publish step is idempotent per tag, so a rerun re-uses the tag rather
+# than needing a new one.
 
 name: Release
 
@@ -45,6 +58,34 @@ jobs:
             echo "::error::$GITHUB_REF_NAME is not reachable from main; refusing to release"
             exit 1
           fi
+
+      # Before anything is built. A missing signing secret is fatal to the
+      # release either way, and finding that out here costs seconds, where
+      # finding it out in the notarize step costs the whole matrix first.
+      - name: Refuse to start without every signing secret
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          missing=""
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD MACOS_TEAM_ID \
+                      NOTARY_ISSUER_ID NOTARY_KEY_ID NOTARY_KEY_P8; do
+            # Indirect expansion, so the value is tested without ever being
+            # printed; only the NAME reaches the log.
+            if [ -z "${!name:-}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the macOS signing secrets are not set on this repository:$missing"
+            echo "::error::a release without them would ship a macOS binary nobody can run; refusing"
+            exit 1
+          fi
+          echo "all six signing secrets are present"
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -115,6 +156,104 @@ jobs:
             src/vcfcf_migrator/__main__.py
           ls -l dist/
 
+      # ---- macOS signing and notarization -------------------------------
+      # Without these two steps macOS refuses to run the download at all:
+      # Gatekeeper shows "cannot be opened because Apple cannot check it for
+      # malicious software" and there is no obvious way past it. Signing with
+      # the Developer ID identity and having Apple notarize the result is what
+      # removes that dialog.
+      #
+      # The ticket is NOT stapled, because a ticket can only be stapled to a
+      # bundle (.app, .dmg, .pkg) and this is a bare executable. The practical
+      # difference: the first run on a given Mac asks Apple about the binary
+      # over the network. Anyone who just downloaded it from a GitHub release
+      # is online, so this is not a real constraint; it becomes one only for a
+      # machine with no route out, and the fix there would be a signed .pkg,
+      # which needs a Developer ID *Installer* certificate we do not have.
+      - name: Import the signing certificate (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Fail here, loudly, rather than three steps later with a confusing
+          # "no identity found".
+          if [ -z "${MACOS_CERT_P12:-}" ] || [ -z "${MACOS_CERT_PASSWORD:-}" ]; then
+            echo "::error::MACOS_CERT_P12 / MACOS_CERT_PASSWORD are not set on this repository"
+            exit 1
+          fi
+          # A throwaway keychain, so nothing is left behind on the runner and
+          # the login keychain is never touched.
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PW="$(/usr/bin/openssl rand -base64 24)"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Without this, codesign blocks on a GUI prompt that no one can
+          # answer and the job hangs until it is cancelled.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PW" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # Exactly one identity must be present. Matching by name would be a
+          # substring match that could silently pick the wrong certificate if
+          # a second one ever lands in here; the SHA-1 cannot.
+          found="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -c 'Developer ID Application' || true)"
+          if [ "$found" != "1" ]; then
+            echo "::error::expected exactly one Developer ID Application identity, found $found"
+            security find-identity -v -p codesigning "$KEYCHAIN" || true
+            exit 1
+          fi
+          SIGN_ID="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | awk '{print $2}')"
+          echo "SIGN_ID=$SIGN_ID" >> "$GITHUB_ENV"
+
+      - name: Sign the binary (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          BIN="dist/vcfcf-migrator-${{ matrix.name }}${{ matrix.ext }}"
+          # --options runtime is the hardened runtime, which notarization
+          # requires. --timestamp gets a trusted timestamp from Apple, without
+          # which the signature stops verifying the day the certificate
+          # expires rather than remaining valid for what was signed while it
+          # was live.
+          codesign --force --sign "$SIGN_ID" \
+            --options runtime \
+            --entitlements packaging/macos-entitlements.plist \
+            --timestamp \
+            "$BIN"
+          # --strict matters specifically here: a PyInstaller one-file binary
+          # is a Mach-O with an archive glued onto the end of it, and a
+          # non-strict verify is happy with things Apple's notary service is
+          # not. Without it, the cheap check passes and the ten-minute one
+          # fails, which is the opposite of the intent.
+          codesign --verify --strict --verbose=2 "$BIN"
+          codesign --display --verbose=4 "$BIN" 2>&1 | grep -E 'Authority|TeamIdentifier|flags=' || true
+          # Notarization rejects anything without the hardened runtime, and it
+          # rejects it after a slow round trip. Catch a missing flag here, in a
+          # step that takes a second, rather than in the one that takes ten
+          # minutes to tell you the same thing.
+          if ! codesign --display --verbose=4 "$BIN" 2>&1 | grep -qE 'flags=.*runtime'; then
+            echo "::error::the signed binary does not carry the hardened runtime flag"
+            exit 1
+          fi
+          # The signature must carry the team this project actually releases
+          # under. A certificate swapped for a different team's would still
+          # sign, still notarize, and still run, and nobody would notice until
+          # someone asked who published the thing.
+          signed_team="$(codesign --display --verbose=4 "$BIN" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          if [ "$signed_team" != "$MACOS_TEAM_ID" ]; then
+            echo "::error::signed under team '$signed_team', expected '$MACOS_TEAM_ID'"
+            exit 1
+          fi
+
       - name: Smoke the binary from a directory holding nothing else
         shell: bash
         # Every subcommand, because a PyInstaller build can be missing exactly
@@ -139,6 +278,74 @@ jobs:
           "$bin" corpus-check empty-corpus
           # The binary must report the tag's version, not a dev version.
           "$bin" version | grep -F "vcfcf-migrator ${GITHUB_REF_NAME#v}"
+
+      - name: Notarize (macOS)
+        if: runner.os == 'macOS'
+        env:
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NOTARY_ISSUER_ID:-}" ] || [ -z "${NOTARY_KEY_ID:-}" ] || [ -z "${NOTARY_KEY_P8:-}" ]; then
+            echo "::error::NOTARY_ISSUER_ID / NOTARY_KEY_ID / NOTARY_KEY_P8 are not set on this repository"
+            exit 1
+          fi
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          BIN="dist/vcfcf-migrator-${{ matrix.name }}${{ matrix.ext }}"
+          # notarytool only accepts an archive, never a bare executable, so the
+          # binary is zipped for submission. Apple notarizes what is inside;
+          # the zip itself is thrown away and the release still ships the
+          # binary, which now carries a signature Apple has vouched for.
+          /usr/bin/ditto -c -k "$BIN" "$RUNNER_TEMP/notarize.zip"
+          set +e
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait --timeout 30m \
+            --output-format json > "$RUNNER_TEMP/notary.json"
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/notary.json"
+          status="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','UNKNOWN'))" "$RUNNER_TEMP/notary.json" 2>/dev/null || echo UNKNOWN)"
+          if [ "$rc" != "0" ] || [ "$status" != "Accepted" ]; then
+            echo "::error::notarization did not succeed (status=$status)"
+            sub="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('id',''))" "$RUNNER_TEMP/notary.json" 2>/dev/null || true)"
+            if [ -n "$sub" ]; then
+              # The submission log is the only thing that says WHY. Without it
+              # a rejection is an opaque one-word status.
+              xcrun notarytool log "$sub" \
+                --key "$RUNNER_TEMP/notary.p8" \
+                --key-id "$NOTARY_KEY_ID" \
+                --issuer "$NOTARY_ISSUER_ID" || true
+            fi
+            rm -f "$RUNNER_TEMP/notary.p8"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/notary.p8"
+          # The gate above this line is notarytool reporting Accepted, which is
+          # Apple stating it notarized this binary. That is the authoritative
+          # answer and it is what fails the release.
+          #
+          # What follows is reporting, not a gate, and deliberately so. A local
+          # Gatekeeper assessment of an unstapled binary is an online lookup
+          # whose answer is not reliably servable the moment notarization
+          # finishes, and `spctl --status` can be off on a runner image, in
+          # which case an assessment passes unconditionally. Either way it is a
+          # check that is green when it should be red or red when Apple is
+          # merely slow, and neither is worth spending a tag on. It runs
+          # because the output is useful in the log when something is wrong.
+          echo "--- gatekeeper assessment (advisory) ---"
+          spctl -a -t exec -vv "$BIN" 2>&1 || echo "::warning::spctl did not accept the binary; notarization itself reported Accepted"
+          codesign --verify --strict --test-requirement="=notarized" --verbose=2 "$BIN" 2>&1 || echo "::warning::the notarization requirement did not verify locally; this can be Apple-side propagation"
+
+      - name: Remove the signing keychain (macOS)
+        if: always() && runner.os == 'macOS'
+        run: |
+          security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/signing.keychain-db}" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8" \
+                "$RUNNER_TEMP/notarize.zip" "$RUNNER_TEMP/notary.json" 2>/dev/null || true
 
       - name: Upload the binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

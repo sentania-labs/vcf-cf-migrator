@@ -29,8 +29,10 @@ vcfcf-migrator ui my-export.zip
 
 That opens the page, which does the whole job.
 
-First run: `chmod +x` on Linux and macOS, allow it once under macOS Privacy and
-Security, or answer Windows SmartScreen with More info, then Run anyway.
+First run: `chmod +x` the file on Linux and macOS. On Windows, Defender may
+refuse to start a freshly published binary simply because it has not seen it
+before; if that happens, install with pip instead, using the `.whl` from the
+same release page.
 
 ![Tick a dashboard and the views and super metrics under it come with it](docs/selection-and-dependencies.png)
 
