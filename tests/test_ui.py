@@ -153,3 +153,30 @@ def test_unknown_path_is_404(server):
     with pytest.raises(urllib.error.HTTPError) as e:
         _get(server, "/nope")
     assert e.value.code == 404
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("/tmp/plain.zip", "vcfcf-migrator tree /tmp/plain.zip"),
+    ("/tmp/My Export.zip", 'vcfcf-migrator tree "/tmp/My Export.zip"'),
+    (r"C:\Users\a b\export.zip", 'vcfcf-migrator tree "C:\\Users\\a b\\export.zip"'),
+])
+def test_the_command_the_page_hands_back_is_one_argument(path, expected):
+    """A path with a space in it is ordinary on every OS this ships for, and
+    unquoted it is two arguments, so the command the button offers does not
+    run. Double quotes rather than shlex, which emits single quotes that
+    Windows takes literally."""
+    from vcfcf_migrator.ui import PageState
+
+    state = PageState(path, corpus_cli=None, source_version_cli=None)
+    assert state.command_line("tree") == expected
+
+
+def test_a_quoted_command_survives_a_shell_split():
+    import shlex
+
+    from vcfcf_migrator.ui import PageState
+
+    state = PageState("/tmp/My Export.zip", corpus_cli=None, source_version_cli="9.0.2")
+    parts = shlex.split(state.command_line("build"))
+    assert "/tmp/My Export.zip" in parts
+    assert parts[:4] == ["vcfcf-migrator", "--source-version", "9.0.2", "build"]

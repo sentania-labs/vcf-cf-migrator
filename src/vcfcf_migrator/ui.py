@@ -54,6 +54,23 @@ small { color: #666; }
 """
 
 
+def _shell_quote(value: str) -> str:
+    """Quote a value so the command line reads as one argument.
+
+    Double quotes rather than ``shlex.quote``: this page runs on Windows too,
+    where the single quotes shlex emits are literal characters and the command
+    would fail in exactly the case the quoting exists for. Double quotes are
+    understood by cmd.exe, PowerShell and every POSIX shell. An embedded
+    double quote is backslash-escaped, which POSIX shells take and cmd.exe
+    cannot express at all; a path containing one is beyond what a copyable
+    line can promise.
+    """
+    text = str(value)
+    if text and not any(ch in text for ch in ' \t"\'\\&|<>^()$`'):
+        return text
+    return '"' + text.replace('"', '\\"') + '"'
+
+
 class PageState:
     """What the page shows; one instance per server."""
 
@@ -92,14 +109,17 @@ class PageState:
 
         Small, but real: it is the one useful thing a button can do for a
         command whose page control has not been built yet, and it saves the
-        admin assembling the flags by hand.
+        admin assembling the flags by hand. Which means it has to be a command
+        that runs: a path with a space in it, which is ordinary on every OS
+        this tool ships for, is two arguments unless it is quoted.
         """
         declared, _ = _settings.source_version(self.source_version_cli)
         corpus, _src = _settings.corpus_dir(self.corpus_cli)
-        head = "vcfcf-migrator" + (f" --source-version {declared}" if declared else "")
+        head = "vcfcf-migrator" + (f" --source-version {_shell_quote(declared)}"
+                                   if declared else "")
         if cmd == "corpus-check":
-            return f"{head} corpus-check {corpus}"
-        target = self.zip_path or "<export.zip>"
+            return f"{head} corpus-check {_shell_quote(str(corpus))}"
+        target = _shell_quote(self.zip_path) if self.zip_path else "<export.zip>"
         if cmd == "build":
             if not declared:
                 return (f"vcfcf-migrator --source-version <X.Y.Z> build {target} "

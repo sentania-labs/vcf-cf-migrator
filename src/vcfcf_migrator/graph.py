@@ -783,16 +783,23 @@ def _add_rule_template_refs(found: Sequence[Container], graph: Graph) -> None:
                 strings = item.get("string") if isinstance(item, dict) else None
                 if isinstance(strings, list) and len(strings) == 2:
                     pairs.append((str(strings[0]), str(strings[1])))
-        by_name = {(n.kind, n.name): n for n in graph.nodes.values()}
+        # Several objects can share a display name, so this is a list per
+        # name, not a dict keyed by it: a last-wins dict silently picked one
+        # rule of several sharing a name and left the rest without the edge.
+        by_name: Dict[Tuple[str, str], List[Node]] = {}
+        for node in graph.nodes.values():
+            by_name.setdefault((node.kind, node.name), []).append(node)
         for rule_name, template_name in pairs:
-            rule = by_name.get(("notificationrule", rule_name))
-            if rule is None:
-                continue
-            template = by_name.get(("notificationtemplate", template_name))
-            ident = template.ident if template is not None else template_name
-            ref = Ref("notificationtemplate", ident, "ruleNameToTemplateNameMap")
-            if ref not in rule.refs:
-                rule.refs.append(ref)
+            for rule in by_name.get(("notificationrule", rule_name), []):
+                # The reference carries the template's *name*, not the ident of
+                # whichever node happened to be found first. Resolution then
+                # does what it does for every other by-name reference: carry
+                # every object that answers to the name, report the ambiguity,
+                # and report a miss when nothing does.
+                ref = Ref("notificationtemplate", template_name,
+                          "ruleNameToTemplateNameMap")
+                if ref not in rule.refs:
+                    rule.refs.append(ref)
 
 
 # ---------------------------------------------------------------------------

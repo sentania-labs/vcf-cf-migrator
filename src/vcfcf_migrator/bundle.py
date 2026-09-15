@@ -94,7 +94,10 @@ def _carried_dashboards(graph: Graph, keys: Sequence[str]) -> Tuple[Dict[str, in
         node = graph.nodes.get(key)
         if node is None or node.kind != "dashboard":
             continue
-        by_owner[node.owner] = by_owner.get(node.owner, 0) + 1
+        # A UI export's archive names no owner, and dashboardsByOwner is a
+        # per-owner count: an entry with an empty owner is worse than none.
+        if node.owner:
+            by_owner[node.owner] = by_owner.get(node.owner, 0) + 1
         if node.uuid not in uuids:
             uuids.append(node.uuid)
     return by_owner, uuids

@@ -754,3 +754,117 @@ def test_corpus_check_refuses_rather_than_guessing_a_version(tmp_path, capsys):
 def test_corpus_check_on_a_missing_directory_exits_one(tmp_path, capsys):
     assert main(["corpus-check", str(tmp_path / "nope")]) == 1
     assert "does not exist" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Shapes the reader claims: the container layer has to read the same ones
+# ---------------------------------------------------------------------------
+
+def _ui_dashboard_archive() -> bytes:
+    """A UI export's dashboard archive: an arbitrarily named zip holding
+    dashboard/dashboard.json, with a sibling beside it."""
+    from make_export_fixture import _cluster_overview
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("dashboard/dashboard.json", json.dumps(
+            {"uuid": "ui-export", "entries": {"resourceKind": [], "resource": []},
+             "dashboards": [_cluster_overview()]}))
+        z.writestr("dashboard/resources/resources.properties", "NSX-T=NSX\n")
+    return buf.getvalue()
+
+
+def _one_member_export(tmp_path, name: str, data: bytes, filename: str):
+    from make_export_fixture import MARKER, OWNER
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(MARKER, OWNER)
+        z.writestr(name, data)
+    path = tmp_path / filename
+    path.write_bytes(buf.getvalue())
+    return path
+
+
+@pytest.mark.parametrize("member,data,filename", [
+    ("Dashboard-1757800000000.zip", _ui_dashboard_archive(), "ui-archive.zip"),
+    ("dashboard/dashboard.json",
+     json.dumps({"uuid": "ui-export", "entries": {}, "dashboards": []}).encode(), "ui-bare.zip"),
+])
+def test_the_container_layer_reads_every_shape_inspect_claims(tmp_path, member, data, filename):
+    """read_export lists a UI export's dashboard archive and its bare
+    dashboard.json. When the container layer read neither, tree saw no
+    dashboard in an export inspect had just listed dashboards from, and
+    build refused it as empty. inspect and build cannot disagree about a
+    shape inspect claims."""
+    path = _one_member_export(tmp_path, member, data, filename)
+    listed = read_export(path).counts()
+    walked = _graph.build_graph(read_members(path).data).counts()
+    assert listed == walked
+    assert member not in _graph.build_graph(read_members(path).data).unknown_members
+
+
+def test_a_dashboard_only_ui_export_builds_and_round_trips(tmp_path):
+    path = _one_member_export(tmp_path, "Dashboard-1757800000000.zip",
+                              _ui_dashboard_archive(), "ui.zip")
+    out = tmp_path / "bundle.zip"
+    assert main(["--source-version", "9.0.2", "build", str(path),
+                 "--select-all", "--out", str(out)]) == 0
+    assert read_export(out).counts() == read_export(path).counts() == {"dashboard": 1}
+    names = zipfile.ZipFile(out).namelist()
+    assert "Dashboard-1757800000000.zip" in names
+    # The archive's own member name is kept, and its siblings come with it.
+    inner = zipfile.ZipFile(io.BytesIO(zipfile.ZipFile(out).read("Dashboard-1757800000000.zip")))
+    assert "dashboard/resources/resources.properties" in inner.namelist()
+    # No owner in the member name means no owner invented in the manifest.
+    manifest = json.loads(zipfile.ZipFile(out).read("configuration.json"))
+    assert "dashboardsByOwner" not in manifest
+
+
+def test_an_inner_zip_keeps_its_siblings_through_a_rebuild(tmp_path, export_zip):
+    """views.zip and reports.zip can hold more than content.xml. No corpus
+    export does, so only the fixture can catch a rebuild that writes the
+    rebuilt content.xml and drops everything else."""
+    from make_export_fixture import VIEWS_SIBLING, VIEWS_SIBLING_BODY
+
+    out, code = _build(tmp_path, export_zip, all_of_it=True)
+    assert code == 0
+    inner = zipfile.ZipFile(io.BytesIO(zipfile.ZipFile(out).read("views.zip")))
+    assert VIEWS_SIBLING in inner.namelist()
+    assert inner.read(VIEWS_SIBLING).decode() == VIEWS_SIBLING_BODY
+    # And on a subset, where only one view survives.
+    out, code = _build(tmp_path, export_zip, [f"view:{VIEW_IDS[1]}"])
+    assert code == 0
+    inner = zipfile.ZipFile(io.BytesIO(zipfile.ZipFile(out).read("views.zip")))
+    assert inner.read(VIEWS_SIBLING).decode() == VIEWS_SIBLING_BODY
+
+
+def test_two_templates_sharing_a_name_are_both_carried(tmp_path):
+    """The rule-to-template name map resolved through a last-wins dict, so a
+    shared display name attached the edge to one template and dropped the
+    others from the closure without a word. Every other by-name resolution
+    here carries every match and reports the ambiguity."""
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    twin = "d1e2f3a4-5b6c-4d7e-8f90-1a2b3c4d5e6f"
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name in src.namelist():
+            data = src.read(name)
+            if name == "payloadtemplates.json":
+                doc = json.loads(data)
+                block = doc["NotificationTemplate"]["notificationTemplateData"][0]
+                first = block["NotificationTemplateData"][0]
+                block["NotificationTemplateData"].append(
+                    dict(first, id=twin, Name="[Fixture] Cluster template"))
+                data = json.dumps(doc).encode()
+            z.writestr(name, data)
+    path = tmp_path / "twins.zip"
+    path.write_bytes(out.getvalue())
+    graph = _graph.build_graph(read_members(path).data)
+    rule = f"notificationrule:{RULE_ID}"
+    assert _edge_idents(graph, rule, "notificationtemplate") == {TEMPLATE_ID, twin}
+    assert graph.ambiguous and "2 different objects answer to" in graph.ambiguous[0].text
+    picked = _selection.close(graph, [rule])
+    assert {graph.nodes[k].ident for k in picked.keys if
+            graph.nodes[k].kind == "notificationtemplate"} == {TEMPLATE_ID, twin}
+    assert picked.ambiguous

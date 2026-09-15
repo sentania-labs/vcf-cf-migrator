@@ -25,6 +25,8 @@ from pathlib import Path
 OWNER = "aaaa1111-0000-4000-8000-00000000000a"
 OWNER_2 = "bbbb2222-0000-4000-8000-00000000000b"  # shares the dashboard with OWNER
 MARKER = "1757800000000000000L.v1"
+VIEWS_SIBLING = "resources/views.properties"
+VIEWS_SIBLING_BODY = "#Views localization\nGROUP_hardware=Hardware\n"
 
 DASHBOARD_ID = "2d7b8c1e-4f11-4c7a-9a55-0c1f2e3d4a5b"
 # Only OWNER_2 has this one, so a selection can cross two owner members.
@@ -219,6 +221,11 @@ def build_export_zip(without=()) -> bytes:
     views_inner = io.BytesIO()
     with zipfile.ZipFile(views_inner, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("content.xml", _views_xml())
+        # A sibling of content.xml inside views.zip. Every views.zip and
+        # reports.zip in all five corpus exports holds content.xml alone, so
+        # nothing in the corpus can catch a rebuild that drops the siblings;
+        # this is what does.
+        z.writestr(VIEWS_SIBLING, VIEWS_SIBLING_BODY)
     reports_inner = io.BytesIO()
     with zipfile.ZipFile(reports_inner, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("content.xml", _reports_xml())

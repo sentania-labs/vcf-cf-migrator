@@ -95,14 +95,19 @@ class XmlElementContainer(Container):
 
     ``inner`` is set when the XML sits inside a nested zip (``views.zip``
     holds ``content.xml``), in which case the rebuilt member is a fresh zip
-    with the same inner name.
+    with the same inner name and **every other member of the source zip
+    copied through verbatim**. Every views.zip and reports.zip in all five
+    corpus exports holds ``content.xml`` alone, so no corpus proof exercises
+    this; the dashboard inner zips, which do carry siblings, are what says
+    what a dropped sibling costs, since theirs are the localization bundles.
     """
 
     def __init__(self, member: str, data: bytes, tag: str, kind: str,
                  inner: Optional[str] = None, id_attr: str = "id",
                  name_path: Optional[str] = None, name_attr: Optional[str] = None,
-                 uuid_is_ident: bool = True):
+                 uuid_is_ident: bool = True, siblings: Optional[Dict[str, bytes]] = None):
         self.member = member
+        self.siblings = dict(siblings or {})
         self.kinds = (kind,)
         self.kind = kind
         self.data = data
@@ -141,6 +146,8 @@ class XmlElementContainer(Container):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr(self.inner, xml)
+            for name, data in self.siblings.items():
+                z.writestr(name, data)
         return buf.getvalue()
 
 
@@ -331,33 +338,49 @@ class OutboundSettingsContainer(JsonContainer):
 
 
 class DashboardsContainer(JsonContainer):
-    """One owner's ``dashboards/<owner>`` inner zip.
+    """A dashboard document, in every shape an export writes one.
 
-    The inner ``dashboard/dashboard.json`` is
-    ``{"entries": {...}, "dashboards": [...], "uuid": "..."}``; only the
-    ``dashboards`` array is subset. The same dashboard uuid can appear under
-    two owners (five such pairs on one corpus export), and each copy is its
-    own entry, so selecting both keeps both.
+    Three shapes, all carrying the same ``{"entries": {...}, "dashboards":
+    [...], "uuid": "..."}`` document and all read by ``read_export``, so all
+    three are read here too: an API export's ``dashboards/<ownerUserId>``
+    inner zip, a UI export's arbitrarily named archive holding
+    ``dashboard/dashboard.json``, and that JSON as a bare top-level member.
+    Reading fewer here than ``inspect`` lists is how ``tree`` came to see no
+    dashboard in an export ``inspect`` had just listed dashboards from.
 
-    The other inner members (localisation ``.properties`` files) are copied
-    verbatim: they are the container's, not any one dashboard's, and dropping
-    them would change how a carried dashboard reads.
+    Only the ``dashboards`` array is subset. The same dashboard uuid can
+    appear under two owners (five such pairs on one corpus export), and each
+    copy is its own entry, so selecting both keeps both. An archive with no
+    owner in its name gets an empty owner, which is a dashboard node with no
+    ``@owner`` suffix rather than a guess.
+
+    Every other member of the archive (the localisation ``.properties``
+    files) is copied verbatim: they are the container's, not any one
+    dashboard's, and dropping them would change how a carried dashboard reads.
     """
 
     kinds = ("dashboard",)
+    INNER = "dashboard/dashboard.json"
 
-    def __init__(self, member: str, data: bytes, owner: str):
+    def __init__(self, member: str, data: bytes, owner: str = "",
+                 archive: bool = True):
         self.member = member
         self.owner = owner
-        self.outer = data
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            self.inner_names = [n for n in zf.namelist() if not n.endswith("/")]
-            self.extra = {n: zf.read(n) for n in self.inner_names if n != "dashboard/dashboard.json"}
-            inner = zf.read("dashboard/dashboard.json")
+        self.archive = archive
+        self.extra: Dict[str, bytes] = {}
+        if archive:
+            found = _dashboard_json(data)
+            if found is None:
+                raise RawDocError(f"{member} is not a dashboard archive")
+            _inner_name, inner, self.extra = found
+        else:
+            inner = data
         JsonContainer.__init__(self, member, inner)
         self.top = rawdoc.json_members(self.text)
         dashboards = rawdoc.member(self.top, "dashboards")
-        self.items = rawdoc.json_items(self.text, dashboards.start) if dashboards else []
+        if dashboards is None:
+            raise RawDocError(f"{member} carries no dashboards array")
+        self.items = rawdoc.json_items(self.text, dashboards.start)
 
     def entries(self) -> List[Entry]:
         out: List[Entry] = []
@@ -377,12 +400,13 @@ class DashboardsContainer(JsonContainer):
         pairs = [(v.key or "", picked if v.key == "dashboards" else v.raw(self.text))
                  for v in self.top]
         inner = rawdoc.build_object(pairs).encode("utf-8")
+        if not self.archive:
+            return inner
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("dashboard/dashboard.json", inner)
-            for name in self.inner_names:
-                if name in self.extra:
-                    z.writestr(name, self.extra[name])
+            z.writestr(self.INNER, inner)
+            for name, data in self.extra.items():
+                z.writestr(name, data)
         return buf.getvalue()
 
 
@@ -667,16 +691,38 @@ def _filter_name_map(text: str, value: rawdoc.RawValue, rule_names, template_nam
     return rawdoc.build_array(out_blocks), notes
 
 
-def _content_xml(member_bytes: bytes) -> Optional[Tuple[str, bytes]]:
-    """``(inner name, xml bytes)`` for a nested zip holding ``content.xml``."""
+def _content_xml(member_bytes: bytes) -> Optional[Tuple[str, bytes, Dict[str, bytes]]]:
+    """``(inner name, xml bytes, every other member)`` for a nested zip holding
+    ``content.xml``. The siblings come back so a rebuild can copy them."""
     try:
         with zipfile.ZipFile(io.BytesIO(member_bytes)) as zf:
-            for name in zf.namelist():
+            names = [n for n in zf.namelist() if not n.endswith("/")]
+            for name in names:
                 if name.endswith("content.xml"):
-                    return name, zf.read(name)
+                    return name, zf.read(name), {n: zf.read(n) for n in names if n != name}
     except (zipfile.BadZipFile, OSError):
         return None
     return None
+
+
+def _dashboard_json(member_bytes: bytes) -> Optional[Tuple[str, bytes, Dict[str, bytes]]]:
+    """The same, for a nested zip holding ``dashboard/dashboard.json``.
+
+    A UI export writes one, under an arbitrary member name such as
+    ``Dashboard-<timestamp>.zip``, where an API export writes
+    ``dashboards/<ownerUserId>``. ``read_export`` has always listed both; the
+    container layer has to read both or ``inspect`` and ``build`` disagree
+    about a shape ``inspect`` claims.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(member_bytes)) as zf:
+            names = [n for n in zf.namelist() if not n.endswith("/")]
+            if "dashboard/dashboard.json" not in names:
+                return None
+            return ("dashboard/dashboard.json", zf.read("dashboard/dashboard.json"),
+                    {n: zf.read(n) for n in names if n != "dashboard/dashboard.json"})
+    except (zipfile.BadZipFile, OSError):
+        return None
 
 
 def discover(members: Dict[str, bytes]) -> Tuple[List[Container], List[str]]:
@@ -702,18 +748,33 @@ def discover(members: Dict[str, bytes]) -> Tuple[List[Container], List[str]]:
             continue  # dashboard scaffolding, handled by the bundle writer
         if name == "configuration.json" or MARKER_RE.match(name):
             continue  # the manifest and the marker, both written by the builder
+        if name == DashboardsContainer.INNER:
+            # The dashboard document as a bare top-level member, which a UI
+            # export can write; read_export lists it, so it is read here.
+            try:
+                containers.append(DashboardsContainer(name, data, archive=False))
+            except RawDocError:
+                unknown.append(name)
+            continue
         if lower.endswith(".zip"):
             found = _content_xml(data)
             if found is None:
-                unknown.append(name)
+                # Not a views or reports archive. A UI export's dashboard
+                # archive is a zip too, under a name of its own choosing.
+                try:
+                    containers.append(DashboardsContainer(name, data))
+                except RawDocError:
+                    unknown.append(name)
                 continue
-            inner_name, xml = found
+            inner_name, xml, siblings = found
             if b"<ViewDef" in xml:
                 containers.append(XmlElementContainer(name, xml, "ViewDef", "view",
-                                                      inner=inner_name, name_path="Title"))
+                                                      inner=inner_name, name_path="Title",
+                                                      siblings=siblings))
             elif b"<ReportDef" in xml:
                 containers.append(XmlElementContainer(name, xml, "ReportDef", "report",
-                                                      inner=inner_name, name_path="Title"))
+                                                      inner=inner_name, name_path="Title",
+                                                      siblings=siblings))
             else:
                 unknown.append(name)
             continue
