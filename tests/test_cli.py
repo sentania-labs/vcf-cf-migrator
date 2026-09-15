@@ -16,7 +16,7 @@ from make_export_fixture import (
 )
 from vcfcf_migrator import __version__
 from vcfcf_migrator.cli import main
-from vcfcf_migrator.export_reader import read_export
+from vcfcf_migrator.export_reader import UnsupportedExport, read_export
 
 
 def test_version_prints_both_versions(capsys):
@@ -304,3 +304,47 @@ def test_exit_code_survives_the_console_script(tmp_path):
                        capture_output=True, text=True, cwd=tmp_path)
     assert r.returncode == 1
     assert "Traceback" not in r.stderr
+
+
+def test_the_ci_checker_agrees_with_the_fixture(export_zip, capsys, tmp_path):
+    """CI asserts the console script's listing against the fixture's own
+    expectations rather than a number typed into the workflow, which is how a
+    hand-copied 16 survived the fixture growing to 20 while the suite stayed
+    green. This test is what keeps the checker honest locally: it fails here
+    before it fails in CI."""
+    import ci_checks
+
+    assert main(["inspect", "--json", str(export_zip)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert "listing matches the fixture" in ci_checks.check_listing(doc)
+
+    out = tmp_path / "bundle.zip"
+    assert main(["--source-version", ci_checks.floor_text(), "build", str(export_zip),
+                 "--select-all", "--out", str(out)]) == 0
+    capsys.readouterr()
+    assert main(["inspect", "--json", str(out)]) == 0
+    built = json.loads(capsys.readouterr().out)
+    assert "no unreadable member carried" in ci_checks.check_listing(built, bundle=True)
+
+
+def test_the_ci_checker_notices_a_listing_that_drifted(export_zip, capsys):
+    import ci_checks
+
+    assert main(["inspect", "--json", str(export_zip)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    doc["items"] = doc["items"][:-1]
+    with pytest.raises(AssertionError) as e:
+        ci_checks.check_listing(doc)
+    assert "does not match the fixture" in str(e.value)
+
+
+def test_the_ci_checker_derives_the_floor_from_the_code():
+    """The workflow declares no version of its own either."""
+    import ci_checks
+
+    from vcfcf_migrator.export_reader import VERSION_FLOOR_TEXT, check_source_version
+
+    assert ci_checks.floor_text() == VERSION_FLOOR_TEXT
+    assert check_source_version(ci_checks.floor_text()) == VERSION_FLOOR_TEXT
+    with pytest.raises(UnsupportedExport):
+        check_source_version(ci_checks.below_floor_text())
