@@ -123,9 +123,17 @@ li.node { padding:1px 0 }
 .row:hover { background:var(--line2) }
 .row.sel { background:var(--accent-soft) }
 .row form { display:contents }
-.row .name { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden;
-  text-overflow:ellipsis }
-.row .why { color:var(--warn); font-size:11px; white-space:nowrap }
+/* The name wraps rather than being cut off with an ellipsis. Dependency rows
+   are indented once per level, so the deeper an object sits the less width it
+   has and the sooner it was truncated: exactly the rows an admin is reading
+   to decide whether to carry something. overflow-wrap catches a single
+   unbroken token wider than the column, which a truncating rule used to hide.
+   The title stays for the identifier, which is still abbreviated on purpose. */
+.row .name { flex:1 1 auto; min-width:0; overflow-wrap:anywhere }
+/* This carries a name too ("required by <object>"), so it wraps for the
+   same reason. nowrap did not truncate it, but it did push the row wide
+   enough to need a sideways scroll on a deeply indented dependency. */
+.row .why { color:var(--warn); font-size:11px; overflow-wrap:anywhere }
 .row .uuid { color:var(--ink3); font-size:11px; font-family:ui-monospace,monospace }
 .row .kindtag { color:var(--ink3); font-size:11px }
 .row.preview-on { box-shadow:inset 0 0 0 2px var(--accent) }

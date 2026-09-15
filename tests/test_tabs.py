@@ -262,3 +262,36 @@ def test_selecting_an_object_named_in_another_script_still_answers(config_dir, t
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Names in full (#22, reported from outside: "I would like to see the full
+# names listed instead of the truncated names")
+# ---------------------------------------------------------------------------
+
+def test_no_rule_truncates_a_name_in_the_tree(state):
+    """Dependency rows are indented once per level, so the deeper an object
+    sits the less width it has. With an ellipsis rule that meant the rows an
+    admin reads to decide what to carry were the ones cut off first.
+
+    This looks at the stylesheet the page actually ships rather than at the
+    source, so a rule reintroduced anywhere is caught.
+    """
+    page = state.render()
+    css = page[page.index("<style>"):page.index("</style>")].replace(" ", "").replace("\n", "")
+    for selector in (".row.name{", ".row.why{"):
+        i = css.find(selector)
+        assert i > 0, f"{selector} is no longer in the stylesheet"
+        rule = css[i:css.index("}", i)]
+        assert "text-overflow:ellipsis" not in rule, f"{selector} truncates again: {rule}"
+        assert "white-space:nowrap" not in rule, f"{selector} cannot wrap: {rule}"
+
+
+def test_a_long_name_is_in_the_row_not_only_in_the_tooltip(state):
+    """The full name has to be readable without hovering: a printed page, a
+    screen reader and a touch screen have no hover."""
+    longest = max(state.graph.ordered(), key=lambda n: len(n.name))
+    assert len(longest.name) > 20, "the fixture has no name long enough to prove this"
+    page = state.render()
+    import html as _html
+    assert _html.escape(longest.name) in page.replace("title='" + _html.escape(longest.name), "")
