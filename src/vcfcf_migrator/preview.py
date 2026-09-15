@@ -43,14 +43,6 @@ from vcfcf_migrator.graph import Graph, Node
 
 MOCK_ROWS = 5
 
-# Widget types this preview lays out on purpose. Anything else is named rather
-# than drawn: see ``_widget_unhandled``.
-HANDLED_WIDGETS = (
-    "View", "Scoreboard", "MetricChart", "SparklineChart", "ParetoAnalysis",
-    "Heatmap", "PropertyList", "AlertList", "ProblemAlertsList", "ResourceList",
-    "TextDisplay", "HealthChart", "Section",
-)
-
 PREVIEW_CSS = """
 .pv { --pv-bg:#1b1f24; --pv-panel:#23282f; --pv-panel2:#2a3038; --pv-line:#363d47;
   --pv-ink:#f2f4f7; --pv-ink2:#b7bfca; --pv-ink3:#7f8896; --pv-accent:#3987e5;
@@ -376,9 +368,9 @@ def _bars(key: str, count: int, unit: str = "") -> str:
         height = max(2.0, (value / high) * 52)
         rects.append(f"<rect x='{i * width + 1.5:.1f}' y='{60 - height:.1f}' "
                      f"width='{width - 3:.1f}' height='{height:.1f}' fill='var(--pv-accent)'/>")
-    return (f"<svg class='pv-chart' viewBox='0 0 300 64' preserveAspectRatio='none' "
-            f"role='img' aria-label='mock ranking'>"
-            f"<line x1='0' y1='62' x2='300' y2='62' stroke='var(--pv-line)'/>"
+    return ("<svg class='pv-chart' viewBox='0 0 300 64' preserveAspectRatio='none' "
+            "role='img' aria-label='mock ranking'>"
+            "<line x1='0' y1='62' x2='300' y2='62' stroke='var(--pv-line)'/>"
             + "".join(rects) + "</svg>")
 
 
@@ -600,6 +592,11 @@ WIDGET_RENDERERS = {
     "HealthChart": _widget_healthchart,
     "Section": _widget_section,
 }
+
+
+# The widget types this preview lays out on purpose, derived from the table
+# above so the two cannot disagree. Anything else is named rather than drawn.
+HANDLED_WIDGETS = tuple(sorted(WIDGET_RENDERERS))
 
 
 def _widget_unhandled(widget_type: str) -> str:

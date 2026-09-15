@@ -227,7 +227,7 @@ def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip,
     """The page is another way in to one build path, not a second one."""
     monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "9.0.2")
     state.toggle(DASH, on=True)
-    state.toggle(f"symptom:SymptomDefinition-VMWARE-Fixture_CPU_high", on=True)
+    state.toggle("symptom:SymptomDefinition-VMWARE-Fixture_CPU_high", on=True)
     from_page = tmp_path / "page.zip"
     state.build(str(from_page))
     assert not state.error, state.error
