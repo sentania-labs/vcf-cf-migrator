@@ -216,13 +216,20 @@ def test_the_page_has_no_two_controls_sharing_a_name_in_one_form(state):
     # Every optional control has to be on the page, or this guard inspects
     # markup that is not the markup a user sees.
     state.file_picker = lambda: None
-    page = state.render()
-    assert "Clear</button>" in page, "the control this guards is not on the page"
-    assert "Browse" in page, "the control this guards is not on the page"
-    for form in re.findall(r"<form\b.*?</form>", page, re.S):
-        names = re.findall(r"""\bname=['"]([^'"]+)['"]""", form)
-        # A checkbox group would legitimately repeat a name; this page has none.
-        assert len(names) == len(set(names)), f"duplicate field name in {names}"
+    seen = []
+    # Every panel. Two of the three are behind tabs, and a collision on either
+    # of them would be invisible to a guard that renders only the default one.
+    for tab in ui.TABS:
+        state.tab = tab
+        page = state.render()
+        seen.append(page)
+        for form in re.findall(r"<form\b.*?</form>", page, re.S):
+            names = re.findall(r"""\bname=['"]([^'"]+)['"]""", form)
+            # A checkbox group would legitimately repeat a name; none here.
+            assert len(names) == len(set(names)), f"duplicate field name in {names} ({tab})"
+    joined = "".join(seen)
+    assert "Clear</button>" in joined, "the control this guards is not on the page"
+    assert "Browse" in joined, "the control this guards is not on the page"
 
 
 def test_bridge_returns_an_anchor_that_names_a_real_row(state):

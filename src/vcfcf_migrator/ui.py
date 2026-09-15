@@ -677,6 +677,11 @@ def _act_filter(state: "PageState", form: dict) -> str:
 
 
 def _act_build(state: "PageState", form: dict) -> str:
+    # The Build button sits in the left column, so it can be pressed from any
+    # panel, and the report it produces renders on the Preview one. Without
+    # this, building from Settings gives you the green banner and hides the
+    # report that says what the bundle carries and what it could not find.
+    state.tab = "preview"
     state.build(form.get("out", ""))
     return ""
 
@@ -688,9 +693,10 @@ def _act_corpus_check(state: "PageState", form: dict) -> str:
 
 
 def _act_diagnostics(state: "PageState", form: dict) -> str:
-    # The diagnostics control sits with the log settings, on the Settings
-    # panel, so that is where its result has to appear.
-    state.tab = "settings"
+    # No tab change, deliberately. What this produces is a file and a banner,
+    # and the banner renders above the panels, so there is nothing on any one
+    # panel to land on. Moving someone here anyway would be a rule invented to
+    # match the shape of the other actions rather than to help anyone.
     state.save_diagnostics(form.get("out", ""))
     return ""
 

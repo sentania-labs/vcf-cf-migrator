@@ -190,18 +190,23 @@ def render(state) -> str:
 # were a permanent block of controls sitting under whatever you were actually
 # looking at. One at a time, and the tab you are on is part of the page state
 # because every action redraws the whole page.
-_TABS = (("preview", "Preview"), ("commands", "Commands"), ("settings", "Settings"))
+# Labels only. The keys come from ui.TABS, which is what /tab validates
+# against: two lists would let a tab render a button that every click refuses.
+_TAB_LABELS = {"preview": "Preview", "commands": "Commands", "settings": "Settings"}
 
 
 def _tabs(state) -> str:
     out = ["<nav class='tabs' aria-label='panels'>"]
-    for key, label in _TABS:
+    from vcfcf_migrator.ui import TABS
+
+    for key in TABS:
+        label = _TAB_LABELS.get(key, key.title())
         here = getattr(state, "tab", "preview") == key
         out.append(
             "<form method='post' action='/tab' class='tabform'>"
             f"<input type='hidden' name='tab' value='{key}'>"
             f"<button type='submit' class='tab{' on' if here else ''}'"
-            + (" aria-current='page'" if here else "")
+            + (" aria-current='true'" if here else "")
             + f">{e(label)}</button></form>")
     out.append("</nav>")
     return "".join(out)
@@ -520,11 +525,6 @@ def _right_panel(state) -> str:
         parts.append("<h2>Start here</h2><p class='note'>Give the page a content export "
                      "zip at the top. Nothing leaves this machine: the tool reads the "
                      "zip, and the page is served on 127.0.0.1 only.</p>")
-    if False:  # moved to the Commands panel
-        parts += []
-    if state.command_output:
-        parts += ["<h2 style='margin-top:18px'>Command output</h2>",
-                  f"<pre>{e(state.command_output)}</pre>"]
     parts.append("</div>")
     return "".join(parts)
 

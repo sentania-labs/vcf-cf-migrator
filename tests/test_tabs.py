@@ -24,7 +24,12 @@ def state(config_dir, export_zip):
 
 def test_the_page_opens_on_the_preview(state):
     assert state.tab == "preview"
-    assert "aria-current='page'" in state.render()
+    page = state.render()
+    # The marked tab must be the one we are on. Asserting only that some tab
+    # carries the attribute is true whichever tab is current.
+    assert page.count("aria-current='true'") == 1
+    marked = page.split("aria-current='true'")[1].split(">")[1].split("<")[0]
+    assert marked == "Preview"
 
 
 def test_only_one_panel_is_on_the_page_at_a_time(state):
@@ -45,7 +50,7 @@ def test_only_one_panel_is_on_the_page_at_a_time(state):
 def test_a_panel_that_does_not_exist_is_refused(state):
     dispatch(state, "/tab", {"tab": "../../etc/passwd"})
     assert state.tab == "preview"
-    assert "no" in state.error
+    assert "there is no" in state.error and "passwd" in state.error
 
 
 # The rule. Each case is an action, and something that must be on the page
@@ -57,20 +62,45 @@ def test_a_panel_that_does_not_exist_is_refused(state):
     ("/inspect", {"zip": "FIXTURE"}, "Listing</h2>"),
     ("/tree", {}, "Command output</h2>"),
     ("/corpus-check", {"dir": "TMP"}, "Command output</h2>"),
-    ("/preview", {"key": DASH}, "pv-grid"),
-    ("/diagnostics", {"out": "TMPFILE"}, "Diagnostics file"),
+    ("/preview", {"key": DASH}, "class='pv-grid'"),
+    # The one control outside the tabbed column, so it can be pressed from any
+    # panel while its report renders on only one.
+    ("/build", {"out": "TMPBUNDLE"}, "Last build</h2>"),
 ])
 def test_an_action_leaves_its_result_where_it_puts_you(state, export_zip, tmp_path,
                                                        path, form, marker):
+    diag = str(tmp_path / "d.jsonl")
+    bundle = str(tmp_path / "b.zip")
     form = {k: (str(export_zip) if v == "FIXTURE"
                 else str(tmp_path) if v == "TMP"
-                else str(tmp_path / "d.jsonl") if v == "TMPFILE" else v)
+                else diag if v == "TMPFILE"
+                else bundle if v == "TMPBUNDLE" else v)
             for k, v in form.items()}
-    # Start somewhere else, so a result that only shows on the panel you were
-    # already on cannot pass by accident.
-    dispatch(state, "/tab", {"tab": "settings"})
-    dispatch(state, path, form)
-    page = state.render()
-    assert marker in page, (
-        f"{path} left you on the {state.tab!r} panel, which does not show its result"
-    )
+    marker = diag if marker == "TMPFILE" else marker
+    if path == "/build":
+        dispatch(state, "/select-all", {})
+    # From every panel, not one. Starting only from the panel an action
+    # happens to land on lets an action that sets no tab at all pass: it was
+    # already where it needed to be. /diagnostics survived exactly that way.
+    for start in TABS:
+        dispatch(state, "/tab", {"tab": start})
+        dispatch(state, path, form)
+        page = state.render()
+        assert marker in page, (
+            f"{path} pressed from the {start!r} panel left you on {state.tab!r}, "
+            "which does not show its result"
+        )
+
+
+def test_diagnostics_reports_from_whatever_panel_you_are_on(state, tmp_path):
+    """It has no panel of its own: it writes a file and says so in the banner
+    above the panels. So it must not move you, and must report wherever you
+    are. This is the exemption to the rule above, stated rather than implied.
+    """
+    out = tmp_path / "d.jsonl"
+    for start in TABS:
+        dispatch(state, "/tab", {"tab": start})
+        dispatch(state, "/diagnostics", {"out": str(out)})
+        assert state.tab == start, "diagnostics moved you for no reason"
+        assert str(out) in state.render()
+        assert state.error == ""
