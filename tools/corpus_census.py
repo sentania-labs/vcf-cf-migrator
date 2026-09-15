@@ -93,6 +93,24 @@ class Census:
                 continue
             self.add_dashboard(graph, node, preview)
 
+    def view_verdict(self, graph, cfg: dict) -> Tuple[str, str]:
+        """A View widget's verdict depends on a second document, so it is
+        resolved here the way the renderer resolves it: the view the widget
+        names, and whether that view declares any column."""
+        view_id = str(cfg.get("viewDefinitionId") or "")
+        if not view_id:
+            return ("empty", "widget-no-view")
+        target = _preview._find_node(graph, "view", view_id)
+        if target is None:
+            return ("elsewhere", "widget-view-not-carried")
+        try:
+            root = _preview._xml_doc(_preview.raw_document(graph, target))
+        except _preview.PreviewError:
+            return ("", "")
+        if not _preview.view_columns(root):
+            return ("empty", "widget-view-no-columns")
+        return ("", "")
+
     def add_dashboard(self, graph, node, preview) -> None:
         doc = json.loads(_preview.raw_document(graph, node))
         widgets = [w for w in doc.get("widgets", []) if isinstance(w, dict)]
@@ -119,8 +137,11 @@ class Census:
             cfg = widget.get("config") if isinstance(widget.get("config"), dict) else {}
             feeds = bool(wiring.receivers.get(wid))
             driven = bool(wiring.providers.get(wid))
+            widget_type = str(widget.get("type") or "")
             verdict, code, _sentence = _preview._widget_verdict(
-                str(widget.get("type") or ""), cfg, widget, feeds=feeds)
+                widget_type, cfg, widget, feeds=feeds)
+            if not verdict and widget_type == "View" and not feeds:
+                verdict, code = self.view_verdict(graph, cfg)
             subject = ("selector" if feeds and not driven else
                        "fed" if driven else
                        ("never-shows" if wiring.receivers else "from-outside")
@@ -129,10 +150,7 @@ class Census:
                 verdict, code = "empty", "widget-never-shows"
             self.widget_subject[key].add(subject)
             self.widget_state[key].add(code if verdict else "")
-        # A View widget's verdict depends on the view it names, which is a
-        # different document; ask the preview for those rather than repeating
-        # its lookup here.
-        for (title, _kind, code, _reason) in preview.elsewhere:
+        for (_title, _kind, code, _reason) in preview.elsewhere:
             if code == "widget-view-not-carried":
                 self.occurrences["widgets showing a view the export does not carry"] += 1
 
