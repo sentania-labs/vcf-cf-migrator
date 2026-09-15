@@ -12,6 +12,8 @@ So the workflow asks here instead, and owns nothing:
     python tests/fixtures/ci_checks.py listing bundle.json --bundle
     python tests/fixtures/ci_checks.py floor          -> 8.10
     python tests/fixtures/ci_checks.py below-floor    -> 8.9
+    python tests/fixtures/ci_checks.py preview-object -> view:<fixture uuid>
+    python tests/fixtures/ci_checks.py preview preview.html
 
 ``listing`` compares an ``inspect --json`` document against
 ``make_export_fixture.EXPECTED_ITEMS``, the same set the suite asserts on, so
@@ -34,6 +36,7 @@ from make_export_fixture import (  # noqa: E402
     EXPECTED_CARRIED,
     EXPECTED_DASHBOARD_LISTINGS,
     EXPECTED_ITEMS,
+    VIEW_IDS,
 )
 
 
@@ -49,6 +52,25 @@ def below_floor_text() -> str:
 
     major, minor = VERSION_FLOOR[0], VERSION_FLOOR[1]
     return f"{major}.{minor - 1}" if minor else f"{major - 1}.0"
+
+
+def preview_object() -> str:
+    """An object spelling the workflow can preview, taken from the fixture so
+    the workflow owns no identifier of its own."""
+    return f"view:{VIEW_IDS[0]}"
+
+
+def check_preview(text: str) -> str:
+    """A preview page is one self-contained HTML file that reaches nothing.
+
+    The suite checks this too; CI checks the *installed* console script's
+    output, which is the artifact an admin runs.
+    """
+    assert text.startswith("<!doctype html>"), text[:80]
+    for forbidden in ("http://", "https://", "<script", "<img", "@import"):
+        assert forbidden not in text.lower(), forbidden
+    assert "[Fixture] Cluster List" in text, "the view's own title is missing"
+    return f"preview is self-contained HTML, {len(text)} bytes, no external reference"
 
 
 def check_listing(doc: dict, bundle: bool = False) -> str:
@@ -90,6 +112,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="what", required=True)
     sub.add_parser("floor", help="the lowest source version the tool accepts")
+    sub.add_parser("preview-object", help="an object of the fixture to preview")
+    prev = sub.add_parser("preview", help="check a preview HTML file")
+    prev.add_argument("path", help="the HTML file, or - for stdin")
     sub.add_parser("below-floor", help="a source version the tool must refuse")
     listing = sub.add_parser("listing", help="check an inspect --json document")
     listing.add_argument("path", help="the JSON file, or - for stdin")
@@ -103,6 +128,14 @@ def main(argv=None) -> int:
         return 0
     if args.what == "below-floor":
         print(below_floor_text())
+        return 0
+    if args.what == "preview-object":
+        print(preview_object())
+        return 0
+    if args.what == "preview":
+        text = (sys.stdin.read() if args.path == "-"
+                else Path(args.path).read_text(encoding="utf-8"))
+        print(check_preview(text))
         return 0
     text = sys.stdin.read() if args.path == "-" else Path(args.path).read_text(encoding="utf-8")
     print(check_listing(json.loads(text), bundle=args.bundle))

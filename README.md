@@ -40,7 +40,8 @@ First run of a downloaded binary:
 | `vcfcf-migrator tree <export.zip> [--json]` | The dependency tree over the export's own documents. An edge pointing at something the export does not carry is shown as missing, named and counted; that is information, not an error. |
 | `vcfcf-migrator build <export.zip> (--select <file> \| --select-all) --out <bundle.zip> [--json]` | Write an import bundle carrying only the closed selection. Needs a declared source version. |
 | `vcfcf-migrator corpus-check [DIR]` | Run inspect, tree and a select-all build over every zip in the corpus directory, then read the bundle back and check both halves of the contract: every document byte-identical, every rebuilt container unchanged. One line per zip. Never writes into that directory. |
-| `vcfcf-migrator ui [export.zip]` | Serve one local page on 127.0.0.1, open the browser. Every setting has a control on it; launch options (`--port`, `--no-browser`) are command line only. Ctrl-C stops it. |
+| `vcfcf-migrator preview <export.zip> <object> [--out FILE] [--print]` | Write an HTML preview of one object so you can recognise it before carrying it: a dashboard laid out widget by widget, a view's columns with mock rows, a super metric's formula with its references named, an alert's symptom sets in words. One self-contained file, no network. |
+| `vcfcf-migrator ui [export.zip]` | Serve the selection page on 127.0.0.1 and open the browser: the dependency tree with a checkbox per object, dependencies pulled in and labelled with what needs them, previews in place, and a Build button. Every setting and every command has a control on it; launch options (`--port`, `--no-browser`) are command line only. Ctrl-C stops it. |
 
 ## A worked example
 
@@ -138,5 +139,57 @@ settings file the `ui` page writes into your user config directory
 - **Corpus directory** (`--corpus DIR`, `VCFCF_MIGRATOR_CORPUS`, default
   `./corpus`): where real export zips live on your workstation, never in
   this repo.
+
+## The preview
+
+An export gives you a name and a uuid per object, which is not enough to
+decide whether to carry a dashboard. `preview` writes one HTML file that
+shows the object:
+
+- **a dashboard** laid out widget by widget, in the columns the dashboard
+  puts them in, each frame showing its title, its type and content
+  appropriate to that type: an embedded view shows that view's own columns,
+  a scoreboard shows its tiles, a chart shows a chart, a text widget shows
+  its text;
+- **a view** as the column headers it defines, with a few rows under them;
+- **a super metric** as its formula, and the same formula again with every
+  reference replaced by the name of the object it points at;
+- **an alert** as its symptom sets stated in words, with its recommendations
+  in priority order;
+- every other kind as the facts its document carries.
+
+The values are made up. They are derived by hash from the keys and names the
+export already carries, so the same export previews identically on every run
+and on every workstation, and two admins looking at the same object see the
+same page. Names, titles, columns and keys are never invented: those come
+from the export. A widget type the preview does not lay out is named rather
+than drawn, and the page counts how many it met, because a Geo widget drawn
+as a bar chart would be worse than one drawn as nothing.
+
+The file reaches nothing: inline CSS, inline SVG, no script, no font, no
+image, no CDN. It opens on a workstation with no route anywhere.
+
+## The selection page
+
+`vcfcf-migrator ui <export.zip>` is the way through the whole job without a
+command line:
+
+- the dependency tree, grouped by kind, with a checkbox per object and each
+  object's dependencies in a nested disclosure;
+- checking something pulls in what it needs and says what it pulled in;
+  anything pulled in is labelled with what requires it;
+- unchecking something another selection still needs is refused, naming what
+  needs it, because a bundle whose documents point at objects it does not
+  carry is the one failure subsetting can introduce by itself;
+- the preview of any object, in place on the page;
+- the counts of what a build would carry, and a Build button that writes the
+  bundle and says where it went;
+- a control for every command (`inspect`, `tree`, `preview`, `build`,
+  `corpus-check`), a text box for a selection the way `build --select` takes
+  it, and a button that hands back the equivalent command line for what the
+  page is set to.
+
+It listens on 127.0.0.1 only, accepts a post from itself only, loads no
+external resource of any kind, and works with the keyboard alone.
 
 Spec: `knowledge/designs/content-migrator-v1.md` in the factory repo.

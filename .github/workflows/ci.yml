@@ -69,6 +69,9 @@ jobs:
           vcfcf-migrator inspect --json fixture.zip > inspect.json
           python "$checks" listing inspect.json
           vcfcf-migrator --source-version "$ok" tree fixture.zip
+          vcfcf-migrator --source-version "$ok" preview fixture.zip \
+            "$(python "$checks" preview-object)" --out preview.html
+          python "$checks" preview preview.html
           vcfcf-migrator --source-version "$ok" build fixture.zip --select-all --out bundle.zip
           vcfcf-migrator inspect --json bundle.zip > bundle.json
           python "$checks" listing bundle.json --bundle

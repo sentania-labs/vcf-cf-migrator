@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+- `preview`: an HTML page per object, so an admin can recognise it before
+  deciding to carry it. A dashboard is laid out widget by widget in the
+  columns the dashboard puts them in, each frame showing its title, its type
+  and content appropriate to that type (an embedded view shows that view's
+  columns, a scoreboard its tiles, a chart a chart, a text widget its text).
+  A view shows the column headers it defines with mock rows under them. A
+  super metric shows its formula, and the formula again with every reference
+  replaced by the name of the object it points at. An alert states its
+  symptom sets in words with its recommendations in priority order. Every
+  other kind states the facts its document carries.
+
+  Widget types laid out on purpose: View, Scoreboard, MetricChart,
+  SparklineChart, ParetoAnalysis, Heatmap, PropertyList, AlertList,
+  ProblemAlertsList, ResourceList, TextDisplay, HealthChart, Section. Every
+  other type is named rather than drawn, and the page counts how many it met:
+  drawing a Geo widget as a bar chart would be worse than drawing nothing,
+  because the admin would believe it. The same applies to a view whose
+  presentation is not a list: its type is stated, its attributes listed, and
+  no donut is drawn over buckets this tool does not read.
+
+  Values are made up and derived by hash from the keys and names the export
+  already carries, never from the clock or a random source, so the same
+  export previews identically on every run and in every process. Magnitudes
+  follow the unit the export declares. Names, titles, columns and keys are
+  never invented. A text widget's markup is shown as text, never injected.
+  One self-contained file: inline CSS, inline SVG, no script, no font, no
+  image, no CDN.
+
+- `ui`: the selection page, which is now the whole job without a command
+  line. The dependency tree with a checkbox per object, grouped by kind and
+  with each object's dependencies in a nested disclosure, so 66 dashboards
+  and 430 objects stay readable. Checking something pulls in what it needs
+  and says what it pulled in; anything pulled in is labelled with what
+  requires it; unchecking something another selection still needs is refused
+  and names what needs it, and nothing changes on a refusal. The preview of
+  any object shows in place. The counts of what a build would carry sit above
+  a Build button that writes the bundle and says where it went. Controls for
+  every command (`inspect`, `tree`, `preview`, `build`, `corpus-check`), a
+  text box that takes a selection the way `build --select` takes a file, and
+  a button that hands back the equivalent command line.
+
+  A bundle built through the page is byte for byte the bundle the command
+  line writes for the same selection: the page calls the same closure and the
+  same writer, and the page's state object holds every rule in one place so
+  the two ways in cannot drift. Still 127.0.0.1 only, still a same-origin
+  check on every POST (now on endpoints that write files and read paths, not
+  only on settings), still no external resource of any kind, and it works
+  with the keyboard alone and at a narrow window.
+
+- Bundles are reproducible. Every zip entry the tool writes carries a fixed
+  timestamp rather than the clock: the stored time is not content and no
+  import reads it, but leaving it as "now" meant two builds of one selection
+  differed in bytes, which cost the one comparison that proves the page and
+  the command line agree.
+
 - `tree`: the dependency tree over the export's own documents, readable by
   default and `--json` for machines. Every reference is read from the parsed
   document, never with a regex over its text, because one reference class is
