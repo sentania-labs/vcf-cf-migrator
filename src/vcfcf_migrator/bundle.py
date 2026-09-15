@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from vcfcf_migrator import rawdoc
+from vcfcf_migrator import runlog
 from vcfcf_migrator.containers import Container, zip_entry
 from vcfcf_migrator.graph import Graph
 from vcfcf_migrator.selection import Selection
@@ -167,6 +168,12 @@ def _narrow_sharings(data: bytes, dashboard_uuids: Sequence[str]) -> Optional[by
 def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
                  selection: Selection, out_path, marker: Optional[str] = None) -> BuildResult:
     """Write the bundle for *selection* and report what went into it."""
+    with runlog.phase("build", out=str(out_path), carrying=len(selection.keys)):
+        return _build_bundle(members, member_order, graph, selection, out_path, marker)
+
+
+def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
+                  selection: Selection, out_path, marker: Optional[str] = None) -> BuildResult:
     result = BuildResult(path=str(out_path))
     picked = _picked_indexes(graph.containers, selection.keys)
     by_owner, dashboard_uuids = _carried_dashboards(graph, selection.keys)
@@ -184,27 +191,65 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
         # A container that had to judge material it does not fully understand
         # says so; nothing is dropped quietly.
         result.notes.extend(getattr(container, "notes", []))
+        for note in getattr(container, "notes", []):
+            runlog.warn("container.judged", member=container.member, note=note,
+                        reason="the container had to decide about material this tool does "
+                               "not fully understand, and says so rather than dropping it "
+                               "quietly")
+        runlog.detail("container.rebuilt", member=container.member,
+                      container=type(container).__name__,
+                      entries_kept=len(set(indexes)),
+                      entries_total=len(container.entries()),
+                      bytes=len(data) if data else 0,
+                      reason="containers are rebuilt around the documents kept; the "
+                             "documents themselves are copied byte for byte")
         if data:
             written[container.member] = data
 
     if marker and marker in members:
         written[marker] = members[marker]
+        runlog.detail("marker.copied", marker=marker, bytes=len(members[marker]),
+                      reason="copied byte for byte; its content is the source instance's "
+                             "owner uuid, which this log does not carry")
     else:
+        runlog.warn("marker.absent",
+                    reason="the source carried no <digits>L.v1 marker, so the bundle has none")
         result.notes.append("the source carried no <digits>L.v1 marker, so the bundle has none")
 
     owners = [o for o in by_owner if o]
+    runlog.detail("owners.carried", owners=owners,
+                  dashboards_by_owner={runlog.owner(o): c for o, c in sorted(by_owner.items())},
+                  reason="one dashboard member per owner, and the manifest counts them "
+                         "the same way")
     if owners and "usermappings.json" in members:
         narrowed = _narrow_usermappings(members["usermappings.json"], owners)
         if narrowed is not None:
             written["usermappings.json"] = narrowed
+            runlog.detail("scaffolding.narrowed", member="usermappings.json",
+                          bytes=len(narrowed), owners=owners,
+                          reason="narrowed to the owners whose dashboards are carried, so "
+                                 "no scaffolding points at something the bundle does not hold")
+        else:
+            runlog.warn("scaffolding.dropped", member="usermappings.json",
+                        reason="nothing in it matched the owners carried, or it did not "
+                               "parse, so the bundle carries none of it")
     for name, data in members.items():
         if not name.startswith("dashboardsharings/"):
             continue
         if name.split("/", 1)[1] not in owners:
+            runlog.detail("scaffolding.skipped", member=name,
+                          reason="this owner has no dashboard in the bundle")
             continue
         narrowed = _narrow_sharings(data, dashboard_uuids)
         if narrowed is not None:
             written[name] = narrowed
+            runlog.detail("scaffolding.narrowed", member=name, bytes=len(narrowed),
+                          dashboards=len(dashboard_uuids),
+                          reason="narrowed to the dashboards the bundle carries")
+        else:
+            runlog.warn("scaffolding.dropped", member=name,
+                        reason="no sharing entry named a carried dashboard, or the member "
+                               "did not parse, so the bundle carries none of it")
 
     counts = selection.counts(graph)
     manifest: Dict[str, object] = {"type": "CUSTOM"}
@@ -215,6 +260,11 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
         manifest["dashboardsByOwner"] = [{"owner": o, "count": c}
                                          for o, c in sorted(by_owner.items())]
     written["configuration.json"] = (json.dumps(manifest, indent=3) + "\n").encode("utf-8")
+    runlog.detail("manifest.written", member="configuration.json",
+                  manifest={k: v for k, v in manifest.items() if not isinstance(v, list)},
+                  owners=len(by_owner),
+                  reason="written fresh with the counts actually carried, because the "
+                         "source's counts describe the source")
     result.notes.append(
         "configuration.json is written fresh with the counts actually carried, and with no "
         "signature: the factory's own content-import path writes it the same way "
@@ -229,13 +279,22 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
     ordered += [n for n in sorted(written) if n not in ordered]
 
     out_path = Path(out_path)
-    if out_path.parent and str(out_path.parent):
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in ordered:
-            z.writestr(zip_entry(name), written[name])
-    out_path.write_bytes(buf.getvalue())
+    try:
+        if out_path.parent and str(out_path.parent):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for name in ordered:
+                z.writestr(zip_entry(name), written[name])
+        out_path.write_bytes(buf.getvalue())
+    except OSError as e:
+        runlog.error("bundle.unwritable", path=str(out_path), reason=str(e),
+                     members=len(ordered))
+        raise
+    runlog.info("output.fingerprint", path=str(out_path),
+                zip_bytes=len(buf.getvalue()),
+                zip_sha256=runlog.sha256(buf.getvalue()),
+                **runlog.output_fingerprint(written, ordered))
 
     result.counts = counts
     result.members = ordered
@@ -244,6 +303,15 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
     if result.skipped_members:
         result.notes.append("members this tool does not understand were not carried "
                             "(they cannot be selected): " + ", ".join(result.skipped_members))
+    for name in result.skipped_members:
+        runlog.detail("member.not_carried", member=name,
+                      reason="this tool does not understand the member, so it cannot be "
+                             "selected and carrying it would be the tool deciding for the "
+                             "admin")
+    runlog.info("bundle.written", path=str(out_path), counts=result.counts,
+                members=len(result.members), skipped=len(result.skipped_members),
+                notes=len(result.notes))
+    runlog.count("members_written", len(result.members))
     return result
 
 

@@ -95,6 +95,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from vcfcf_core.supermetrics.crossref import crossref_names
 
 from vcfcf_migrator import containers as _containers
+from vcfcf_migrator import runlog
 from vcfcf_migrator.containers import Container
 
 # The only regexes left, and both match inside a *value*, never across a
@@ -713,28 +714,60 @@ _REF_EXTRACTORS = {
 
 def build_graph(members: Dict[str, bytes]) -> Graph:
     """Every content object in *members*, with its edges resolved."""
+    with runlog.phase("graph", members=len(members)):
+        return _build_graph(members)
+
+
+def _build_graph(members: Dict[str, bytes]) -> Graph:
     found, unknown = _containers.discover(members)
     graph = Graph(containers=found, unknown_members=unknown)
+    for container in found:
+        runlog.detail("container.found", member=container.member,
+                      container=type(container).__name__,
+                      entries=len(container.entries()))
+    for name in unknown:
+        runlog.detail("member.unknown", member=name,
+                      reason="this tool does not read this member's content, so nothing "
+                             "in it can be selected and none of it is carried")
 
     for container in found:
         for entry in container.entries():
             node = Node(kind=entry.kind, ident=entry.ident, name=entry.name,
                         uuid=entry.uuid, member=container.member, index=entry.index,
                         owner=entry.owner)
+            # Identifiers reach the log through here, where the tool knows they
+            # came out of a content document rather than out of a user record.
+            runlog.content_id(node.ident)
+            runlog.content_id(node.uuid)
             shapes: List[str] = []
             node.refs = list(
                 _REF_EXTRACTORS.get(entry.kind, lambda _e, _n: [])(entry, shapes))
+            for ref in node.refs:
+                runlog.content_id(ref.ident)
+            runlog.debug("node.found", kind=node.kind, uuid=node.uuid or "",
+                         ident=node.ident, name=node.name, member=node.member,
+                         index=node.index, owner=node.owner or None,
+                         refs=len(node.refs))
             for text in shapes:
+                runlog.warn("shape.unhandled", kind=node.kind, uuid=node.uuid or "",
+                            name=node.name, note=text,
+                            reason="a field value in a shape this tool does not read; it "
+                                   "is named rather than resolved, never dropped quietly")
                 note = Note(node.key, f"{node.label()}: {text}")
                 if note not in graph.unhandled:
                     graph.unhandled.append(note)
             if node.key in graph.nodes:
+                runlog.detail("node.duplicate", kind=node.kind, uuid=node.uuid or "",
+                              name=node.name, member=container.member,
+                              reason="the same object in a second member; the first member "
+                                     "keeps the node and the bundle still carries both copies")
                 # The same object in two members (a full export writes the
                 # notification templates into both notificationrules.json and
                 # payloadtemplates.json). The first member wins the node; the
                 # bundle writer still carries both copies.
                 continue
             graph.nodes[node.key] = node
+    runlog.count("nodes", len(graph.nodes))
 
     _add_rule_template_refs(found, graph)
 
@@ -754,6 +787,16 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
                 if not ref.optional and gap not in seen_gaps:
                     seen_gaps.add(gap)
                     graph.missing.append(gap)
+                    runlog.detail("ref.missing", kind=node.kind, uuid=node.uuid or "",
+                                  name=node.name, owner=node.owner or None,
+                                  wants=ref.kind, ident=ref.ident,
+                                  spelling=_spelling(ref.ident), via=ref.via,
+                                  reason=missing_reason(gap))
+                elif ref.optional:
+                    runlog.debug("ref.optional_miss", kind=node.kind, name=node.name,
+                                 wants=ref.kind, ident=ref.ident, via=ref.via,
+                                 reason="this reference is only sometimes an object in the "
+                                        "export, so not resolving it is normal")
                 continue
             # One reference, several nodes, is ambiguous only when those
             # nodes are different objects. A dashboard uuid under two owners
@@ -770,11 +813,42 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
                                        for h in hits)) + ")"))
                 if note not in graph.ambiguous:
                     graph.ambiguous.append(note)
+                    runlog.warn("ref.ambiguous", kind=node.kind, uuid=node.uuid or "",
+                                name=node.name, wants=ref.kind, ident=ref.ident,
+                                spelling=_spelling(ref.ident), via=ref.via,
+                                answered_by=sorted(graph.nodes[h].uuid or graph.nodes[h].ident
+                                                   for h in hits),
+                                reason="several different objects answer to this name; every "
+                                       "one is carried rather than one being guessed at")
             for hit in hits:
                 if hit != node.key and hit not in targets:
                     targets.append(hit)
+                    child = graph.nodes[hit]
+                    runlog.detail("ref.resolved", kind=node.kind, uuid=node.uuid or "",
+                                  name=node.name, owner=node.owner or None,
+                                  to_kind=child.kind, to_uuid=child.uuid or "",
+                                  to_name=child.name, to_owner=child.owner or None,
+                                  spelling=_spelling(ref.ident), via=ref.via)
         graph.edges[node.key] = targets
+        runlog.count("edges", len(targets))
+    runlog.info("graph.built", counts=graph.counts(),
+                nodes=len(graph.nodes),
+                edges=sum(len(v) for v in graph.edges.values()),
+                missing=len(graph.missing), ambiguous=len(graph.ambiguous),
+                unhandled_shapes=len(graph.unhandled),
+                unknown_members=len(graph.unknown_members))
     return graph
+
+
+def _spelling(ident: str) -> str:
+    """How the export wrote this reference. Which spelling was used is half of
+    what makes a missing edge diagnosable: an 8.x document names a super metric
+    where a 9.x one gives its uuid, and the two fail differently."""
+    return "uuid" if _UUID_SHAPE.match(str(ident)) else "name"
+
+
+_UUID_SHAPE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def _add_rule_template_refs(found: Sequence[Container], graph: Graph) -> None:
