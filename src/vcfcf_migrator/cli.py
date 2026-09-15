@@ -38,9 +38,22 @@ SPEC_POINTER = "knowledge/designs/content-migrator-v1.md in the factory repo"
 
 
 def version_lines() -> List[str]:
+    """What this build is, and what it can do on this machine.
+
+    The window line is not decoration. A one-file binary can be built without
+    the webview backend inside it, and the only visible symptom is that ``ui``
+    quietly opens a browser instead: the feature is gone and nothing says so.
+    Printing it here gives the release smoke something to assert against, so a
+    build that lost the window fails in CI rather than in front of a user.
+    """
+    from vcfcf_migrator import desktop
+
+    ok, why = desktop.available()
+    window = "available" if ok else f"unavailable ({desktop.short_reason(why)})"
     return [
         f"vcfcf-migrator {__version__}",
         f"vcfcf_core {vcfcf_core.__version__} (vcf-cf-tooling-core)",
+        f"native window: {window}",
     ]
 
 
@@ -142,10 +155,14 @@ def build_parser() -> argparse.ArgumentParser:
                                            "a person reads")
     sp.add_argument("file", help="the log file, or - for stdin")
 
-    sp = sub.add_parser("ui", help="serve the local page on 127.0.0.1 and open the browser")
+    sp = sub.add_parser("ui", help="open the page in a window (or the browser with --server)")
     sp.add_argument("zip", nargs="?", help="export zip to show on the page")
-    sp.add_argument("--port", type=int, default=0, help="listen port (default: a free one)")
-    sp.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    sp.add_argument("--server", action="store_true",
+                    help="use the browser instead: serve on 127.0.0.1 and open it")
+    sp.add_argument("--port", type=int, default=0,
+                    help="listen port for --server (default: a free one)")
+    sp.add_argument("--no-browser", action="store_true",
+                    help="with --server, do not open the browser")
     return p
 
 
@@ -321,16 +338,30 @@ def cmd_log_render(args) -> int:
 
 
 def cmd_ui(args) -> int:
-    from vcfcf_migrator.ui import serve
+    from vcfcf_migrator import desktop
+    from vcfcf_migrator.ui import run_desktop, serve
 
     # The page is another way in to the same commands, so it takes the same
     # log settings: a flag the tool accepts and ignores is worse than one it
     # refuses.
+    log_kwargs = dict(corpus_cli=args.corpus,
+                      log_cli=getattr(args, "log", None),
+                      log_level_cli=getattr(args, "log_level", None),
+                      log_format_cli=getattr(args, "log_format", None))
+    if not args.server:
+        ok, why = desktop.available()
+        if ok:
+            return run_desktop(zip_path=args.zip, **log_kwargs)
+        # Falling back silently would leave an admin wondering why the tool
+        # they were told opens a window opened a browser instead, and a
+        # listening socket would appear on a machine whose owner may have
+        # reasons to care.
+        print(f"vcfcf-migrator ui: no native window available here ({why});"
+              " falling back to the browser, which binds a local port."
+              " Use --server to ask for this without the warning.",
+              file=sys.stderr)
     return serve(zip_path=args.zip, port=args.port, open_browser=not args.no_browser,
-                 corpus_cli=args.corpus,
-                 log_cli=getattr(args, "log", None),
-                 log_level_cli=getattr(args, "log_level", None),
-                 log_format_cli=getattr(args, "log_format", None))
+                 **log_kwargs)
 
 
 COMMANDS = {

@@ -150,9 +150,20 @@ jobs:
           # when a user runs it. Keep every core import static (or add
           # --hidden-import), and keep the smoke below running every
           # subcommand the binary claims, which is what would catch it.
+          # pywebview picks its platform backend at runtime, which PyInstaller
+          # cannot see by following imports, so without --collect-all the
+          # binary builds fine and then reports no native window. The feature
+          # would be gone with nothing failing: `ui` just opens a browser. The
+          # smoke step below is what makes that loud.
+          extra=""
+          if [ "$RUNNER_OS" != "Linux" ]; then
+            extra="--collect-all webview"
+          fi
+          # shellcheck disable=SC2086
           python -m PyInstaller --onefile --clean --noconfirm \
             --name "vcfcf-migrator-${{ matrix.name }}" \
             --copy-metadata vcf-cf-migrator --copy-metadata vcf-cf-tooling-core \
+            $extra \
             src/vcfcf_migrator/__main__.py
           ls -l dist/
 
@@ -278,6 +289,19 @@ jobs:
           "$bin" corpus-check empty-corpus
           # The binary must report the tag's version, not a dev version.
           "$bin" version | grep -F "vcfcf-migrator ${GITHUB_REF_NAME#v}"
+          # And on a platform that has a system webview, the window has to
+          # have survived the bundling. A binary that lost it still passes
+          # every other check here and then silently opens a browser, which is
+          # the failure this line exists to catch. Linux is not asserted
+          # either way: it has no webview backend by design and the browser
+          # mode is its supported path.
+          "$bin" version
+          if [ "$RUNNER_OS" != "Linux" ]; then
+            "$bin" version | grep -F "native window: available" || {
+              echo "::error::this build lost the native window; PyInstaller did not bundle the webview backend"
+              exit 1
+            }
+          fi
 
       - name: Notarize (macOS)
         if: runner.os == 'macOS'

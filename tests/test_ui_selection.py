@@ -243,7 +243,13 @@ def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
     # added onclick="..." to every button and this test stayed green.
     handlers = re.findall(r"""\son([a-z]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", page)
     stripped = {(name, value.strip("\"'")) for name, value in handlers}
-    assert stripped == {("change", "this.form.submit()")}, handlers
+    # requestSubmit, not submit: submit() fires no submit event, which left the
+    # checkboxes dead in the desktop window while the buttons beside them still
+    # worked. The fallback is for browsers too old to have requestSubmit.
+    assert stripped == {
+        ("change",
+         "this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()")
+    }, handlers
     # One handler per tree checkbox, and each of those forms has a button.
     checkboxes = page.count("type='checkbox' class='tick'")
     assert len(handlers) == checkboxes

@@ -27,7 +27,11 @@ then:
 vcfcf-migrator ui my-export.zip
 ```
 
-That opens the page, which does the whole job.
+That opens a window, which does the whole job. Nothing listens on a port and
+nothing leaves your machine.
+
+On Linux, or anywhere without a system webview, the same page opens in your
+browser instead, served on 127.0.0.1. `--server` asks for that deliberately.
 
 First run: `chmod +x` the file on Linux and macOS. On Windows, Defender may
 refuse to start a freshly published binary simply because it has not seen it

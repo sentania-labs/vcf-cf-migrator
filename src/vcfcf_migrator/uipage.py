@@ -284,7 +284,7 @@ def _tree_panel(state) -> str:
         "<div class='grow'><label for='filter'>Filter by name, kind or uuid</label>",
         f"<input type='text' name='filter' id='filter' value='{e(state.filter_text)}'></div>",
         _button("Filter"),
-        ("<button type='submit' name='filter' value=''>Clear</button>"
+        ("<button type='submit' name='clear-filter' value='1'>Clear</button>"
          if state.filter_text else ""),
         "</form>",
     ]
@@ -385,12 +385,17 @@ def _node_row(state, node: Node, depth: int, with_children: bool = True,
                f"{e(first.name if first else required_by[0])}{e(more)}</span>")
 
     row = "".join([
-        f"<div class='{classes}' id='node-{e(anchor(node.key))}'>",
+        f"<div class='{classes}' id='{e(anchor(node.key))}'>",
         "<form method='post' action='/select'>",
         f"<input type='hidden' name='key' value='{e(node.key)}'>",
         f"<input type='hidden' name='on' value='{'0' if selected else '1'}'>",
         f"<input type='checkbox' class='tick'{checked} name='tick' "
-        f"onchange='this.form.submit()' "
+        # requestSubmit fires a real submit event; submit() does not, and the
+        # desktop window drives every action off that event. With submit() the
+        # tree checkboxes are dead in the window while the buttons beside them
+        # still work, which reads as "the checkboxes are broken". The fallback
+        # keeps very old browsers working in --server mode.
+        f"onchange='this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()' "
         f"aria-label='{e(('deselect ' if selected else 'select ') + node.name)}'>",
         label,
         why,
@@ -420,7 +425,17 @@ def _node_row(state, node: Node, depth: int, with_children: bool = True,
 
 
 def anchor(key: str) -> str:
-    return "".join(ch if ch.isalnum() else "-" for ch in key)
+    """The element id of a node's row, and the only definition of it.
+
+    This used to return the bare slug while the row was rendered with a
+    "node-" prefix glued on at the point of use, so the anchor an action
+    returned named nothing on the page. The browser's redirect to /#<slug>
+    matched no element and the desktop window's lookup found none either: in
+    both modes every click on a tree halfway down jumped back to the top,
+    which is the exact thing the anchor exists to prevent. One function now
+    produces the id and the row uses it verbatim.
+    """
+    return "node-" + "".join(ch if ch.isalnum() else "-" for ch in key)
 
 
 def _matches(graph: Graph, text: str) -> List[Node]:
