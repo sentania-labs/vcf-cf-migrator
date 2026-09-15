@@ -119,13 +119,26 @@ ul.tree { list-style:none; margin:0; padding:0 }
 ul.tree ul { list-style:none; margin:2px 0 4px; padding-left:14px;
   border-left:2px solid var(--line2) }
 li.node { padding:1px 0 }
-.row { display:flex; align-items:baseline; gap:7px; padding:3px 6px; border-radius:6px }
+/* wrap, and give "required by" its own line. Letting it share a line with
+   the name made both shrink together: measured on a real export at a normal
+   1280 desktop, 402 of 756 rows went over 60px tall and the worst name was
+   squeezed into a 110px column eight lines deep. It was nowrap on .why that
+   had been holding the name on one line, not anything about the name. */
+.row { display:flex; flex-wrap:wrap; align-items:baseline; gap:7px; padding:3px 6px;
+  border-radius:6px }
 .row:hover { background:var(--line2) }
 .row.sel { background:var(--accent-soft) }
 .row form { display:contents }
-.row .name { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden;
-  text-overflow:ellipsis }
-.row .why { color:var(--warn); font-size:11px; white-space:nowrap }
+/* The name wraps rather than being cut off with an ellipsis. Dependency rows
+   are indented once per level, so the deeper an object sits the less width it
+   has and the sooner it was truncated: exactly the rows an admin is reading
+   to decide whether to carry something. overflow-wrap catches a single
+   unbroken token wider than the column, which a truncating rule used to hide.
+   The title stays for the identifier, which is still abbreviated on purpose. */
+.row .name { flex:1 1 auto; min-width:0; overflow-wrap:anywhere }
+/* This carries a name too ("required by <object>"), so it wraps for the same
+   reason, on a line of its own. */
+.row .why { flex:1 0 100%; color:var(--warn); font-size:11px; overflow-wrap:anywhere }
 .row .uuid { color:var(--ink3); font-size:11px; font-family:ui-monospace,monospace }
 .row .kindtag { color:var(--ink3); font-size:11px }
 .row.preview-on { box-shadow:inset 0 0 0 2px var(--accent) }
@@ -472,7 +485,7 @@ def _node_row(state, node: Node, depth: int, with_children: bool = True,
     # abbreviation is enough to tell two objects apart while the admin is
     # scanning. The whole value is a hover and a screen reader away.
     ident = node.uuid or node.ident
-    short = (ident[:8] if len(ident) > 12 else ident)
+    short = _short_ident(ident, node.name)
     label = (f"<span class='name' title='{e(node.name)} ({e(ident)})'>{e(node.name)} "
              f"<span class='kindtag'>{e(node.kind)}</span>"
              + (f" <span class='uuid'>{e(short)}</span>" if short else "")
@@ -533,6 +546,28 @@ def _node_row(state, node: Node, depth: int, with_children: bool = True,
                 lambda: f"<ul>{inner}</ul>",
                 False, cls="deps")
     return f"<li class='node'>{row}{children_html}</li>"
+
+
+def _short_ident(ident: str, name: str) -> str:
+    """The abbreviation shown beside a name, or nothing.
+
+    This used to be the first eight characters of whatever the identifier was.
+    For a uuid that is the convention and it works. For anything else it is
+    noise: across one corpus export it rendered "SymptomD" on 43 rows and
+    "AlertDef" on 13, which tells a reader nothing at all. Worse, a custom
+    group has no uuid, so its identifier IS its name, and the column showed
+    the name cut to eight characters, immediately beside the full name.
+
+    So: a uuid is abbreviated, and anything else is left out. The name is
+    already on the row, and the whole identifier is still in the title.
+    """
+    if not ident or ident == name:
+        return ""
+    bare = ident.replace("-", "")
+    looks_like_a_uuid = len(bare) >= 32 and all(c in "0123456789abcdefABCDEF" for c in bare)
+    if not looks_like_a_uuid:
+        return ""
+    return ident[:8]
 
 
 def anchor(key: str) -> str:
