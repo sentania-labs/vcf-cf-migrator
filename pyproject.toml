@@ -21,6 +21,11 @@ requires-python = ">=3.9"
 dependencies = [
     "vcf-cf-tooling-core @ https://github.com/sentania-labs/vcf-content-factory/releases/download/core-v0.1.0/vcf_cf_tooling_core-0.1.0-py3-none-any.whl",
     "PyYAML>=6.0",
+    # The native window. macOS and Windows ship a system webview; a Linux box
+    # may not, and the GTK/WebKit bindings it would need there are not
+    # pip-installable in a way that can be relied on. Linux gets the browser
+    # mode, which is why that mode stays.
+    "pywebview>=5.0; sys_platform == 'darwin' or sys_platform == 'win32'",
 ]
 dynamic = ["version"]
 

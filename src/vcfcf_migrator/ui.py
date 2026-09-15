@@ -532,6 +532,30 @@ class PageState:
 # hand-maintained list in the test could not promise.
 # ---------------------------------------------------------------------------
 
+def dispatch(state: "PageState", path: str, form: dict) -> str:
+    """Run one page action and return the anchor to land on.
+
+    Both ways into the page go through here: the local server's POST handler
+    and the desktop window's bridge. They used to be able to drift, and a page
+    action that logged differently depending on which window you opened would
+    be a miserable thing to debug from a run log alone. One function, one
+    story, and a test asserts both callers use it.
+
+    Raises KeyError for an action that does not exist, which is the caller's
+    to turn into a 404 or an error line.
+    """
+    action = ACTIONS[path]
+    state.message, state.error = "", ""
+    # The page is a second way in to the same commands, so what it was asked to
+    # do belongs in the same log the CLI writes. Form values go through the
+    # same exclusion rules as everything else.
+    _runlog.set_current(state.log)
+    _runlog.info("page.action", action=path,
+                 fields={k: v for k, v in form.items() if k != "lines"})
+    with state.log.phase("page", action=path):
+        return action(state, form) or ""
+
+
 def _act_settings(state: "PageState", form: dict) -> str:
     state.save_setting(form)
     return ""
@@ -581,6 +605,14 @@ def _act_preview(state: "PageState", form: dict) -> str:
 
 
 def _act_filter(state: "PageState", form: dict) -> str:
+    # Clear has its own field name. It used to be a second control named
+    # "filter", and since a form posts both, the server's first-wins parse took
+    # the text box and threw the button away: Clear did nothing at all. It also
+    # made the two window modes disagree, because a browser and the desktop
+    # bridge collapse duplicate names from opposite ends.
+    if form.get("clear-filter"):
+        state.set_filter("")
+        return ""
     state.set_filter(form.get("filter", ""))
     return ""
 
@@ -678,23 +710,12 @@ def _handler_for(state: PageState):
                 self.wfile.write(body)
                 return
             path = urllib.parse.urlsplit(self.path).path
-            action = ACTIONS.get(path)
-            if action is None:
+            if path not in ACTIONS:
                 self.send_response(404)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            form = self._form()
-            state.message, state.error = "", ""
-            # The page is a second way in to the same commands, so what it was
-            # asked to do belongs in the same log the CLI writes. Form values
-            # go through the same exclusion rules as everything else.
-            _runlog.set_current(state.log)
-            _runlog.info("page.action", action=path,
-                         fields={k: v for k, v in form.items() if k != "lines"})
-            with state.log.phase("page", action=path):
-                anchor = action(state, form) or ""
-            self._redirect_home(anchor)
+            self._redirect_home(dispatch(state, path, self._form()))
 
     return Handler
 
@@ -712,6 +733,27 @@ def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optio
     state.origins = (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
     server.page_state = state
     return server
+
+
+def run_desktop(zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,
+                log_cli: Optional[str] = None, log_level_cli: Optional[str] = None,
+                log_format_cli: Optional[str] = None) -> int:
+    """The page in a native window, with nothing bound and nothing listening.
+
+    The state is built by the same constructor the server uses, so the two
+    modes cannot drift in what the page knows about.
+
+    ``state.origins`` stays empty on purpose. It is the set of origins the
+    server accepts a POST from, and it exists because a bound socket can be
+    reached by anything on the machine that finds the port. Here there is no
+    socket, so there is no origin to check and nothing to check it against.
+    """
+    from . import desktop
+
+    state = PageState(zip_path, corpus_cli, log_cli, log_level_cli, log_format_cli)
+    print("vcfcf-migrator ui: opening a window (close it to stop)", flush=True)
+    desktop.run(state)
+    return 0
 
 
 def serve(zip_path: Optional[str] = None, port: int = 0, open_browser: bool = True,
