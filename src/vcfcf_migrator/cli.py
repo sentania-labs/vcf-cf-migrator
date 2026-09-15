@@ -404,7 +404,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     code = 2
     try:
-        with log.phase(args.command, command=args.command):
+        # The phase is called "command" rather than the command's own name:
+        # "build" would otherwise name both this phase and the bundle writer's,
+        # and two phases with one name are two phases nobody can tell apart in
+        # the log.
+        with log.phase("command", command=args.command):
             code = command(args)
             log.count("exit", 0)
         return code

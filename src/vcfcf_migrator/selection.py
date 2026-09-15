@@ -141,6 +141,11 @@ def close(graph: Graph, keys: Sequence[str]) -> Selection:
     target instance may already have the object, and the spec's baseline is
     that the admin is never worse off than importing the whole export by hand.
     """
+    with runlog.phase("select", picked=len(keys)):
+        return _close(graph, keys)
+
+
+def _close(graph: Graph, keys: Sequence[str]) -> Selection:
     selection = Selection(picked=list(keys), lines=len(keys))
     for key in keys:
         node = graph.nodes.get(key)

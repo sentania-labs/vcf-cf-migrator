@@ -433,6 +433,11 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
     when the declared version is below the floor. With no declaration the
     export is read anyway and the listing says so.
     """
+    with runlog.phase("read", zip=str(path), command="inspect"):
+        return _read_export(path, source_version)
+
+
+def _read_export(path, source_version: Optional[str] = None) -> Export:
     declared = check_source_version(source_version)
     path = Path(path)
     try:
@@ -627,6 +632,11 @@ def read_members(path, source_version: Optional[str] = None) -> Members:
     Same refusals as ``read_export``: not a zip, no marker and no
     ``configuration.json``, a declared version below the floor.
     """
+    with runlog.phase("read", zip=str(path)):
+        return _read_members(path, source_version)
+
+
+def _read_members(path, source_version: Optional[str] = None) -> Members:
     check_source_version(source_version)
     path = Path(path)
     try:
