@@ -217,3 +217,48 @@ def test_no_two_disclosures_share_an_id(state):
     assert ids
     dup = [k for k, n in collections.Counter(ids).items() if n > 1]
     assert not dup, f"{len(dup)} disclosures share an id, e.g. {dup[:2]}"
+
+
+def test_an_anchor_survives_a_name_that_is_not_ascii():
+    """str.isalnum() is true for every script, and the server writes the
+    anchor into a Location header that http.server encodes as Latin-1. A
+    custom group named in Japanese raised UnicodeEncodeError and the response
+    was dropped, so the click silently did nothing. That predates disclosures:
+    selecting a row anchors the same way.
+    """
+    from vcfcf_migrator.uipage import anchor
+
+    for key in ["customgroup:クラスタ", "customgroup:Сервер", "deps:customgroup:クラスタ"]:
+        a = anchor(key)
+        assert a.isascii(), a
+        ("/" + f"#{a}").encode("latin-1")  # what send_header does
+    # And two different names must not collapse onto one id.
+    assert anchor("customgroup:クラスタ") != anchor("customgroup:サーバ")
+    # A plain ASCII key is spelled exactly as it always was.
+    assert anchor("kind:roots:view") == "node-kind-roots-view"
+
+
+def test_selecting_an_object_named_in_another_script_still_answers(config_dir, tmp_path):
+    """End to end over the real server, because the failure was in the header
+    rather than in anything a direct call would reach."""
+    import threading
+    import urllib.parse
+    import urllib.request
+
+    from vcfcf_migrator.ui import make_server
+
+    srv = make_server(port=0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        data = urllib.parse.urlencode({"key": "customgroup:クラスタ", "on": "1"}).encode()
+        req = urllib.request.Request(base + "/select", data=data,
+                                     headers={"Origin": base})
+        assert urllib.request.urlopen(req).status == 200
+        data = urllib.parse.urlencode({"id": "deps:customgroup:クラスタ", "on": "1"}).encode()
+        req = urllib.request.Request(base + "/disclose", data=data,
+                                     headers={"Origin": base})
+        assert urllib.request.urlopen(req).status == 200
+    finally:
+        srv.shutdown()
+        srv.server_close()

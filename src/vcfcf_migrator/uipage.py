@@ -20,6 +20,7 @@ indented rows. A filter box narrows the whole thing to what the admin typed.
 """
 from __future__ import annotations
 
+import hashlib
 import html
 from typing import Dict, List, Optional, Sequence
 
@@ -545,7 +546,22 @@ def anchor(key: str) -> str:
     which is the exact thing the anchor exists to prevent. One function now
     produces the id and the row uses it verbatim.
     """
-    return "node-" + "".join(ch if ch.isalnum() else "-" for ch in key)
+    # ASCII only. str.isalnum() is true for Japanese, Cyrillic and every other
+    # script, and the server puts this value straight into a Location header,
+    # which http.server encodes as Latin-1: a custom group named in Japanese
+    # raised UnicodeEncodeError and the response was dropped, so the click did
+    # nothing. That predates disclosures, since selecting a row anchors the
+    # same way.
+    #
+    # A key that is already plain ASCII is spelled exactly as before, so the
+    # readable ids stay readable. Anything else keeps a short digest of the
+    # original, because collapsing every non-ASCII character to a dash would
+    # give two differently named groups the same id.
+    flat = "".join(ch if ("a" <= ch <= "z" or "A" <= ch <= "Z" or "0" <= ch <= "9")
+                   else "-" for ch in key)
+    if not key.isascii():
+        flat += "-" + hashlib.blake2s(key.encode("utf-8"), digest_size=4).hexdigest()
+    return "node-" + flat
 
 
 def _matches(graph: Graph, text: str) -> List[Node]:
