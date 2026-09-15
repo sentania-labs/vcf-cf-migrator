@@ -31,8 +31,14 @@
   does not lay out Skittles" is a fact about the tool. It covers objects too:
   a view with no columns, a super metric with an empty formula, an alert with
   no symptom sets, a group with no membership rules, a dashboard with no
-  widgets. The notes count the empties. Census over the corpus: 82 of 1017
-  widgets and 4 of 802 objects carry nothing to show.
+  widgets. Every one of those branches carries a code, and the suite asserts
+  the fixture exercises all of them, so a new one fails until something does.
+  The notes count every box the page shows.
+
+  Census over the corpus, by distinct content: of 835 widgets on 118
+  dashboards, 31 carry nothing themselves (27 with no configuration at all)
+  and 158 name a view the export does not carry or one with no columns; 4 of
+  634 objects carry nothing to show, all of them views with no attributes.
 
   **The preview shows the dashboard's wiring.** `widgetInteractions` is read
   and rendered: a summary above the grid naming which widget drives which, a
@@ -41,13 +47,15 @@
   rather than an empty frame, because the preview exists so a widget can be
   recognised and a blank box shows neither its columns nor its metrics; the
   label is what keeps that honest. `selfProvider` is read in both the nested
-  and the flat spelling (every corpus widget nests it). A widget waiting on a
-  selection nothing feeds, on a dashboard that wires other widgets, is state 3
-  and will never show data; one on a dashboard that wires nothing at all takes
-  its subject from outside, which is how a dashboard opened in an object's
-  context works, and says that instead. Census: 148 dashboards, 109
-  interaction driven, 585 receiver widgets, 199 providers, 32 wired to
-  nothing, 117 context driven.
+  and the flat spelling (every corpus widget nests it). How a widget comes by
+  its subject has four answers and the preview gives the right one: fed by a
+  named widget; a selector, which chooses no subject of its own precisely
+  because it drives the widgets below it; driven from outside the dashboard,
+  which is how a dashboard opened in an object's context works; or waiting on
+  a selection nothing on the dashboard provides, which is the only one of the
+  four that will never show data and the only one counted as state 3. Census
+  by distinct content: 118 dashboards, 86 interaction driven, 469 fed widgets,
+  17 selectors, 117 driven from outside, 3 that will never show data.
 
   Widths and order are the dashboard's own, heights are the preview's (taken
   from the content, so nothing is clipped), and the banner on every page says

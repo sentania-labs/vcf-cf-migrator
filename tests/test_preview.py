@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from typing import Dict
 
 import pytest
 
@@ -632,7 +633,7 @@ def test_a_receiver_on_an_unwired_dashboard_takes_its_subject_from_outside(built
     separates them cleanly. A dashboard that wires nothing at all and whose
     widgets all wait on a selection is a dashboard opened in an object's
     context, not a broken one: 117 widgets in the corpus are like that, whole
-    Summary Pages dashboards where seven of eight widgets wait. Calling those
+    summary-style dashboards where seven of eight widgets wait. Calling those
     broken would be inventing a fault."""
     _members, graph = built
     node = node_for(graph, f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}")
@@ -654,3 +655,85 @@ def test_the_nested_and_the_flat_self_provider_are_both_read():
     assert _preview._self_provider({"selfProvider": "false"}) is False
     assert _preview._self_provider({}) is None
     assert _preview._self_provider({"selfProvider": {"other": 1}}) is None
+
+
+# ---------------------------------------------------------------------------
+# The gate: every "carries nothing" branch, and every subject classification,
+# has a fixture document behind it
+# ---------------------------------------------------------------------------
+
+def _all_previews(graph):
+    return [(node, _preview.build(graph, node)) for node in graph.ordered()]
+
+
+def test_every_widget_empty_reason_has_a_fixture_widget(built):
+    """The same shape as the widget-renderer gate. A new branch in
+    ``_widget_nothing`` fails here until a fixture widget exercises it: the
+    first version of the never-shows rule called 27 selectors broken and no
+    test touched the classification at all."""
+    _members, graph = built
+    met = set()
+    for _node, preview in _all_previews(graph):
+        met.update(preview.empty_codes)
+    missing = set(_preview.WIDGET_EMPTY_CODES) - met
+    assert missing == set(), f"no fixture widget exercises: {sorted(missing)}"
+    assert met <= set(_preview.WIDGET_EMPTY_CODES), sorted(met)
+
+
+def test_every_object_empty_reason_has_a_fixture_object(built):
+    _members, graph = built
+    met = {preview.empty_code for _node, preview in _all_previews(graph) if preview.empty_code}
+    missing = set(_preview.OBJECT_EMPTY_CODES) - met
+    assert missing == set(), f"no fixture object exercises: {sorted(missing)}"
+
+
+def test_every_subject_classification_has_a_fixture_widget(built):
+    """Self, fed, selector, from-outside and never-shows. The classification
+    that got the selector wrong is the one this pins."""
+    _members, graph = built
+    met: Dict[str, int] = {}
+    for _node, preview in _all_previews(graph):
+        for kind, count in preview.subjects.items():
+            met[kind] = met.get(kind, 0) + count
+    assert set(_preview.SUBJECT_KINDS) - set(met) == set(), sorted(met)
+
+
+def test_a_selector_is_not_called_broken(built):
+    """A widget with selfProvider false that drives other widgets is the
+    dashboard's selector, not a widget that will never show data. 27 of the 32
+    the first rule flagged were exactly this, and one of them carried a badge
+    reading "drives 9 widgets" directly above "it will never show data"."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    page = _preview.render_page(graph, node)
+    titles = {title for title, _kind, _reason in preview.empty_widgets}
+    assert "[Fixture] Clusters" not in titles, "the selector must not be state 3"
+    assert preview.selectors == 1
+    assert "it is the selector that drives 1 widget" in page
+    # And the one genuinely unfed receiver is still called out.
+    assert "[Fixture] Orphaned trend" in titles
+    assert preview.orphan_receivers == 1
+
+
+def test_a_widget_that_will_never_show_data_is_still_drawn(built):
+    """The sentence is a caption over the widget, not a replacement for it:
+    a blank box shows neither its columns nor its metrics, which is the same
+    argument the fed-receiver case already makes."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    frame = re.search(r"<h3>\[Fixture\] Orphaned trend.*?(?=<div class='pv-w)", page, re.S)
+    assert frame, "the orphaned widget should have a frame"
+    assert "will never show data" in frame.group(0)
+    assert "<polyline" in frame.group(0), "the widget itself should still be drawn"
+
+
+def test_every_state_three_box_on_the_page_is_counted(built):
+    """The roll-up has to count what the page shows: three boxes used to
+    bypass the accumulator, so the notes were silent about them."""
+    _members, graph = built
+    for node in graph.by_kind("dashboard"):
+        preview = _preview.build(graph, node)
+        boxes = preview.body.count("class='pv-nothing'")
+        counted = len(preview.empty_widgets) + (1 if preview.empty_reason else 0)
+        assert boxes == counted, f"{node.key}: {boxes} boxes, {counted} counted"

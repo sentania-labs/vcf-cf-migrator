@@ -58,6 +58,44 @@ from vcfcf_migrator import mockdata
 from vcfcf_migrator.graph import Graph, Node
 
 MOCK_ROWS = 5
+
+# Every state-3 case this module can produce, by code. These are the gate:
+# ``tests/test_preview.py`` asserts the fixture produces every one of them, so
+# a new "carries nothing" branch fails the suite until something exercises it.
+# The first version of the never-shows rule called 27 selectors broken, and
+# nothing in the suite touched the classification at all.
+WIDGET_EMPTY_CODES = (
+    "widget-no-config",          # config missing or {}
+    "widget-title-only",         # a title and nothing else
+    "widget-no-view",            # a View widget naming no view
+    "widget-no-metric",          # a metric widget naming no metric
+    "widget-no-heatmap-metric",  # a heatmap declaring no colour or size metric
+    "widget-no-text",            # a text widget with no text and no file
+    "widget-no-heading",         # a section divider with no heading
+    "widget-never-shows",        # waits on a selection nothing provides
+    "widget-view-missing",       # names a view this export does not carry
+    "widget-view-no-columns",    # names a view that declares no columns
+)
+
+OBJECT_EMPTY_CODES = (
+    "dashboard-no-widgets",
+    "view-no-columns",
+    "view-no-attributes",
+    "supermetric-no-formula",
+    "alert-no-state",
+    "alert-no-symptoms",
+    "symptom-no-state",
+    "symptom-no-condition",
+    "recommendation-no-text",
+    "report-no-sections",
+    "group-no-rules",
+    "rule-no-conditions",
+)
+
+# How a widget comes by the object it shows. Not emptiness: a selector and a
+# context-driven widget both work, and the earlier rule called the first
+# broken because it never asked whether the widget drives anything.
+SUBJECT_KINDS = ("self", "fed", "selector", "from-outside", "never-shows")
 DEFAULT_GRID_COLUMNS = 12
 # A grid can be widened to fit a widget the dashboard places outside its own
 # columns; past this it is a number no layout can mean, and the widget is
@@ -170,7 +208,7 @@ class PreviewError(Exception):
 
 
 @dataclass
-class Preview:
+class Preview:  # noqa: D101
     """One rendered preview, with what the renderer met on the way."""
     node: Node
     title: str
@@ -181,14 +219,36 @@ class Preview:
     # State 3: (widget title, widget type, what is missing) per empty widget,
     # and the same sentence for an object whose whole document shows nothing.
     empty_widgets: List[Tuple[str, str, str]] = field(default_factory=list)
+    empty_codes: List[str] = field(default_factory=list)
     empty_reason: str = ""
+    empty_code: str = ""
+    subjects: Dict[str, int] = field(default_factory=dict)
     # Interaction wiring: how many widgets are driven by another widget's
     # selection, and how many of those have nothing feeding them.
     receivers: int = 0
     providers: int = 0
     orphan_receivers: int = 0
     context_driven: int = 0
+    selectors: int = 0
     notes: List[str] = field(default_factory=list)
+
+
+def _mark_object_empty(preview: Preview, code: str, reason: str) -> str:
+    """Record that this whole object carries nothing to show, and say it."""
+    assert code in OBJECT_EMPTY_CODES, code
+    if not preview.empty_reason:
+        preview.empty_reason, preview.empty_code = reason, code
+    return nothing_here(reason)
+
+
+def _mark_widget_empty(preview: Optional[Preview], title: str, widget_type: str,
+                       code: str, reason: str) -> None:
+    assert code in WIDGET_EMPTY_CODES, code
+    if preview is None:
+        return
+    preview.empty_widgets.append((title or "(untitled widget)",
+                                  widget_type or "no type", reason))
+    preview.empty_codes.append(code)
 
 
 # ---------------------------------------------------------------------------
@@ -454,10 +514,11 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
     view_id = str(cfg.get("viewDefinitionId") or "")
     node = _find_node(graph, "view", view_id) if view_id else None
     if node is None:
-        return ("<div class='pv-placeholder'>view <span class='pv-key'>"
-                + _e(view_id or "(none named)")
-                + "</span> <span class='pv-miss'>is not in this export</span>, so its "
-                  "columns cannot be shown</div>")
+        # Counted like any other box with nothing in it: a roll-up that is
+        # silent about three of the boxes on the page is not a roll-up.
+        return _record_empty(ctx, "widget-view-missing",
+                             f"the view this widget names, {view_id or '(none)'}, is not in "
+                             "this export, so its columns cannot be shown here")
     try:
         root = _xml_doc(raw_document(graph, node))
     except PreviewError as e:
@@ -466,6 +527,11 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
     presentation = (root.find("Presentation").get("type")
                     if root.find("Presentation") is not None else "")
     head = f"<div class='pv-key'>{_e(node.name)} ({_e(presentation or 'view')})</div>"
+    if not columns:
+        return head + _record_empty(
+            ctx, "widget-view-no-columns",
+            f"the view this widget shows, {node.name}, declares no columns, so the widget "
+            "shows an empty table")
     if presentation and presentation != "list":
         return head + _non_list_view(presentation, columns)
     return head + _columns_table(columns[:6], rows=3)
@@ -712,46 +778,66 @@ def _self_provider(cfg: dict) -> Optional[bool]:
     return None
 
 
-def _widget_nothing(widget_type: str, cfg: dict, widget: dict) -> str:
-    """What is missing from this widget, or "" when it has something to show."""
+def _widget_nothing(widget_type: str, cfg: dict, widget: dict) -> Tuple[str, str]:
+    """``(code, sentence)`` for what is missing, or ``("", "")`` when the
+    widget has something to show."""
     if not isinstance(cfg, dict) or not cfg:
-        return ("this widget carries no configuration at all, so it shows nothing on the "
+        return ("widget-no-config",
+                "this widget carries no configuration at all, so it shows nothing on the "
                 "dashboard either; it is usually an unfinished leftover")
     # A config that is nothing but a title is the same emptiness wearing a hat.
     if set(cfg) <= {"title", "titleLocalized", "refreshContent", "refreshInterval"}:
         if widget_type != "Section":
-            return ("this widget carries a title and nothing else: no subject, no metric "
+            return ("widget-title-only",
+                    "this widget carries a title and nothing else: no subject, no metric "
                     "and no content, so it shows nothing on the dashboard either")
     if widget_type == "View":
         if not str(cfg.get("viewDefinitionId") or "").strip():
-            return "this widget names no view, so there is nothing for it to show"
+            return ("widget-no-view",
+                    "this widget names no view, so there is nothing for it to show")
     elif widget_type in ("Scoreboard", "MetricChart", "SparklineChart", "PropertyList"):
         if not _cfg_metrics(cfg):
-            return (f"this {widget_type.lower()} names no metric, so it shows nothing "
+            return ("widget-no-metric",
+                    f"this {widget_type.lower()} names no metric, so it shows nothing "
                     "until someone picks one")
     elif widget_type == "ParetoAnalysis":
         if not _cfg_metrics(cfg) and not str(cfg.get("metricName") or "").strip():
-            return "this chart names no metric, so it shows nothing until someone picks one"
+            return ("widget-no-metric",
+                    "this chart names no metric, so it shows nothing until someone picks one")
     elif widget_type == "HealthChart":
         if not (str(cfg.get("metricKey") or "").strip()
                 or str(cfg.get("metricName") or "").strip()):
-            return "this chart names no metric, so it shows nothing until someone picks one"
+            return ("widget-no-metric",
+                    "this chart names no metric, so it shows nothing until someone picks one")
     elif widget_type == "Heatmap":
         configs = cfg.get("configs")
         if not (isinstance(configs, list) and any(isinstance(c, dict) and c for c in configs)):
-            return ("this heatmap declares no colour or size metric, so it shows nothing "
+            return ("widget-no-heatmap-metric",
+                    "this heatmap declares no colour or size metric, so it shows nothing "
                     "until someone picks them")
     elif widget_type == "TextDisplay":
         raw = cfg.get("viewModeHTML") or cfg.get("editorData") or ""
         if isinstance(raw, dict):
             raw = json.dumps(raw)
         if not _strip_tags(str(raw)) and not (cfg.get("locationUrl") or cfg.get("locationFile")):
-            return "this text widget carries no text and points at no file"
+            return ("widget-no-text",
+                    "this text widget carries no text and points at no file")
     elif widget_type == "Section":
         title = str(widget.get("title") or cfg.get("title") or "").strip()
         if not title:
-            return "this section divider carries no heading"
-    return ""
+            return ("widget-no-heading", "this section divider carries no heading")
+    return ("", "")
+
+
+def _record_empty(ctx: dict, code: str, detail: str) -> str:
+    """A state-3 box from inside a renderer, counted like the rest.
+
+    Renderers used to be able to print a box with nothing in it without the
+    roll-up hearing about it, which made the count in the notes quietly wrong.
+    """
+    _mark_widget_empty(ctx.get("preview"), ctx.get("title") or "",
+                       str((ctx.get("widget") or {}).get("type") or ""), code, detail)
+    return nothing_here(detail)
 
 
 def _widget_unhandled(widget_type: str) -> str:
@@ -869,7 +955,14 @@ def _wiring_summary(wiring: Wiring) -> str:
         return ""
     lines = []
     for provider, fed in wiring.receivers.items():
-        names = ", ".join(_e(wiring.title(receiver)) for receiver, _kind in fed)
+        # One widget can be fed by two interaction types, which listed its
+        # name twice on 13 of the corpus's 199 wiring lines.
+        seen_names: List[str] = []
+        for receiver, _kind in fed:
+            name = _e(wiring.title(receiver))
+            if name not in seen_names:
+                seen_names.append(name)
+        names = ", ".join(seen_names)
         lines.append(f"<li><b>{_e(wiring.title(provider))}</b> "
                      f"<span class='arrow'>drives</span> {names}</li>")
     return ("<div class='pv-wiring'>This dashboard is interaction driven: what most of it "
@@ -934,9 +1027,9 @@ def _dashboard_preview(graph: Graph, node: Node, preview: Preview) -> str:
             parts.append(f"<h4 class='pv-h'>tab {label} ({len(members)} widgets)</h4>")
         parts.append(_widget_grid(graph, members, columns, preview, wiring))
     if not widgets:
-        preview.empty_reason = ("this dashboard carries no widgets at all, so it opens "
-                                "empty on the target too")
-        parts.append(nothing_here(preview.empty_reason))
+        parts.append(_mark_object_empty(
+            preview, "dashboard-no-widgets",
+            "this dashboard carries no widgets at all, so it opens empty on the target too"))
 
     if preview.receivers:
         preview.notes.append(
@@ -994,43 +1087,66 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
         ident = str(widget.get("id") or "")
         driven_by = wiring.providers.get(ident, [])
         feeds = wiring.receivers.get(ident, [])
-        missing = _widget_nothing(widget_type, cfg, widget)
-        context_driven = False
+        missing_code, missing = _widget_nothing(widget_type, cfg, widget)
+        subject_kind = "fed" if driven_by else "self"
+        subject = ""      # how this widget gets the object it shows, in words
+        never_shows = ""   # state 3, kept as a caption over the drawn widget
         if not missing and _self_provider(cfg) is False and not driven_by:
             # The export says this widget does not choose its own subject and
-            # names nothing that feeds it. What that means depends on the
-            # dashboard, and the corpus separates the two cases cleanly:
+            # names nothing that feeds it. Three different things wear that
+            # shape, and the corpus separates them:
             #
-            # * the dashboard wires other widgets and not this one (32 widgets
-            #   in the corpus): it is wired wrong, stays blank, and that is
-            #   the admin's fact to act on;
-            # * the dashboard wires nothing at all (117 widgets, whole
-            #   "Summary Pages" dashboards where 7 of 8 widgets are like
-            #   this): the subject arrives from outside, as it does for a
-            #   dashboard opened in an object's context. Calling those broken
-            #   would be inventing a fault.
-            if wiring.receivers:
-                missing = ("this widget takes its subject from another widget's selection, "
-                           "and nothing on this dashboard feeds it while other widgets here "
-                           "are wired, so it will never show data")
+            # * it drives other widgets: it is the dashboard's selector, whose
+            #   whole job is to have no subject of its own (27 of the 32
+            #   widgets an earlier version of this rule called broken, among
+            #   them one that drives nine widgets while the frame above it
+            #   said it would never show data);
+            # * the dashboard wires other widgets and not this one: it is
+            #   wired wrong and stays blank, which is the admin's fact;
+            # * the dashboard wires nothing at all (whole summary-style
+            #   dashboards where seven of eight widgets are like this): the
+            #   subject arrives from outside, as it does for a dashboard
+            #   opened in an object's context. Calling those broken would be
+            #   inventing a fault.
+            if feeds:
+                subject_kind = "selector"
+                subject = ("this widget chooses no subject of its own: it is the selector "
+                           f"that drives {len(feeds)} widget"
+                           f"{'s' if len(feeds) != 1 else ''} on this dashboard")
+                preview.selectors += 1
+            elif wiring.receivers:
+                never_shows = ("this widget takes its subject from another widget's "
+                               "selection, and nothing on this dashboard feeds it while "
+                               "other widgets here are wired, so it will never show data")
+                subject_kind = "never-shows"
                 preview.orphan_receivers += 1
+                _mark_widget_empty(preview, title, widget_type, "widget-never-shows",
+                                   never_shows)
             else:
-                context_driven = True
+                subject_kind = "from-outside"
+                subject = ("this widget takes its subject from a selection made outside "
+                           "this dashboard: nothing here is wired to feed it, and the "
+                           "values below stand for whatever object arrives")
                 preview.context_driven += 1
+        preview.subjects[subject_kind] = preview.subjects.get(subject_kind, 0) + 1
         if missing:
-            preview.empty_widgets.append(
-                (title or "(untitled widget)", widget_type or "no type", missing))
+            _mark_widget_empty(preview, title, widget_type, missing_code, missing)
             inner = nothing_here(missing)
         elif renderer is None:
             preview.unhandled_types[widget_type] = (
                 preview.unhandled_types.get(widget_type, 0) + 1)
             inner = _widget_unhandled(widget_type)
         else:
-            inner = renderer(cfg, {"graph": graph, "seed": seed, "widget": widget})
-        if context_driven:
-            inner = ("<p class='pv-drivenby'>this widget takes its subject from a selection "
-                     "made outside this dashboard: nothing here is wired to feed it, and the "
-                     "values below stand for whatever object arrives</p>" + inner)
+            inner = renderer(cfg, {"graph": graph, "seed": seed, "widget": widget,
+                                   "preview": preview, "title": title})
+        if never_shows:
+            # The sentence is the state-3 one and it is counted as such, but
+            # the widget is still drawn under it: a blank box shows neither
+            # its columns nor its metrics, which is the same argument this
+            # code already makes for a widget that is fed.
+            inner = nothing_here(never_shows) + inner
+        if subject:
+            inner = f"<p class='pv-drivenby'>{_e(subject)}</p>" + inner
         if not missing and driven_by:
             # Mock values are shown rather than an empty frame, and labelled
             # with whose selection they stand for: the preview exists so an
@@ -1128,8 +1244,13 @@ def _view_preview(graph: Graph, node: Node, preview: Preview) -> str:
     ])
     head = (f"<p class='pv-sub'>{_e(description)}</p>" if description else "") + facts
     if not columns:
-        preview.empty_reason = ("this view declares no columns, so it shows an empty table "
-                                "wherever it is used")
+        code = "view-no-columns" if (not presentation or presentation == "list") \
+            else "view-no-attributes"
+        _mark_object_empty(preview, code,
+                           "this view declares no columns, so it shows an empty table "
+                           "wherever it is used" if code == "view-no-columns" else
+                           f"this {presentation} view declares no attributes, so it has "
+                           "nothing to chart wherever it is used")
     if presentation and presentation != "list":
         preview.notes.append(
             f"this view's presentation is {presentation}; only list views are laid out")
@@ -1149,10 +1270,11 @@ def _supermetric_preview(graph: Graph, node: Node, preview: Preview) -> str:
             for k in kinds if isinstance(k, dict)) or kind_text
 
     if not formula.strip():
-        preview.empty_reason = ("this super metric carries an empty formula, so it computes "
-                                "nothing on the target either")
         return ((f"<p class='pv-sub'>{_e(description)}</p>" if description else "")
-                + nothing_here(preview.empty_reason))
+                + _mark_object_empty(
+                    preview, "supermetric-no-formula",
+                    "this super metric carries an empty formula, so it computes nothing on "
+                    "the target either"))
 
     resolved, references = _resolve_formula(graph, node, formula)
     facts = _facts([
@@ -1232,7 +1354,7 @@ def _alert_preview(graph: Graph, node: Node, preview: Preview) -> str:
                             for i in state.findall("Impact"))
         if impacts:
             parts.append(f"<p class='pv-sub'>impact: {_e(impacts)}</p>")
-        parts.append(_symptom_logic(graph, state))
+        parts.append(_symptom_logic(graph, state, preview))
         # Both spellings: an AlertDefinition usually wraps its references in a
         # <Recommendations> element, and some exports hang them straight off
         # the state. Reading one spelling only loses the recommendations
@@ -1252,9 +1374,9 @@ def _alert_preview(graph: Graph, node: Node, preview: Preview) -> str:
         else:
             parts.append("<p class='pv-sub'>no recommendations are attached</p>")
     if not root.findall("State"):
-        preview.empty_reason = ("this alert declares no state, so it carries no symptoms "
-                                "and can never fire")
-        parts.append(nothing_here(preview.empty_reason))
+        parts.append(_mark_object_empty(
+            preview, "alert-no-state",
+            "this alert declares no state, so it carries no symptoms and can never fire"))
     return "".join(parts)
 
 
@@ -1275,7 +1397,7 @@ def _recommendation_text(graph: Graph, ref: str) -> str:
     return _e(node.name)
 
 
-def _symptom_logic(graph: Graph, state: ET.Element) -> str:
+def _symptom_logic(graph: Graph, state: ET.Element, preview: Optional[Preview] = None) -> str:
     """The symptom sets stated in words, nesting as the document nests them."""
     blocks: List[str] = []
     for sets_el in state.findall("SymptomSets"):
@@ -1286,7 +1408,12 @@ def _symptom_logic(graph: Graph, state: ET.Element) -> str:
     for set_el in state.findall("SymptomSet"):
         blocks.append(_symptom_set(graph, set_el))
     if not blocks:
-        return nothing_here("this alert state names no symptoms, so nothing can make it fire")
+        reason = "this alert state names no symptoms, so nothing can make it fire"
+        if preview is None:
+            return nothing_here(reason)
+        # Half of this was implemented: an alert with no state said so and an
+        # alert with a state naming no symptoms did not.
+        return _mark_object_empty(preview, "alert-no-symptoms", reason)
     return ("<p class='pv-sub'>the alert triggers when:</p><ul class='pv-logic'>"
             + "".join(blocks) + "</ul>")
 
@@ -1321,9 +1448,10 @@ def _symptom_preview(graph: Graph, node: Node, preview: Preview) -> str:
     ])
     parts = [facts]
     if not root.findall("State"):
-        preview.empty_reason = ("this symptom declares no state, so it carries no condition "
-                                "and can never trigger")
-        parts.append(nothing_here(preview.empty_reason))
+        parts.append(_mark_object_empty(
+            preview, "symptom-no-state",
+            "this symptom declares no state, so it carries no condition and can never "
+            "trigger"))
     for state in root.findall("State"):
         parts.append(f"<h4 class='pv-h'>condition, severity "
                      f"{_e(state.get('severity') or 'not declared')}</h4>")
@@ -1332,9 +1460,9 @@ def _symptom_preview(graph: Graph, node: Node, preview: Preview) -> str:
         if items:
             parts.append("<ul class='pv-logic'>" + "".join(items) + "</ul>")
         else:
-            preview.empty_reason = ("this symptom declares no condition, so nothing can "
-                                    "trigger it")
-            parts.append(nothing_here(preview.empty_reason))
+            parts.append(_mark_object_empty(
+                preview, "symptom-no-condition",
+                "this symptom declares no condition, so nothing can trigger it"))
     return "".join(parts)
 
 
@@ -1374,11 +1502,10 @@ def _condition_words(condition: ET.Element) -> str:
 def _recommendation_preview(graph: Graph, node: Node, preview: Preview) -> str:
     root = _xml_doc(raw_document(graph, node))
     text = _text(root, "Description") or (root.get("description") or "")
-    if not text:
-        preview.empty_reason = ("this recommendation carries no description, so an operator "
-                                "acting on the alert is told nothing")
-    body = (f"<div class='pv-text'>{_e(text)}</div>" if text
-            else nothing_here(preview.empty_reason))
+    body = (f"<div class='pv-text'>{_e(text)}</div>" if text else _mark_object_empty(
+        preview, "recommendation-no-text",
+        "this recommendation carries no description, so an operator acting on the alert is "
+        "told nothing"))
     action = root.find("ActionDefinition")
     if action is not None:
         body += _facts([("action", action.get("id") or action.get("key") or "declared")])
@@ -1410,9 +1537,10 @@ def _report_preview(graph: Graph, node: Node, preview: Preview) -> str:
         body += ("<table class='pv-tbl'><thead><tr><th>#</th><th>section</th><th>content</th>"
                  "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
     else:
-        preview.empty_reason = ("this report declares no sections, so it renders as a "
-                                "cover page and nothing else")
-        body += nothing_here(preview.empty_reason)
+        body += _mark_object_empty(
+            preview, "report-no-sections",
+            "this report declares no sections, so it renders as a cover page and nothing "
+            "else")
     return body
 
 
@@ -1443,10 +1571,11 @@ def _customgroup_preview(graph: Graph, node: Node, preview: Preview) -> str:
                                             "<li><span class='op'>no rules</span></li>")
             + "</ul>")
     if not blocks:
-        preview.empty_reason = ("this group declares no membership rules, so it takes no "
-                                "members of its own on the target: whatever it held on the "
-                                "source was picked by hand and does not travel")
-        blocks.append(nothing_here(preview.empty_reason))
+        blocks.append(_mark_object_empty(
+            preview, "group-no-rules",
+            "this group declares no membership rules, so it takes no members of its own on "
+            "the target: whatever it held on the source was picked by hand and does not "
+            "travel"))
     return facts + "".join(blocks)
 
 
@@ -1495,9 +1624,10 @@ def _rule_preview(graph: Graph, node: Node, preview: Preview) -> str:
     if items:
         body = "<h4 class='pv-h'>conditions</h4><ul class='pv-logic'>" + "".join(items) + "</ul>"
     else:
-        preview.empty_reason = ("this rule declares no conditions, so nothing will ever "
-                                "match it and it notifies no one")
-        body = nothing_here(preview.empty_reason)
+        body = _mark_object_empty(
+            preview, "rule-no-conditions",
+            "this rule declares no conditions, so nothing will ever match it and it "
+            "notifies no one")
     return facts + body
 
 
@@ -1557,6 +1687,10 @@ def build(graph: Graph, node: Node) -> Preview:
         preview.notes.append(f"no preview is written for {node.kind} objects")
         return preview
     preview.body = renderer(graph, node, preview)
+    if preview.selectors:
+        preview.notes.append(
+            f"{preview.selectors} widget(s) are selectors: they choose no subject of their "
+            "own and drive the widgets below them")
     if preview.context_driven:
         preview.notes.append(
             f"{preview.context_driven} widget(s) take their subject from outside this "
@@ -1599,6 +1733,8 @@ _SHORT_REASONS = (
     ("no heading", "the section divider carries no heading"),
     ("nothing on this dashboard feeds it",
      "the widget waits on a selection nothing provides"),
+    ("is not in this export", "the view the widget names is not in this export"),
+    ("declares no columns, so the widget", "the view the widget shows declares no columns"),
 )
 
 

@@ -737,8 +737,11 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
         for ref in node.refs:
             hits = index.get((ref.kind, ref.ident))
             if not hits:
-                if not ref.optional:
-                    graph.missing.append(MissingEdge(node.key, ref.kind, ref.ident, ref.via))
+                # Two widgets on one dashboard can name the same absent view,
+                # which is one thing the admin has to fix, not two.
+                gap = MissingEdge(node.key, ref.kind, ref.ident, ref.via)
+                if not ref.optional and gap not in graph.missing:
+                    graph.missing.append(gap)
                 continue
             # One reference, several nodes, is ambiguous only when those
             # nodes are different objects. A dashboard uuid under two owners

@@ -176,7 +176,14 @@ def test_the_same_template_in_two_members_is_listed_once(tmp_path, capsys):
 def test_a_dashboard_shared_by_two_owners_lists_once_per_owner(export_zip, capsys):
     """Five dashboards on a real 9.x export sit under two owners with the
     same uuid; dashboardsByOwner counts each, so the listing must too."""
-    from make_export_fixture import DASHBOARD_ID, DASHBOARD_ID_2, OWNER, OWNER_2
+    from make_export_fixture import (
+        DASHBOARD_ID,
+        DASHBOARD_ID_2,
+        EMPTY_DASHBOARD_ID,
+        EXPECTED_DASHBOARD_LISTINGS,
+        OWNER,
+        OWNER_2,
+    )
 
     assert main(["inspect", "--json", str(export_zip)]) == 0
     doc = json.loads(capsys.readouterr().out)
@@ -185,8 +192,10 @@ def test_a_dashboard_shared_by_two_owners_lists_once_per_owner(export_zip, capsy
         (DASHBOARD_ID, f"dashboards/{OWNER}"),
         (DASHBOARD_ID, f"dashboards/{OWNER_2}"),
         (DASHBOARD_ID_2, f"dashboards/{OWNER_2}"),
+        (EMPTY_DASHBOARD_ID, f"dashboards/{OWNER_2}"),
     ])
-    assert doc["counts"]["dashboard"] == doc["manifest"]["dashboards"] == 3
+    assert (doc["counts"]["dashboard"] == doc["manifest"]["dashboards"]
+            == EXPECTED_DASHBOARD_LISTINGS)
 
 
 def test_payload_templates_read_both_nestings(tmp_path, capsys):
@@ -226,7 +235,7 @@ def test_notification_rules_read_both_nestings(tmp_path, capsys):
     import io
     import zipfile
 
-    from make_export_fixture import RULE_ID, RULE_ID_2
+    from make_export_fixture import EMPTY_RULE_ID, RULE_ID, RULE_ID_2
 
     src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
     out = io.BytesIO()
@@ -247,7 +256,9 @@ def test_notification_rules_read_both_nestings(tmp_path, capsys):
         assert main(["inspect", "--json", str(zip_path)]) == 0
         doc = json.loads(capsys.readouterr().out)
         got = {(i["name"], i["uuid"]) for i in doc["items"] if i["kind"] == "notificationrule"}
-        assert got == {("[Fixture] Cluster rule", RULE_ID), ("[Fixture] Host rule", RULE_ID_2)}, zip_path
+        assert got == {("[Fixture] Cluster rule", RULE_ID),
+                       ("[Fixture] Host rule", RULE_ID_2),
+                       ("[Fixture] Rule with no conditions", EMPTY_RULE_ID)}, zip_path
 
 
 def test_inspect_refuses_a_zip_that_is_not_a_content_export(tmp_path, capsys):
@@ -350,3 +361,51 @@ def test_the_ci_checker_derives_the_floor_from_the_code():
     assert check_source_version(ci_checks.floor_text()) == VERSION_FLOOR_TEXT
     with pytest.raises(UnsupportedExport):
         check_source_version(ci_checks.below_floor_text())
+
+
+def test_inspect_reports_navigation_links_pointing_outside_the_export(tmp_path, capsys):
+    """A dashboard navigation is a link to another dashboard. Every target in
+    the corpus resolves to nothing in any export, so those links do not land
+    after an import, and the listing is where an admin sees it before deciding
+    what to carry. Whether such a target is a dependency the bundle should
+    chase is M5's question (migrator issue #3)."""
+    import io
+    import zipfile
+
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name in src.namelist():
+            data = src.read(name)
+            if name.startswith("dashboards/"):
+                inner = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:
+                    with zipfile.ZipFile(inner, "w") as w:
+                        for member in dash_zip.namelist():
+                            body = dash_zip.read(member)
+                            if member.endswith("dashboard.json"):
+                                doc = json.loads(body)
+                                first = doc["dashboards"][0]
+                                widget = str(first["widgets"][0].get("id") or "w1")
+                                first["widgets"][0]["id"] = widget
+                                first["dashboardNavigations"] = {
+                                    widget: [
+                                        # one target inside the document, one
+                                        # naming something it does not carry
+                                        {"id": widget, "widgets": []},
+                                        {"id": "a-dashboard-not-in-this-export",
+                                         "widgets": []},
+                                    ]}
+                                body = json.dumps(doc).encode()
+                            w.writestr(member, body)
+                data = inner.getvalue()
+            z.writestr(name, data)
+    path = tmp_path / "with-navigations.zip"
+    path.write_bytes(out.getvalue())
+
+    assert main(["inspect", str(path)]) == 0
+    text = capsys.readouterr().out
+    assert "dashboard navigation links pointing outside this export: 2" in text
+    assert main(["inspect", "--json", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["navigation_gaps"] == 2
+

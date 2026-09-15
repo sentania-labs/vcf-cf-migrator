@@ -44,6 +44,24 @@ REPORT_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f"
 WIDGET_PROVIDER = "4a5b6c7d-1111-4111-8111-0a1b2c3d4e5f"
 WIDGET_RECEIVER = "4a5b6c7d-2222-4222-8222-0a1b2c3d4e5f"
 WIDGET_ORPHAN = "4a5b6c7d-3333-4333-8333-0a1b2c3d4e5f"
+# A dashboard with no widgets at all, a second alert whose state names no
+# symptom, two more symptoms (one with no state, one with a state and no
+# condition), a recommendation with no text, a report with no sections and a
+# rule with no conditions: one document per "carries nothing" case the
+# preview can report, so none of them is exercised by hand only.
+EMPTY_DASHBOARD_ID = "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b"
+EMPTY_ALERT_ID = "AlertDefinition-VMWARE-Fixture_No_Symptoms"
+STATELESS_ALERT_ID = "AlertDefinition-VMWARE-Fixture_No_State"
+EMPTY_SYMPTOM_ID = "SymptomDefinition-VMWARE-Fixture_No_State"
+CONDITIONLESS_SYMPTOM_ID = "SymptomDefinition-VMWARE-Fixture_No_Condition"
+EMPTY_RECOMMENDATION_ID = "Recommendation-df-VMWARE-Fixture_No_Text"
+EMPTY_REPORT_ID = "6f7a8b9c-0d1e-4f2a-8b3c-4d5e6f7a8b9c"
+EMPTY_RULE_ID = "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+# A chart view carrying no attributes at all.
+EMPTY_CHART_VIEW_ID = "9c0d1e2f-3a4b-4c5d-8e6f-7a8b9c0d1e2f"
+# A view id no document defines, for a widget that names a view the export
+# does not carry.
+ABSENT_VIEW_ID = "0d1e2f3a-4b5c-4d6e-8f7a-8b9c0d1e2f3a"
 # A super metric uuid nothing in the fixture defines, so an edge to an object
 # the export does not carry can be exercised. Real exports are full of these.
 ABSENT_SM_ID = "deadbeef-0000-4000-8000-000000000001"
@@ -68,13 +86,15 @@ TEMPLATE_ID_2 = "c0a1b2c3-d4e5-4f60-8a7b-8c9d0e1f2a3b"
 # A dashboard shared by two owners lists once per owner (a set collapses
 # the pair, so EXPECTED_DASHBOARD_LISTINGS carries the count): OWNER has one
 # dashboard, OWNER_2 has the same one plus a second of its own.
-EXPECTED_DASHBOARD_LISTINGS = 3
+EXPECTED_DASHBOARD_LISTINGS = 4
 EXPECTED_ITEMS = {
     ("dashboard", "[Fixture] Cluster Overview", DASHBOARD_ID),
     ("dashboard", "[Fixture] VM Overview", DASHBOARD_ID_2),
+    ("dashboard", "[Fixture] Empty Overview", EMPTY_DASHBOARD_ID),
     ("view", "[Fixture] Cluster List", VIEW_IDS[0]),
     ("view", "[Fixture] VM List", VIEW_IDS[1]),
     ("view", "[Fixture] Empty List", EMPTY_VIEW_ID),
+    ("view", "[Fixture] Empty Chart", EMPTY_CHART_VIEW_ID),
     ("supermetric", "[Fixture] SM 1", SM_IDS[0]),
     ("supermetric", "[Fixture] SM 2", SM_IDS[1]),
     ("supermetric", "[Fixture] SM 3", SM_IDS[2]),
@@ -83,11 +103,18 @@ EXPECTED_ITEMS = {
     ("customgroup", GROUP_NAME_2, ""),
     ("customgroup", GROUP_NAME_3, ""),
     ("symptom", "[Fixture] CPU high", "SymptomDefinition-VMWARE-Fixture_CPU_high"),
+    ("symptom", "[Fixture] Symptom with no state", EMPTY_SYMPTOM_ID),
+    ("symptom", "[Fixture] Symptom with no condition", CONDITIONLESS_SYMPTOM_ID),
     ("alert", "[Fixture] Cluster CPU alert", "AlertDefinition-VMWARE-Fixture_Cluster_CPU"),
+    ("alert", "[Fixture] Alert with no symptoms", EMPTY_ALERT_ID),
+    ("alert", "[Fixture] Alert with no state", STATELESS_ALERT_ID),
     ("recommendation", "Add hosts to the cluster", "Recommendation-df-VMWARE-Fixture_Add_hosts"),
+    ("recommendation", "(unnamed)", EMPTY_RECOMMENDATION_ID),
     ("report", "[Fixture] Cluster Report", REPORT_ID),
+    ("report", "[Fixture] Empty Report", EMPTY_REPORT_ID),
     ("notificationrule", "[Fixture] Cluster rule", RULE_ID),
     ("notificationrule", "[Fixture] Host rule", RULE_ID_2),
+    ("notificationrule", "[Fixture] Rule with no conditions", EMPTY_RULE_ID),
     ("notificationtemplate", "[Fixture] Cluster template", TEMPLATE_ID),
     ("notificationtemplate", "[Fixture] Host template", TEMPLATE_ID_2),
     ("outboundsetting", "[Fixture] Mail relay (StandardEmailPlugin)", ""),
@@ -159,6 +186,13 @@ def _views_xml() -> str:
             VIEW_IDS, ("[Fixture] Cluster List", "[Fixture] VM List"), controls,
             presentations, providers)
     )
+    # A chart view carrying no attributes at all: nothing to chart.
+    defs += (f'<ViewDef id="{EMPTY_CHART_VIEW_ID}"><Title>[Fixture] Empty Chart</Title>'
+             '<Description>made up</Description>'
+             '<SubjectType adapterKind="VMWARE" resourceKind="ClusterComputeResource" type="self"/>'
+             '<Usage>dashboard</Usage>'
+             '<DataProviders><DataProvider dataType="distribution-view" id="dp-chart"/></DataProviders>'
+             '<Presentation type="donut-chart"/></ViewDef>')
     # A third view with no attributes selector at all: its document is here
     # and declares no columns, so it shows an empty table wherever it is used.
     defs += (f'<ViewDef id="{EMPTY_VIEW_ID}"><Title>[Fixture] Empty List</Title>'
@@ -178,18 +212,34 @@ def _reports_xml() -> str:
         f'<Section><ContentType>View</ContentType><ContentKey>{VIEW_IDS[0]}</ContentKey></Section>'
         f'<Section><ContentType>Dashboard</ContentType><ContentKey>{DASHBOARD_ID}</ContentKey></Section>'
         f'</Sections></ReportDef>'
+        # A report with no sections: a cover page and nothing else.
+        f'<ReportDef id="{EMPTY_REPORT_ID}"><isTenant>false</isTenant>'
+        '<Title>[Fixture] Empty Report</Title><Description/></ReportDef>'
         "</Reports></Content>"
     )
 
 
 def _alertdefs_xml() -> str:
+    # The second definition declares a state that names no symptom: an alert
+    # that can never fire, which is a different emptiness from no state at all.
     return (
         '<?xml version="1.0" encoding="UTF-8"?><alertContent>'
-        '<AlertDefinitions><AlertDefinition adapterKind="VMWARE" id="AlertDefinition-VMWARE-Fixture_Cluster_CPU" '
+        '<AlertDefinitions>'
+        '<AlertDefinition adapterKind="VMWARE" id="AlertDefinition-VMWARE-Fixture_Cluster_CPU" '
         'name="[Fixture] Cluster CPU alert" resourceKind="ClusterComputeResource" type="16" subType="19">'
         '<State severity="critical"><SymptomSet ref="SymptomDefinition-VMWARE-Fixture_CPU_high" aggregation="all"/>'
         '<Recommendation priority="1" ref="Recommendation-df-VMWARE-Fixture_Add_hosts"/></State>'
-        "</AlertDefinition></AlertDefinitions></alertContent>"
+        "</AlertDefinition>"
+        f'<AlertDefinition adapterKind="VMWARE" id="{EMPTY_ALERT_ID}" '
+        'name="[Fixture] Alert with no symptoms" resourceKind="ClusterComputeResource" '
+        'type="16" subType="19"><State severity="warning">'
+        '<Impact key="health" type="badge"/></State></AlertDefinition>'
+        # No State at all, which is a different emptiness from a state that
+        # names no symptom.
+        f'<AlertDefinition adapterKind="VMWARE" id="{STATELESS_ALERT_ID}" '
+        'name="[Fixture] Alert with no state" resourceKind="ClusterComputeResource" '
+        'type="16" subType="19"/>'
+        "</AlertDefinitions></alertContent>"
     )
 
 
@@ -202,7 +252,15 @@ def _symptomdefs_xml() -> str:
         'name="[Fixture] CPU high" resourceKind="ClusterComputeResource">'
         f'<State severity="warning"><Condition key="Super Metric|sm_{SM_IDS[1]}" operator="&gt;" '
         'thresholdType="static" type="metric" value="0.0" valueType="numeric"/></State>'
-        '</SymptomDefinition></SymptomDefinitions></alertContent>'
+        '</SymptomDefinition>'
+        # No State element at all, and a State with no Condition: two
+        # different ways a symptom can carry nothing.
+        f'<SymptomDefinition adapterKind="VMWARE" id="{EMPTY_SYMPTOM_ID}" '
+        'name="[Fixture] Symptom with no state" resourceKind="ClusterComputeResource"/>'
+        f'<SymptomDefinition adapterKind="VMWARE" id="{CONDITIONLESS_SYMPTOM_ID}" '
+        'name="[Fixture] Symptom with no condition" resourceKind="ClusterComputeResource">'
+        '<State severity="warning"/></SymptomDefinition>'
+        '</SymptomDefinitions></alertContent>'
     )
 
 
@@ -211,7 +269,11 @@ def _recommendationdefs_xml() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?><alertContent>'
         '<Recommendations><Recommendation key="Recommendation-df-VMWARE-Fixture_Add_hosts">'
-        "<Description>Add hosts to the cluster</Description></Recommendation></Recommendations></alertContent>"
+        "<Description>Add hosts to the cluster</Description></Recommendation>"
+        # A recommendation with no description: an operator acting on the
+        # alert is told nothing.
+        f'<Recommendation key="{EMPTY_RECOMMENDATION_ID}"/>'
+        "</Recommendations></alertContent>"
     )
 
 
@@ -277,9 +339,13 @@ def _laid_out_widgets() -> list:
                     # The one alert this export carries, so the widget's rows
                     # can be checked against a name the preview resolved.
                     "alertDefinitions": ["AlertDefinition-VMWARE-Fixture_Cluster_CPU"]}},
+        # The dashboard's selector: it chooses no subject of its own
+        # (selfProvider false) and drives the chart above. 27 widgets shaped
+        # exactly like this were once called "will never show data".
         {"type": "ResourceList", "title": "[Fixture] Clusters", "id": WIDGET_PROVIDER,
          "gridsterCoords": {"x": 7, "y": 19, "w": 6, "h": 5},
          "config": {"title": "[Fixture] Clusters", "mode": "all",
+                    "selfProvider": {"selfProvider": False},
                     "additionalColumns": [{"name": "Memory|Usage",
                                            "metricKey": "mem|usage_average"}]}},
         # selfProvider false and nothing feeds it: on the real dashboard this
@@ -299,6 +365,36 @@ def _laid_out_widgets() -> list:
         {"type": "Scoreboard", "title": "[Fixture] Empty scoreboard",
          "gridsterCoords": {"x": 5, "y": 37, "w": 4, "h": 4},
          "config": {"title": "[Fixture] Empty scoreboard"}},
+        # One widget per remaining "carries nothing" case, so every branch of
+        # the reason table has a document behind it.
+        {"type": "View", "title": "[Fixture] View widget naming nothing",
+         "gridsterCoords": {"x": 9, "y": 37, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] View widget naming nothing",
+                    "viewDefinitionId": "", "selectFirstRow": True}},
+        {"type": "View", "title": "[Fixture] View widget naming an absent view",
+         "gridsterCoords": {"x": 1, "y": 41, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] View widget naming an absent view",
+                    "viewDefinitionId": ABSENT_VIEW_ID}},
+        {"type": "View", "title": "[Fixture] View widget on the empty list",
+         "gridsterCoords": {"x": 5, "y": 41, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] View widget on the empty list",
+                    "viewDefinitionId": EMPTY_VIEW_ID}},
+        {"type": "MetricChart", "title": "[Fixture] Chart with no metric",
+         "gridsterCoords": {"x": 9, "y": 41, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] Chart with no metric", "depth": 1,
+                    "metric": {"mode": "resourceKind", "resourceKindMetrics": [],
+                               "resourceMetrics": []}}},
+        {"type": "Heatmap", "title": "[Fixture] Heatmap with no metric",
+         "gridsterCoords": {"x": 1, "y": 45, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] Heatmap with no metric", "mode": "all",
+                    "configs": []}},
+        {"type": "TextDisplay", "title": "[Fixture] Text with no text",
+         "gridsterCoords": {"x": 5, "y": 45, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] Text with no text", "viewModeHTML": "",
+                    "editorData": ""}},
+        {"type": "Section", "title": "",
+         "gridsterCoords": {"x": 9, "y": 45, "w": 4, "h": 1},
+         "config": {"visualTheme": "dark"}},
         {"type": "HealthChart", "title": "[Fixture] Health",
          "gridsterCoords": {"x": 1, "y": 25, "w": 6, "h": 5},
          "config": {"title": "[Fixture] Health", "mode": "all",
@@ -424,7 +520,10 @@ def build_export_zip(without=()) -> bytes:
     dash_inner = _dash_zip([_cluster_overview()])
     # The second owner carries the same dashboard (same uuid) plus one of its
     # own, so a selection can cross two owner members.
-    dash_inner_2 = _dash_zip([_cluster_overview(), _vm_overview()])
+    # A dashboard whose document carries no widgets at all.
+    empty_dashboard = {"id": EMPTY_DASHBOARD_ID, "name": "[Fixture] Empty Overview",
+                       "widgets": [], "widgetInteractions": []}
+    dash_inner_2 = _dash_zip([_cluster_overview(), _vm_overview(), empty_dashboard])
 
     sms = {
         # SM 1 reaches SM 2 by uuid, the 9.x spelling. Its description quotes
@@ -503,6 +602,11 @@ def build_export_zip(without=()) -> bytes:
                                 {"ResourceID": {"resourceName": GROUP_NAME,
                                                 "adapterKind": "Container",
                                                 "resourceKind": "Environment"}}]}]}}]},
+            {"id": EMPTY_RULE_ID, "Name": "[Fixture] Rule with no conditions",
+             "Description": "", "PluginType": "StandardEmailPlugin",
+             "PluginID": {"@pluginType": "StandardEmailPlugin",
+                          "@pluginName": "[Fixture] Mail relay"},
+             "Disabled": "False", "RuleType": "GENERAL_RULE", "entry": []},
         ]}],
         # Two blocks on purpose: 9.x writes entry as a list, 8.x writes it as
         # a single object, and a select-all must reshape neither.
@@ -526,9 +630,9 @@ def build_export_zip(without=()) -> bytes:
         "pluginType": "StandardEmailPlugin",
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
     }]}
-    manifest = {"dashboards": 3, "views": 3, "superMetrics": 4, "customGroups": 3, "reports": 1,
+    manifest = {"dashboards": 4, "views": 4, "superMetrics": 4, "customGroups": 3, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
-                "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 2}]}
+                "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 3}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'
 
     members = [
