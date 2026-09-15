@@ -69,6 +69,7 @@ header.top { position:sticky; top:0; z-index:5; background:var(--card);
   display:flex; align-items:center; gap:14px; flex-wrap:wrap }
 header.top .ver { color:var(--ink3); font-size:11.5px; font-family:ui-monospace,monospace }
 header.top form { display:flex; gap:8px; align-items:flex-end; flex:1 1 380px }
+header.top form.nogrow { flex:0 0 auto }
 header.top form .grow { flex:1 1 auto }
 
 .msg, .err { margin:10px 18px 0; padding:9px 12px; border-radius:6px; font-size:13px }
@@ -191,6 +192,18 @@ def _header(state) -> str:
         "placeholder='/path/to/export.zip'></div>",
         _button("Open", primary=True),
         "</form>",
+        # Its own form, because the dialog names the file and a path typed
+        # into the box beside it is not an input to that. The cost is that
+        # cancelling redraws the page from state, so anything half-typed in
+        # the box is lost. That is the existing render model rather than
+        # anything this button introduced, but the button does put the
+        # trigger right next to the box, so it is worth knowing.
+        # 'nogrow' because header forms otherwise take flex:1 1 380px, which
+        # would halve the path box beside it and leave this button alone in a
+        # 380px column with a gap to its right.
+        ("<form method='post' action='/pick-export' class='nogrow'>"
+         "<button type='submit'>Browse\u2026</button></form>"
+         if state.file_picker is not None else ""),
         "</header>",
     ])
 

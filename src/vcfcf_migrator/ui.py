@@ -118,6 +118,13 @@ class PageState:
         self.log_level_cli = log_level_cli
         self.log_format_cli = log_format_cli
         self.origins = ()  # set once the server is bound: 127.0.0.1 and localhost on this port
+        # Ask the machine for a file, if the machine can be asked. The desktop
+        # window sets this to its own dialog; browser mode leaves it None,
+        # because a page served over HTTP cannot read a path off the machine
+        # it is served from and an <input type=file> would upload a copy
+        # rather than name the file. The page shows the Browse button only
+        # when there is something behind it.
+        self.file_picker = None
         self.message = ""
         self.error = ""
         self.listing = ""
@@ -566,6 +573,36 @@ def _act_open(state: "PageState", form: dict) -> str:
     return ""
 
 
+def _act_pick_export(state: "PageState", _form: dict) -> str:
+    """Open the machine's own file dialog and load whatever comes back.
+
+    This goes through the action table like every other button rather than
+    being a special case in the window's bridge, so it is logged the same way
+    and there is still exactly one place a page action runs.
+    """
+    if state.file_picker is None:
+        state.error = ("this window cannot open a file chooser; "
+                       "type the path into the box instead")
+        return ""
+    chosen = state.file_picker()
+    # Normalising happens here, in the layer the tests drive, not inside the
+    # dialog wrapper that needs a display to reach. A file dialog hands back a
+    # sequence even when it was told to allow one file, and an unwrapped tuple
+    # reaching open_export raises a TypeError that lands in front of the user
+    # as "argument should be a str or an os.PathLike".
+    if isinstance(chosen, (list, tuple)):
+        chosen = chosen[0] if chosen else None
+    if not chosen:
+        # Cancelling a file dialog is not an error and must not read as one.
+        state.message = "no file chosen"
+        return ""
+    if not isinstance(chosen, str):
+        state.error = f"the file chooser returned something unusable: {type(chosen).__name__}"
+        return ""
+    state.open_export(chosen)
+    return ""
+
+
 def _act_inspect(state: "PageState", form: dict) -> str:
     state.run_inspect(form.get("zip", "").strip(), as_json=form.get("json") == "1")
     return ""
@@ -644,6 +681,7 @@ def _act_run(state: "PageState", form: dict) -> str:
 ACTIONS = {
     "/settings": _act_settings,
     "/open": _act_open,
+    "/pick-export": _act_pick_export,
     "/inspect": _act_inspect,
     "/tree": _act_tree,
     "/select": _act_select,
