@@ -96,22 +96,57 @@ MEMBER_FOR_KIND = {
 
 
 def _view_controls(sm_id: str) -> str:
-    """A column addressing a super metric the way every export spells it:
-    ``Super Metric|sm_<uuid>`` in an attributeKey Property."""
-    return ('<Controls><Control><Property name="attributeKey" '
-            f'value="Super Metric|sm_{sm_id}"/></Control></Controls>')
+    """The two shapes an export writes a view's columns in.
+
+    The realistic one first: an ``attributes-selector`` control holding an
+    ``attributeInfos`` list, one Value block per column, each carrying the
+    attribute key, the display name and the unit. That is what every corpus
+    view carries and what the preview reads its column headers from.
+
+    Then a bare Control carrying the same super metric key as a plain
+    attributeKey property, the other spelling of the same reference, so the
+    dependency walk keeps being exercised on both.
+    """
+    columns = (
+        (f"Super Metric|sm_{sm_id}", "[Fixture] Cluster Score", "false", ""),
+        ("cpu|usage_average", "CPU Usage", "false", "percent"),
+        ("summary|parentCluster", "Cluster", "true", ""),
+    )
+    items = "".join(
+        "<Item><Value>"
+        f'<Property name="objectType" value="RESOURCE"/>'
+        f'<Property name="attributeKey" value="{key}"/>'
+        f'<Property name="isStringAttribute" value="{is_string}"/>'
+        f'<Property name="preferredUnitId" value="{unit}"/>'
+        f'<Property name="isProperty" value="{is_string}"/>'
+        f'<Property name="displayName" value="{label}"/>'
+        "</Value></Item>"
+        for key, label, is_string, unit in columns)
+    return ('<Controls>'
+            '<Control id="attributes-selector_id_1" type="attributes-selector" visible="false">'
+            f'<Property name="attributeInfos"><List>{items}</List></Property>'
+            '</Control>'
+            f'<Control><Property name="attributeKey" value="Super Metric|sm_{sm_id}"/></Control>'
+            '</Controls>')
 
 
 def _views_xml() -> str:
     # The first view points at a super metric this export carries, the second
     # at one it does not: the tree has to show both, and only the first can be
-    # pulled into a selection.
+    # pulled into a selection. The second is also a non-list presentation, the
+    # case the preview states rather than draws.
     controls = (_view_controls(SM_IDS[0]), _view_controls(ABSENT_SM_ID))
+    presentations = ("list", "donut-chart")
+    providers = ("list-view", "distribution-view")
     defs = "".join(
         f'<ViewDef id="{vid}"><Title>{title}</Title><Description>made up</Description>'
         f'<SubjectType adapterKind="VMWARE" resourceKind="ClusterComputeResource" type="self"/>'
-        f"<Usage><Dashboard/></Usage>{control}</ViewDef>"
-        for vid, title, control in zip(VIEW_IDS, ("[Fixture] Cluster List", "[Fixture] VM List"), controls)
+        f"<Usage>dashboard</Usage>{control}"
+        f'<DataProviders><DataProvider dataType="{provider}" id="dp-{vid}"/></DataProviders>'
+        f'<Presentation type="{presentation}"/></ViewDef>'
+        for vid, title, control, presentation, provider in zip(
+            VIEW_IDS, ("[Fixture] Cluster List", "[Fixture] VM List"), controls,
+            presentations, providers)
     )
     return f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Content><Views>{defs}</Views></Content>'
 
@@ -197,6 +232,19 @@ def _vm_overview() -> dict:
             {"type": "ProblemAlertsList", "gridsterCoords": {},
              "config": {"resource": {"resourceId": "resource:id:1_::_",
                                      "resourceName": GROUP_NAME_3}}},
+            # A widget type the preview does not lay out: it has to be named,
+            # not drawn as something else.
+            {"type": "Geo", "title": "[Fixture] Where things are",
+             "gridsterCoords": {"x": 1, "y": 9, "w": 6, "h": 5},
+             "config": {"title": "[Fixture] Where things are",
+                        "locationFile": "fixture-locations.json"}},
+            # Markup inside a document, so the preview can prove it never
+            # injects one: a text widget's content is shown as text.
+            {"type": "TextDisplay", "title": "[Fixture] Notes",
+             "gridsterCoords": {"x": 7, "y": 9, "w": 6, "h": 5},
+             "config": {"title": "[Fixture] Notes",
+                        "viewModeHTML": "<p>Read the <b>runbook</b> first."
+                                        "</p><script>alert(1)</script>"}},
         ],
         "entryKeys": {"uuid": DASHBOARD_ID_2, "resourceKind": [],
                       "resource": [{"resourceKindKey": "Function",
