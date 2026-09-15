@@ -135,14 +135,23 @@ class PageState:
     # -- the log -----------------------------------------------------------
 
     def open_log(self) -> None:
-        """Open (or re-open) this page's log from the current settings."""
+        """Open (or re-open) this page's log from the current settings.
+
+        **The redactor carries over.** It holds everything harvested from the
+        export that is open: the owners, their pseudonyms and every person in
+        the export's user documents. A fresh one knows none of that, so a log
+        opened after the admin changed a setting logged the names the previous
+        one excluded, and the diagnostics file the README tells a customer to
+        mail carried them too.
+        """
         destination, self.log_from = _runlog.resolve_destination(None)
         level, self.log_level_from = _runlog.resolve_level(None)
         fmt, _fmt_from = _runlog.resolve_format(None)
         old = self.log
         try:
             self.log = _runlog.open_log(destination, level=level, fmt=fmt,
-                                        keep_events=True)
+                                        keep_events=True,
+                                        redactor=old.redactor if old else None)
         except (_runlog.BadLogSetting, OSError) as e:
             self.error = f"cannot write the log to {destination}: {e}"
             return
@@ -536,7 +545,16 @@ class PageState:
         return f"{head} {cmd} {target}"
 
     def render(self) -> str:
-        return uipage.render(self)
+        """The page, and the end of the story so far.
+
+        A page can be closed at any moment, so a log it wrote has to end. The
+        page renders after every action, so ``run.end`` goes here: without it a
+        truncated log and a finished one look the same, which is the one thing
+        a log must never be ambiguous about.
+        """
+        page = uipage.render(self)
+        self.log.finish(1 if self.error else 0, what="page")
+        return page
 
 
 # ---------------------------------------------------------------------------

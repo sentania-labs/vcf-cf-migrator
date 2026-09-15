@@ -158,7 +158,7 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
         if node is not None:
             runlog.detail("closure.picked", kind=node.kind, uuid=node.uuid or "",
                           name=node.name, owner=node.owner or None,
-                          reason="named by the selection")
+                          member=node.member, reason="named by the selection")
     queue: List[str] = list(keys)
     seen: List[str] = []
     while queue:
@@ -179,6 +179,7 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
                 target, f"{child.label()} added: required by {node.label()}"))
             runlog.detail("closure.added", kind=child.kind, uuid=child.uuid or "",
                           name=child.name, owner=child.owner or None,
+                          member=child.member,
                           required_by_kind=node.kind, required_by_uuid=node.uuid or "",
                           required_by_name=node.name,
                           reason="the selected object depends on it, so a bundle without "

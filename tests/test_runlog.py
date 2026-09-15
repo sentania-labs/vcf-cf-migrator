@@ -153,6 +153,61 @@ def test_a_person_value_is_taken_out_of_free_text_too(log):
     assert runlog.EXCLUDED_PERSON in note and "owner-1" in note
 
 
+def test_a_person_in_any_case_is_excluded(log):
+    """A name is written three ways in one export's widget titles, and a
+    case-sensitive pattern let two of them through at the default level."""
+    runlog.person("Marguerite Thornbury")
+    runlog.person("MTHORNBURY")
+    runlog.info("careless", name="MARGUERITE THORNBURY dashboard")
+    runlog.info("careless", name="marguerite thornbury alert")
+    runlog.info("careless", name="MTHORNBURYS VMs")
+    body = text_of(log)
+    for spelling in ("MARGUERITE", "marguerite", "Thornbury", "THORNBURY",
+                     "MTHORNBURY", "mthornbury"):
+        assert spelling not in body, spelling
+
+
+def test_a_compact_uuid_is_excluded_like_a_hyphenated_one(log):
+    runlog.info("careless", note="account 0c44e115dc214ea58a5601c22f18325b here")
+    assert "0c44e115dc214ea58a5601c22f18325b" not in text_of(log)
+    assert runlog.EXCLUDED_ID in text_of(log)
+
+
+def test_a_content_uuid_is_allowed_in_either_spelling(log):
+    runlog.content_id("2d7b8c1e-4f11-4c7a-9a55-0c1f2e3d4a5b")
+    runlog.info("ref", note="2d7b8c1e4f114c7a9a550c1f2e3d4a5b and "
+                            "2d7b8c1e-4f11-4c7a-9a55-0c1f2e3d4a5b")
+    assert runlog.EXCLUDED_ID not in text_of(log)
+
+
+def test_a_word_that_is_also_a_person_is_never_taught(log):
+    """The built-in account is called admin, and substituting it rewrote nine
+    real content names and the tool's own sentences on one export."""
+    runlog.person("admin")
+    runlog.info("careless", name="DX O2 Webhook Notification - admin (WebhookPlugin)",
+                reason="carrying it would be the tool deciding for the admin")
+    event = events(log)[0]
+    assert event["name"].endswith("- admin (WebhookPlugin)")
+    assert event["reason"].endswith("deciding for the admin")
+
+
+def test_the_modules_own_sentences_are_never_person_substituted(log):
+    runlog.person("Thornbury")
+    runlog.info("careless", reason="Thornbury asked for it", name="Thornbury dashboard")
+    event = events(log)[0]
+    assert event["reason"] == "Thornbury asked for it"
+    assert runlog.EXCLUDED_PERSON in event["name"]
+
+
+def test_a_file_path_is_logged_as_the_admin_typed_it(log):
+    runlog.person("Thornbury")
+    runlog.info("careless", path="/home/thornbury/exports/Thornbury-export.zip",
+                out="/tmp/Thornbury-bundle.zip")
+    event = events(log)[0]
+    assert event["path"] == "/home/thornbury/exports/Thornbury-export.zip"
+    assert event["out"] == "/tmp/Thornbury-bundle.zip"
+
+
 def test_a_mail_address_is_excluded_even_when_nobody_taught_it(log):
     runlog.info("careless", note="mail to someone.else@example.invalid failed")
     assert "someone.else@example.invalid" not in text_of(log)
@@ -264,4 +319,21 @@ def test_the_in_memory_buffer_is_capped_and_says_what_it_dropped():
     log.event_cap = 5
     for index in range(9):
         log.info("thing", index=index)
-    assert len(log.events) == 5 and log.dropped == 4
+    assert len(log.events) <= 5 and log.dropped >= 4
+    # The drop is not silent: the page keeps the events in memory for the
+    # diagnostics file, and a file quietly missing its oldest events is the
+    # thing the log exists to stop.
+    assert any(e["event"] == "log.truncated" for e in log.events)
+
+
+def test_the_buffer_never_drops_the_events_the_diagnostics_head_is_built_from():
+    log = runlog.Log(level="debug")
+    log.events = []
+    log.event_cap = 6
+    log.header(["inspect", "export.zip"], tool_version="0.0.0", core_version="0.1.0")
+    log.info("input.fingerprint", sha256="a" * 64, members=3)
+    for index in range(40):
+        log.detail("noise", index=index)
+    kept = [e["event"] for e in log.events]
+    for head in runlog.HEAD_EVENTS:
+        assert head in kept, (head, kept)

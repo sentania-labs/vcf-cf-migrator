@@ -58,15 +58,24 @@ class _SubParser(argparse.ArgumentParser):
 
 
 def log_flags() -> argparse.ArgumentParser:
-    """The three log options, as a parent every subcommand shares.
+    """The options every subcommand shares: the corpus directory, the declared
+    source version and the three log settings.
 
     They sit on the main parser *and* on every subcommand, because
-    ``build ... --log run.log`` is what an admin types and argparse would
-    otherwise refuse it after the subcommand. The subcommand copies default to
+    ``ui my-export.zip --source-version 9.0.2`` is what the README tells an
+    admin to type, and argparse refuses an option after the subcommand unless
+    the subcommand has it too. That command failed with "unrecognized
+    arguments" until this parent carried them. The subcommand copies default to
     SUPPRESS, so a flag given before the subcommand is not overwritten by the
     subcommand's own default.
     """
     parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument("--corpus", metavar="DIR", default=argparse.SUPPRESS,
+                        help=f"corpus directory holding real export zips (also "
+                             f"{_settings.ENV_CORPUS}; default ./corpus)")
+    parent.add_argument("--source-version", metavar="X.Y[.Z]", default=argparse.SUPPRESS,
+                        help="VCF Operations version the export came from, for example "
+                             "8.18.7; exports carry none, so you declare it")
     parent.add_argument("--log", metavar="FILE", default=argparse.SUPPRESS,
                         help=f"write a run log to FILE (- for stderr; also {_runlog.ENV_LOG})")
     parent.add_argument("--log-level", metavar="LEVEL", default=argparse.SUPPRESS,

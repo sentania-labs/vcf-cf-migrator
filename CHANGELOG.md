@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Logging, after review: a person's name is excluded in any case and wherever
+  it starts a token; an account uuid written as 32 hex digits without hyphens
+  is excluded like a hyphenated one; a person value that is also an ordinary
+  word (the built-in `admin`) is never taught, and the tool's own sentences are
+  never person-substituted, so a log can still be paired with what VCF
+  Operations says about a named object; the page carries its redactor across a
+  log setting change rather than forgetting every person it had harvested; file
+  paths are logged as typed everywhere, and the contents line and the README
+  both say so; the in-memory buffer never drops the header events and says when
+  it truncates; the page ends its log; the census logs the code it exits with;
+  and a build now logs the hash of each carried document, not only of each
+  member.
+
 - **Bundles are refused by VCF Operations no longer.** Every bundle this tool
   had built was rejected with `INVALID_FILE_FORMAT` and an empty operation
   list, on any source version, including one built from an instance's own

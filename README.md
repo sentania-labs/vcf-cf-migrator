@@ -66,5 +66,8 @@ detail.
 ## Reporting a problem
 
 `--log run.log` records what it did and why, in enough detail to diagnose a
-failure without the export. Logs carry content names and ids. They never carry
-credentials, the export password, encrypted values, or anything about people.
+failure without the export. Logs carry content names and ids, and the file
+paths you gave the tool, which on your machine may carry your own user name.
+They never carry credentials, the export password, encrypted values, or
+anything about the people in the export: a dashboard's owner appears as
+`owner-1`.

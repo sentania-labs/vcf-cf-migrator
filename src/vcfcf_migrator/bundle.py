@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from vcfcf_migrator import rawdoc
 from vcfcf_migrator import runlog
+from vcfcf_migrator import containers as _containers
 from vcfcf_migrator.containers import Container, zip_directory_entry, zip_entry
 from vcfcf_migrator.graph import Graph
 from vcfcf_migrator.selection import Selection
@@ -381,10 +382,27 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         runlog.error("bundle.unwritable", path=str(out_path), reason=str(e),
                      members=len(ordered))
         raise
+    # The spec asks the build fingerprint for "the hash of each carried
+    # document", and a member is not a document: views.zip is one entry over
+    # every view the bundle carries, so a member hash cannot answer "what did
+    # it write for the view Ops just rejected".
+    documents = []
+    for (member, kind, ident, owner), raw in sorted(
+            _containers.documents({k: v for k, v in written.items()
+                                   if not k.endswith("/")}).items()):
+        node = graph.nodes.get(_entry_key(kind, ident, owner))
+        documents.append({"member": member, "kind": kind,
+                          "uuid": (node.uuid if node else "") or ident,
+                          "name": node.name if node else "",
+                          "owner": owner or None,
+                          "bytes": len(raw), "sha256": runlog.sha256(raw)})
     runlog.info("output.fingerprint", path=str(out_path),
                 zip_bytes=len(buf.getvalue()),
                 zip_sha256=runlog.sha256(buf.getvalue()),
+                documents=len(documents),
                 **runlog.output_fingerprint(written, ordered))
+    for document in documents:
+        runlog.detail("output.document", **document)
 
     result.counts = counts
     result.members = ordered

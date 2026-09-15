@@ -1,6 +1,7 @@
 """CLI contract: version, inspect, the floor, the M3 stubs."""
 from __future__ import annotations
 
+import argparse
 import json
 import re
 
@@ -15,7 +16,7 @@ from make_export_fixture import (
     build_export_zip,
 )
 from vcfcf_migrator import __version__
-from vcfcf_migrator.cli import main
+from vcfcf_migrator.cli import build_parser, main
 from vcfcf_migrator.export_reader import UnsupportedExport, read_export
 
 
@@ -25,6 +26,29 @@ def test_version_prints_both_versions(capsys):
     assert f"vcfcf-migrator {__version__}" in out
     assert f"vcfcf_core {vcfcf_core.__version__}" in out
     assert re.search(r"vcfcf-migrator \d+\.\d+", out)
+
+
+@pytest.mark.parametrize("command", ["inspect", "tree", "build", "preview",
+                                    "corpus-check", "ui", "version"])
+def test_every_subcommand_takes_the_shared_options_after_it(command):
+    """The README's first command puts --source-version after the subcommand,
+    and argparse refuses an option a subparser does not have. That command
+    failed with "unrecognized arguments" until the shared parent carried the
+    corpus and source-version flags as well as the log ones."""
+    parser = build_parser()
+    subparsers = [a for a in parser._actions
+                  if isinstance(a, argparse._SubParsersAction)][0]
+    options = set()
+    for action in subparsers.choices[command]._actions:
+        options.update(action.option_strings)
+    for flag in ("--source-version", "--corpus", "--log", "--log-level", "--log-format"):
+        assert flag in options, (command, flag)
+
+
+def test_the_readme_headline_command_parses(export_zip):
+    args = build_parser().parse_args(
+        ["ui", str(export_zip), "--source-version", "9.0.2", "--no-browser"])
+    assert args.command == "ui" and args.source_version == "9.0.2"
 
 
 def test_inspect_lists_every_item(export_zip, capsys):

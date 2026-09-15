@@ -27,8 +27,22 @@ from vcfcf_migrator import runlog
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.ui import PageState
 
-EXCLUDED_FROM_THE_FIXTURE = (OWNER, PERSON_USER_NAME, PERSON_DISPLAY_NAME, PERSON_MAIL,
-                             SECRET_CIPHER_TEXT, SECRET_TOKEN)
+def _fixture_excluded():
+    """Every person and every secret the fixture defines, taken from the module
+    rather than listed here: a hand-picked six of nine is the drift the corpus
+    file's own docstring warns about, in the tier CI actually runs."""
+    import make_export_fixture as fixture
+
+    values = []
+    for name in dir(fixture):
+        if name.startswith(("PERSON_", "SECRET_")) or name in ("OWNER", "OWNER_2"):
+            value = getattr(fixture, name)
+            if isinstance(value, str) and value:
+                values.append(value)
+    return tuple(values)
+
+
+EXCLUDED_FROM_THE_FIXTURE = _fixture_excluded()
 
 
 def run(argv, log_path, level="detail"):
@@ -323,6 +337,39 @@ def test_the_page_saves_one_diagnostics_file_that_names_its_contents(tmp_path, e
     assert head["events"] == len(lines) - 1
     for needle in EXCLUDED_FROM_THE_FIXTURE:
         assert needle not in out.read_text(encoding="utf-8"), needle
+
+
+def test_a_log_setting_change_keeps_what_the_page_learned_about_people(
+        tmp_path, export_zip, config_dir):
+    """The page re-opens its log whenever a setting changes. A fresh redactor
+    knows nothing about the export that is still open, so the names it had been
+    excluding started appearing, in the log and in the diagnostics file the
+    README tells a customer to mail."""
+    state = PageState(str(export_zip))
+    before = state.log.redactor.owners_seen()
+    assert before > 0
+    target = tmp_path / "after-change.jsonl"
+    state.save_setting({"log_file": str(target)})
+    state.save_setting({"log_level": "debug"})
+    state.run_tree()
+    state.select_all()
+    out = tmp_path / "diag.jsonl"
+    state.save_diagnostics(str(out))
+    state.log.close()
+    body = target.read_text(encoding="utf-8") + out.read_text(encoding="utf-8")
+    for needle in EXCLUDED_FROM_THE_FIXTURE:
+        assert needle not in body, needle
+    assert state.log.redactor.owners_seen() >= before
+
+
+def test_the_page_ends_its_log_so_a_truncated_one_can_be_told_apart(
+        tmp_path, export_zip, config_dir):
+    state = PageState(str(export_zip))
+    state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
+    state.run_tree()
+    state.render()
+    ends = [e for e in state.log.events if e["event"] == "run.end"]
+    assert ends, [e["event"] for e in state.log.events][-5:]
 
 
 def test_the_page_has_a_control_for_the_log_file_and_the_level(state):

@@ -910,7 +910,11 @@ def _widget_text(cfg: dict, ctx: dict) -> str:
     # the tool rather than as a widget with more text in it than fits.
     shown = text[:600]
     if len(text) > len(shown):
-        shown = shown.rsplit(" ", 1)[0] + f" ... ({len(text)} characters in all)"
+        # Back to the last word break, unless there is not one: text with no
+        # spaces in its first 600 characters (one long token, or a language
+        # that does not space its words) would otherwise lose the lot.
+        head = shown.rsplit(" ", 1)[0] if " " in shown else shown
+        shown = head + f" ... ({len(text)} characters in all)"
     return f"<div class='pv-text'>{_e(shown)}</div>"
 
 

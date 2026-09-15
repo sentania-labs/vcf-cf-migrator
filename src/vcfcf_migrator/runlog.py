@@ -88,11 +88,17 @@ ENV_LOG_FORMAT = "VCFCF_MIGRATOR_LOG_FORMAT"
 CONTENTS = (
     "this log carries content identity (kind, uuid, name, metric and property keys), "
     "export member names, counts, timings and the reason for every decision, plus the "
-    "file paths you gave the tool; it carries no credentials, no export password, no "
-    "encrypted values, no user names, display names, mail addresses or user and owner "
-    "uuids (owners appear as owner-1, owner-2, stable within this run), and no metric "
-    "or mock values"
+    "file paths you gave the tool, which on your machine may carry your own user name; "
+    "it carries no credentials, no export password, no encrypted values, no user names, "
+    "display names, mail addresses or user and owner uuids out of the export (a "
+    "dashboard's owner appears as owner-1, owner-2, stable within this run, so a member "
+    "named dashboards/owner-1 here is dashboards/<that uuid> in the zip you hold), and "
+    "no metric or mock values"
 )
+
+# The events a diagnostics file is built from, which the in-memory buffer keeps
+# whatever else it has to drop.
+HEAD_EVENTS = ("log.contents", "run.start", "input.fingerprint")
 
 EXCLUDED_CREDENTIAL = "[excluded:credential]"
 EXCLUDED_PERSON = "[excluded:person]"
@@ -117,13 +123,65 @@ VALUE_KEY_RE = re.compile(
     r"^(value|values|sample|samples|series|datapoint|datapoints|mock|mocks|"
     r"reading|readings|observation|observations)$", re.I)
 
+# Both spellings an account id is written in: the canonical hyphenated form and
+# the compact 32 hex digits VCF Operations uses in several places. Matching only
+# the first let a compact account uuid inside content through the allow-list
+# rule on every command.
 _UUID_RE = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"|\b[0-9a-fA-F]{32}\b")
+
+
+def _normal_id(value: str) -> str:
+    """One spelling for the allow-list: lowercased, hyphens dropped, so the
+    same identifier written either way is the same key."""
+    return str(value).strip().lower().replace("-", "")
 _MAIL_RE = re.compile(r"[\w.%+-]+@[\w-]+\.[\w.-]*[A-Za-z]{2,}")
-# A person value shorter than this is not replaced by substring: "admin" inside
-# "Administrative Overview" would mangle the admin's own content, and a name
-# that short carries nothing anyway. Uuids are matched whatever their length.
+# A person value shorter than this is not taught at all: it cannot be told from
+# an ordinary word, and replacing it would mangle the admin's own content. A
+# user name of three characters is therefore not excluded, which is stated in
+# the spec's exclusion list rather than only here. Uuids are matched whatever
+# their length.
 _MIN_PERSON_LEN = 4
+
+# Person values that are also ordinary words. An instance's built-in account is
+# called "admin", and substituting it everywhere rewrote nine real content names
+# on one corpus export ("... admin alert" became "... [excluded:person] alert")
+# and the tool's own sentences with them. A log that cannot be paired with what
+# VCF Operations says about a named object has lost the thing it exists for, so
+# these are never taught. The corpus test used to keep this list; it belongs
+# here, where the behaviour is.
+COMMON_WORDS = frozenset({
+    "admin", "administrator", "root", "system", "local", "user", "users",
+    "guest", "all", "everyone", "true", "false", "none", "null", "default",
+    "unknown", "public", "service", "operator", "owner", "account", "automation",
+    "vcops", "vmware", "support", "test", "demo", "domain", "group", "groups",
+})
+
+# Fields holding a path the admin typed. They are logged as given, everywhere,
+# because the tool cannot be diagnosed without knowing which file it was pointed
+# at, and because the alternative was one event showing a path verbatim (the
+# header, written before anything is harvested) and another showing the same
+# path redacted. The log's contents line names them as a class it carries, and
+# so does the README. The list lives here rather than in a test, so the
+# exemption is the layer's and cannot drift.
+PATH_FIELDS = frozenset({"path", "cwd", "argv", "out", "zip", "dir", "file",
+                         "corpus_dir", "log_file"})
+
+# The subset logged untouched. ``argv`` is not in it: an admin names one owner's
+# copy of a dashboard as ``kind:uuid@owner`` on the command line, so the vector
+# carries an account uuid and goes through the ordinary rules, which turn that
+# half into the run's pseudonym. Everything else here is a file path and nothing
+# else, and is written as given so the same path reads the same way in the
+# header and in every later event.
+VERBATIM_FIELDS = PATH_FIELDS - {"argv"}
+
+# Fields whose value is a sentence this module wrote. They are scanned for
+# uuids and mail addresses like everything else, but never for person values:
+# substituting into the tool's own English produced "the tool deciding for the
+# [excluded:person]", which is nonsense and hides nothing, since a literal in
+# this file cannot carry anyone's name.
+PROSE_FIELDS = frozenset({"reason", "says", "detail"})
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +227,8 @@ class Redactor:
             return
         if len(text) < _MIN_PERSON_LEN and not _UUID_RE.fullmatch(text):
             return
+        if text.lower() in COMMON_WORDS and not _UUID_RE.fullmatch(text):
+            return
         self._people.append(text)
         self._pattern = None
 
@@ -179,13 +239,13 @@ class Redactor:
         text = str(value or "").strip().lower()
         if not text:
             return
-        self._allowed.add(text)
+        self._allowed.add(_normal_id(text))
         # An export writes several identifiers with the uuid inside a longer
         # string ("AlertDefinition-<uuid>", "Super Metric|sm_<uuid>"). The uuid
         # in them came out of the same content document, so it is allowed too;
         # without this the log printed AlertDefinition-[excluded:id].
         for token in _UUID_RE.findall(text):
-            self._allowed.add(token.lower())
+            self._allowed.add(_normal_id(token))
 
     def content_ids(self, values: Iterable) -> None:
         for value in values:
@@ -211,32 +271,71 @@ class Redactor:
     # -- applying ----------------------------------------------------------
 
     def _compiled(self):
+        """The person pattern, case-insensitive and word-bounded.
+
+        Case first: a name declared as "Marguerite Thornbury" is written
+        "MARGUERITE THORNBURY" in one widget title and "marguerite thornbury" in
+        the next, and a case-sensitive pattern let both through at the default
+        level. Replacements are therefore keyed by the lowercased value.
+
+        Boundaries second: without them a person value is replaced inside any
+        longer word, which rewrote content names and the tool's own sentences.
+        A uuid keeps its own boundary rule, since it can sit inside a longer
+        identifier the export wrote ("Condition_<uuid>").
+        """
         if self._pattern is None:
             self._replacements = {}
             for value, pseudonym in self._owners.items():
-                self._replacements[value] = pseudonym
+                self._replacements[value.lower()] = pseudonym
             for value in self._people:
-                self._replacements[value] = EXCLUDED_PERSON
+                self._replacements[value.lower()] = EXCLUDED_PERSON
             if self._replacements:
                 # Longest first, so a value that contains another is replaced
                 # whole rather than half.
                 parts = sorted(self._replacements, key=len, reverse=True)
-                self._pattern = re.compile("|".join(re.escape(p) for p in parts))
+                pieces = []
+                for part in parts:
+                    escaped = re.escape(part)
+                    # The boundary is on the left only. A person value that
+                    # *starts* a longer token is still that person: a corpus
+                    # export carries the display name "Brock" and the login
+                    # built from it, and requiring a boundary on both sides let
+                    # the login through. A value that merely ends inside
+                    # another word is left alone, which is what stops an
+                    # ordinary word being half-replaced.
+                    pieces.append(escaped if _UUID_RE.fullmatch(part)
+                                  else r"(?<![\w-])" + escaped)
+                self._pattern = re.compile("|".join(pieces), re.I)
             else:
                 self._pattern = re.compile(r"(?!x)x")  # matches nothing
         return self._pattern
 
-    def text(self, value: str) -> str:
-        """One string, with everything excluded taken out of it."""
-        out = self._compiled().sub(lambda m: self._replacements[m.group(0)], value)
+    def text(self, value: str, people: bool = True) -> str:
+        """One string, with everything excluded taken out of it.
+
+        *people* is false for a sentence this module wrote: a literal in this
+        file carries nobody's name, and substituting into it only destroyed the
+        sentence.
+        """
+        out = value
+        if people:
+            out = self._compiled().sub(
+                lambda m: self._replacements[m.group(0).lower()], out)
         out = _MAIL_RE.sub(EXCLUDED_MAIL, out)
         return _UUID_RE.sub(
-            lambda m: m.group(0) if m.group(0).lower() in self._allowed else EXCLUDED_ID,
-            out)
+            lambda m: m.group(0) if _normal_id(m.group(0)) in self._allowed
+            else EXCLUDED_ID, out)
 
     def field(self, key: str, value):
         """One event field, keyed, which is where the key rules apply."""
         name = str(key)
+        if name in VERBATIM_FIELDS:
+            # Logged as given: see PATH_FIELDS and VERBATIM_FIELDS.
+            if isinstance(value, (list, tuple)):
+                return [str(v) for v in value]
+            return value if isinstance(value, (int, float, bool)) else str(value)
+        if name in PROSE_FIELDS:
+            return self.value(value, people=False)
         if SECRET_KEY_RE.search(name):
             # A number under such a key is a count, not a credential: an
             # export's manifest counts its auth sources, and excluding the
@@ -270,18 +369,18 @@ class Redactor:
             return {str(k): self._person_field(v) for k, v in value.items()}
         return value
 
-    def value(self, value):
+    def value(self, value, people: bool = True):
         """Any value, scanned rather than keyed: strings inside lists and
         dicts get the same treatment as a string at the top."""
         if isinstance(value, str):
-            return self.text(value)
+            return self.text(value, people=people)
         if isinstance(value, (list, tuple)):
-            return [self.value(v) for v in value]
+            return [self.value(v, people=people) for v in value]
         if isinstance(value, dict):
             return {str(k): self.field(str(k), v) for k, v in value.items()}
         if isinstance(value, (int, float, bool)) or value is None:
             return value
-        return self.text(str(value))
+        return self.text(str(value), people=people)
 
     def owners_seen(self) -> int:
         return len(self._owners)
@@ -362,14 +461,38 @@ class Log:
         self._by_level[level] = self._by_level.get(level, 0) + 1
         if self.events is not None:
             self.events.append(event)
-            while len(self.events) > self.event_cap:
-                self.events.pop(0)
-                self.dropped += 1
+            self._trim()
         if self.stream is None:
             return
         line = (render_event(event) if self.fmt == "text"
                 else json.dumps(event, ensure_ascii=False))
         self.stream.write(line + "\n")
+
+    def _trim(self) -> None:
+        """Hold the buffer at its cap, oldest first, but never the head.
+
+        The oldest events are the contents line, the run header and the input
+        fingerprint, and those are exactly what the diagnostics file looks up
+        to describe itself: dropping them first turned a long session's
+        diagnostics into events with nothing saying what they are about. And a
+        drop is a thing the tool keeps quiet about in its output, so it is
+        loud here the first time it happens.
+        """
+        if self.events is None or len(self.events) <= self.event_cap:
+            return
+        head = [e for e in self.events[:len(HEAD_EVENTS)]
+                if e.get("event") in HEAD_EVENTS]
+        rest = self.events[len(head):]
+        first_drop = self.dropped == 0
+        while len(head) + len(rest) > self.event_cap and rest:
+            rest.pop(0)
+            self.dropped += 1
+        self.events = head + rest
+        if first_drop:
+            self.warn("log.truncated", cap=self.event_cap, dropped=self.dropped,
+                      reason="this session has written more events than the page keeps in "
+                             "memory, so the oldest are gone from the diagnostics file; "
+                             "the run header and the input fingerprint are kept")
 
     def error(self, code: str, /, **fields) -> None:
         self.emit("error", code, **fields)
@@ -586,9 +709,15 @@ class BadLogSetting(ValueError):
 
 
 def open_log(destination: Optional[str], level: str = DEFAULT_LEVEL,
-             fmt: str = DEFAULT_FORMAT, keep_events: bool = False) -> Log:
+             fmt: str = DEFAULT_FORMAT, keep_events: bool = False,
+             redactor: Optional[Redactor] = None) -> Log:
     """Open the log for one run. ``-`` writes to stderr, so a run can be
-    watched without a file; anything else is a path, appended to."""
+    watched without a file; anything else is a path, appended to.
+
+    *redactor* carries one forward: the page re-opens its log whenever a
+    setting changes, and a fresh redactor would have forgotten every person it
+    had harvested from the export that is still open.
+    """
     if level not in LEVELS:
         raise BadLogSetting(
             f"log level {level!r} is not one of {', '.join(LEVEL_NAMES)}")
@@ -604,7 +733,7 @@ def open_log(destination: Optional[str], level: str = DEFAULT_LEVEL,
             target.parent.mkdir(parents=True, exist_ok=True)
         stream = open(target, "a", encoding="utf-8")
         path = str(target)
-    log = Log(stream=stream, level=level, fmt=fmt, path=path)
+    log = Log(stream=stream, level=level, fmt=fmt, path=path, redactor=redactor)
     if keep_events:
         log.events = []
     return log

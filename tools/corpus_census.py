@@ -300,14 +300,21 @@ def main(argv=None) -> int:
                    tool_version=f"{_tool_version} (tools/corpus_census.py)",
                    core_version=vcfcf_core.__version__, corpus_dir=directory,
                    corpus_from="command line")
+    code = 1
     try:
         with log.phase("census", dir=str(directory)):
             report = walk(directory, args.source_version)
             _runlog.info("census.counted",
                          objects=report["objects"], dashboards=report["dashboards"],
                          widgets=report["widgets"])
+        code = 0
+    except Exception as e:  # noqa: BLE001 - logged, then raised as it was
+        # The sibling of the CLI's hardcoded exit: a census that died on an
+        # unreadable zip used to end its log with "exit": 0.
+        _runlog.error("run.crashed", failure=type(e).__name__, detail=str(e))
+        raise
     finally:
-        log.finish(0, what="census")
+        log.finish(code, what="census")
         log.close()
         _runlog.set_current(None)
     print(json.dumps(report, indent=2, sort_keys=True) if args.json else render(report),

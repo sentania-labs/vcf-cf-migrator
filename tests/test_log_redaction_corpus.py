@@ -59,9 +59,10 @@ MAIL = re.compile(r"[\w.%+-]+@[\w-]+\.[\w.-]*[A-Za-z]{2,}")
 # Values too short or too generic to be evidence of anything: "admin" as a
 # user name is also a word that appears in content titles, and a needle that
 # matches content would fail this test for the wrong reason.
-COMMON = {"admin", "root", "system", "local", "user", "users", "all", "everyone",
-          "true", "false", "none", "null", "default", "administrator", "vcops",
-          "automation", "public", "unknown", ""}
+# The words a person value can also be. The layer keeps this list now
+# (``runlog.COMMON_WORDS``), because a value it refuses to teach is a value
+# this test must not demand it excluded; the empty string is this file's own.
+COMMON = set(runlog.COMMON_WORDS) | {""}
 
 
 # Fields holding a path the admin gave the tool, rather than anything read out
@@ -71,7 +72,12 @@ COMMON = {"admin", "root", "system", "local", "user", "users", "all", "everyone"
 # under a directory whose name is also a user name on the source instance. A
 # home directory is not an export leak, and a test that cannot tell the two
 # apart fails for the wrong reason.
-PATH_FIELDS = {"path", "cwd", "argv", "out", "zip", "dir", "file", "corpus_dir"}
+#
+# **The list is the layer's, not this file's.** A carve-out a test maintains is
+# a carve-out that drifts from what the layer does, and anything a future call
+# site logged under one of these keys would be invisible to the only gate that
+# runs over real exports.
+PATH_FIELDS = set(runlog.PATH_FIELDS)
 
 
 def without_paths(event: dict) -> dict:
@@ -230,6 +236,38 @@ def test_no_excluded_value_reaches_any_event_of_a_full_run(path, tmp_path, confi
     assert len([n for n in names if n]) > 5, "the log carries no content names"
     fingerprints = [e for e in events if e["event"] == "input.fingerprint"]
     assert fingerprints and len(fingerprints[0]["sha256"]) == 64
+
+
+@pytest.mark.parametrize("path", corpus_zips()[:1], ids=lambda p: p.stem)
+def test_an_account_uuid_nobody_declared_is_excluded_on_a_real_run(path, tmp_path,
+                                                                   config_dir):
+    """The third mechanism, gated over real data.
+
+    Deleting the uuid rule left this file green, because every person uuid in
+    the corpus reaches the log through the owner key or the harvest first, so
+    the rule was never the thing that saved it. This plants an account uuid
+    nobody declares, in both spellings, inside a content name of a real export,
+    and asserts neither reaches an event. The planted values are invented.
+    """
+    planted = "e3b1f0c7-58a2-4d61-9b73-2f4c8a90d5e6"
+    compact = planted.replace("-", "")
+    source = tmp_path / "planted.zip"
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(source, "w") as out:
+        for info in src.infolist():
+            raw = src.read(info.filename)
+            if info.filename == "supermetrics.json":
+                text = raw.decode("utf-8")
+                # Into a name, which is content and is logged: so the only
+                # thing standing between it and the log is the uuid rule.
+                text = text.replace('"name":"', f'"name":"{planted} {compact} ', 1)
+                text = text.replace('"name": "', f'"name": "{planted} {compact} ', 1)
+                raw = text.encode("utf-8")
+            out.writestr(info, raw)
+    declared = _corpus_check.read_versions(corpus_dir()).get(path.name, "9.0.2")
+    events = full_run(source, declared, tmp_path)
+    body = "\n".join(json.dumps(without_paths(e), ensure_ascii=False) for e in events)
+    assert planted not in body and compact not in body
+    assert runlog.EXCLUDED_ID in body
 
 
 @pytest.mark.parametrize("path", corpus_zips(), ids=lambda p: p.stem)
