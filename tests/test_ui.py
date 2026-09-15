@@ -51,7 +51,6 @@ def test_page_shows_versions_settings_and_listing(server):
     assert f"vcfcf_core {vcfcf_core.__version__}" in body
     assert "id='corpus_dir'" in body and "value='corpus'" in body
     assert "current value from: default" in body
-    assert "id='source_version'" in body and "current value from: not declared" in body
     assert "[Fixture] Cluster Overview" in body
     assert "[Fixture] SM 2" in body
     for cmd in ("tree", "preview", "build", "corpus-check"):
@@ -73,26 +72,6 @@ def test_saving_corpus_dir_persists_to_the_settings_file(server, config_dir):
     assert "value='/data/exports'" in body
     assert "current value from: settings file" in body
     assert settings.corpus_dir()[0].as_posix() == "/data/exports"
-
-
-def test_saving_source_version_persists_and_rechecks_the_listing(server, config_dir, export_zip):
-    _post(server, "/inspect", {"zip": str(export_zip)})
-    status, body = _post(server, "/settings", {"source_version": "8.18.7"})
-    assert status == 200
-    assert "source version 8.18.7 saved to" in body
-    assert json.loads((config_dir / "settings.json").read_text()) == {"source_version": "8.18.7"}
-    assert "value='8.18.7'" in body
-    assert "source version: 8.18.7 (declared; floor 8.10 passed)" in body
-    assert settings.source_version() == ("8.18.7", f"settings file ({config_dir / 'settings.json'})")
-
-
-def test_saving_a_source_version_below_the_floor_is_refused_and_not_saved(server, config_dir):
-    _, body = _post(server, "/settings", {"source_version": "8.9.0"})
-    assert "refused: declared source version 8.9.0 is below the floor 8.10" in body
-    assert not (config_dir / "settings.json").exists()
-    _, body = _post(server, "/settings", {"source_version": "eight"})
-    assert "not major.minor[.patch]" in body
-    assert not (config_dir / "settings.json").exists()
 
 
 def test_foreign_origin_post_is_refused_with_403(server, config_dir):
@@ -131,7 +110,12 @@ def test_environment_overrides_the_saved_setting(server, config_dir, monkeypatch
 def test_inspect_form_and_json_toggle(server, export_zip):
     _, body = _post(server, "/inspect", {"zip": str(export_zip), "json": "1"})
     assert '"kind": "dashboard"' in html.unescape(body)
-    assert "checked" in body
+    # The other half of the toggle: the same listing as the lines a person
+    # reads. This asserted on the string "checked" until 2026-09-15, which was
+    # matching the word inside "the 8.10 floor was not checked" rather than
+    # anything about the toggle, and passed for the wrong reason.
+    _, body = _post(server, "/inspect", {"zip": str(export_zip)})
+    assert "items: " in html.unescape(body) and '"kind"' not in html.unescape(body)
     _, body = _post(server, "/inspect", {"zip": str(export_zip.parent / "missing.zip")})
     assert "is not a zip file" in body or "cannot read" in body
 
@@ -145,7 +129,6 @@ def test_the_buttons_hand_back_the_equivalent_command_line(server, export_zip):
     _, body = _post(server, "/run", {"cmd": "build"})
     assert "--select &lt;picks.txt&gt; --out" in body
     assert "-bundle.zip" in body
-    assert "refuses without a declared source version" in body
     _, body = _post(server, "/run", {"cmd": "corpus-check"})
     assert "vcfcf-migrator corpus-check" in body
 
@@ -173,7 +156,7 @@ def test_the_command_the_page_hands_back_is_one_argument(path, expected, monkeyp
     from vcfcf_migrator.ui import PageState
 
     monkeypatch.setattr(os, "name", "posix")
-    state = PageState(path, corpus_cli=None, source_version_cli=None)
+    state = PageState(path, corpus_cli=None)
     assert state.command_line("tree") == expected
 
 
@@ -184,7 +167,7 @@ def test_a_quoted_command_survives_a_shell_split(monkeypatch):
     from vcfcf_migrator.ui import PageState
 
     monkeypatch.setattr(os, "name", "posix")
-    state = PageState("/tmp/My Export.zip", corpus_cli=None, source_version_cli="9.0.2")
+    state = PageState("/tmp/My Export.zip", corpus_cli=None)
     parts = shlex.split(state.command_line("build"))
     assert "/tmp/My Export.zip" in parts
-    assert parts[:4] == ["vcfcf-migrator", "--source-version", "9.0.2", "build"]
+    assert parts[:2] == ["vcfcf-migrator", "build"]

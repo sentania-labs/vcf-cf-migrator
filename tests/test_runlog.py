@@ -246,8 +246,13 @@ def test_a_person_in_any_case_is_excluded(log):
 
 
 def test_a_compact_uuid_is_excluded_like_a_hyphenated_one(log):
-    runlog.info("careless", note="account 0c44e115dc214ea58a5601c22f18325b here")
-    assert "0c44e115dc214ea58a5601c22f18325b" not in text_of(log)
+    # An invented value. This carried the compact spelling of a real lab
+    # account uuid until 2026-09-15: the corpus writes that uuid hyphenated
+    # everywhere, so a leak scan harvesting only the spellings it finds never
+    # made a needle of the compact form. The scan now derives both spellings
+    # from every uuid it harvests.
+    runlog.info("careless", note="account 3f8e21d7c94b4a06bd52e7301fa96c84 here")
+    assert "3f8e21d7c94b4a06bd52e7301fa96c84" not in text_of(log)
     assert runlog.EXCLUDED_ID in text_of(log)
 
 

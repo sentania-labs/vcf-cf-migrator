@@ -27,7 +27,6 @@ from vcfcf_migrator import preview as _preview
 from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import settings as _settings
 from vcfcf_migrator.cli import version_lines
-from vcfcf_migrator.export_reader import VERSION_FLOOR_TEXT
 from vcfcf_migrator.graph import KIND_ORDER, Graph, Node
 from vcfcf_migrator.wording import plural
 
@@ -251,11 +250,8 @@ def _selection_panel(state) -> str:
 
 
 def _build_form(state) -> str:
-    declared, _source = _settings.source_version(state.source_version_cli)
-    ready = bool(declared) and bool(state.selection and state.selection.keys)
+    ready = bool(state.selection and state.selection.keys)
     reasons = []
-    if not declared:
-        reasons.append("declare the source version below before building")
     if not (state.selection and state.selection.keys):
         reasons.append("pick at least one object")
     return "".join([
@@ -561,7 +557,6 @@ def _log_controls(state) -> str:
 
 def _settings_panel(state) -> str:
     corpus, source = _settings.corpus_dir(state.corpus_cli)
-    declared, declared_source = _settings.source_version(state.source_version_cli)
     return "".join([
         "<div class='card'>",
         "<h2>Settings</h2>",
@@ -573,17 +568,6 @@ def _settings_panel(state) -> str:
         f"{e(str(_settings.settings_path()))}. The {e(_settings.ENV_CORPUS)} environment "
         "variable and the --corpus flag override the saved value.</small></p>",
         _button("Save corpus directory"),
-        "</form>",
-        "<form method='post' action='/settings' class='field'>",
-        "<label for='source_version'>Source version (the VCF Operations version the export "
-        "came from, for example 8.18.7)</label>",
-        f"<input type='text' name='source_version' id='source_version' value='{e(declared or '')}'>",
-        f"<p class='note'><small>current value from: {e(declared_source)}. Exports carry no "
-        f"version, so you declare it. Floor {e(VERSION_FLOOR_TEXT)}: older declarations are "
-        "refused; with none declared, inspect continues and build refuses. The "
-        f"{e(_settings.ENV_SOURCE_VERSION)} environment variable and the --source-version "
-        "flag override the saved value.</small></p>",
-        _button("Save source version"),
         "</form>",
         _log_controls(state),
         "<p class='note'><small>This page listens on 127.0.0.1 only, and a same-origin "

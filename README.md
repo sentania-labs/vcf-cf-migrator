@@ -24,11 +24,10 @@ Download the binary for your machine from the
 then:
 
 ```
-vcfcf-migrator ui my-export.zip --source-version 9.0.2
+vcfcf-migrator ui my-export.zip
 ```
 
-That opens the page, which does the whole job. An export does not record which
-version it came from, so tell it; 8.10 and later are accepted.
+That opens the page, which does the whole job.
 
 First run: `chmod +x` on Linux and macOS, allow it once under macOS Privacy and
 Security, or answer Windows SmartScreen with More info, then Run anyway.

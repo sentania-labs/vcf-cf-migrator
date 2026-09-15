@@ -771,7 +771,6 @@ class Log:
     # -- the run header ----------------------------------------------------
 
     def header(self, argv: Sequence[str], tool_version: str, core_version: str,
-               source_version=None, source_version_from: str = "",
                corpus_dir=None, corpus_from: str = "") -> None:
         """Everything about this run that does not come from the export.
 
@@ -791,8 +790,6 @@ class Log:
                   platform=platform.platform(),
                   argv=list(argv),
                   cwd=str(Path.cwd()),
-                  source_version=source_version,
-                  source_version_from=source_version_from or None,
                   corpus_dir=str(corpus_dir) if corpus_dir else None,
                   corpus_from=corpus_from or None)
 

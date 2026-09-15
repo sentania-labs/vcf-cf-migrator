@@ -35,7 +35,7 @@ def corpus(tmp_path):
 
 
 def test_the_census_counts_distinct_content_not_occurrences(corpus):
-    report = corpus_census.walk(corpus, "9.0.2")
+    report = corpus_census.walk(corpus)
     from make_export_fixture import EXPECTED_ITEMS
 
     # Two exports of one instance's content, so every occurrence count is
@@ -53,8 +53,8 @@ def test_the_census_counts_distinct_content_not_occurrences(corpus):
 
 def test_the_census_does_not_depend_on_the_order_of_the_zips(corpus):
     paths = sorted(corpus.iterdir())
-    forward = corpus_census.walk(corpus, "9.0.2", paths)
-    backward = corpus_census.walk(corpus, "9.0.2", list(reversed(paths)))
+    forward = corpus_census.walk(corpus, paths)
+    backward = corpus_census.walk(corpus, list(reversed(paths)))
     forward.pop("occurrences"), backward.pop("occurrences")
     assert forward == backward
 
@@ -97,19 +97,19 @@ def test_the_census_reports_copies_of_one_identity_that_disagree(tmp_path):
             z.writestr(name, data)
     (directory / "b.zip").write_bytes(out.getvalue())
 
-    report = corpus_census.walk(directory, "9.0.2")
+    report = corpus_census.walk(directory)
     assert report["divergent dashboards"] >= 1
     # The union is what is counted, so the fuller copy decides the total and
     # reading order cannot change it.
     paths = sorted(directory.iterdir())
-    other = corpus_census.walk(directory, "9.0.2", list(reversed(paths)))
+    other = corpus_census.walk(directory, list(reversed(paths)))
     assert other["widgets"] == report["widgets"]
 
 
 def test_the_census_renders_without_naming_a_single_object(corpus):
     """Nothing it prints is content: the corpus is the admin's own data, and
     a census that printed names could not be pasted into a PR body."""
-    text = corpus_census.render(corpus_census.walk(corpus, "9.0.2"))
+    text = corpus_census.render(corpus_census.walk(corpus))
     assert "[Fixture]" not in text
     assert "distinct content across the corpus" in text
 
@@ -232,9 +232,9 @@ def test_a_widget_its_copies_classify_differently_is_reported_not_picked(tmp_pat
     for widgets and empty for objects. A classification the exports disagree
     about is reported and left out of the per-reason totals."""
     directory = _two_copies_classifying_differently(tmp_path)
-    report = corpus_census.walk(directory, "9.0.2")
+    report = corpus_census.walk(directory)
     assert report["divergent widgets"] >= 1
-    clean = corpus_census.walk(directory, "9.0.2", [directory / "a.zip"])
+    clean = corpus_census.walk(directory, [directory / "a.zip"])
     # The disagreed widget is counted in neither per-reason total, so the
     # divergence cannot inflate or deflate the headline.
     assert (sum(report["widgets carrying nothing by reason"].values())
@@ -248,8 +248,8 @@ def test_order_independence_covers_the_classification_not_only_the_membership(tm
     passed it."""
     directory = _two_copies_classifying_differently(tmp_path)
     paths = sorted(directory.iterdir())
-    forward = corpus_census.walk(directory, "9.0.2", paths)
-    backward = corpus_census.walk(directory, "9.0.2", list(reversed(paths)))
+    forward = corpus_census.walk(directory, paths)
+    backward = corpus_census.walk(directory, list(reversed(paths)))
     forward.pop("occurrences"), backward.pop("occurrences")
     assert forward == backward
     assert forward["widgets carrying nothing by reason"] == \
@@ -262,7 +262,7 @@ def test_the_two_sides_of_the_union_rule_agree(tmp_path):
     classification map is built in the same walk; a mutation to either shows
     up as a disagreement here."""
     directory = _two_copies_classifying_differently(tmp_path)
-    report = corpus_census.walk(directory, "9.0.2")
+    report = corpus_census.walk(directory)
     assert report["widgets"] == report["widgets classified"]
 
 
@@ -323,7 +323,7 @@ def test_a_missing_verdict_raises_rather_than_counting_as_something(corpus, monk
 
     monkeypatch.setattr(corpus_census._preview, "widget_keys", drifted)
     with pytest.raises(KeyError, match="keying widgets differently"):
-        corpus_census.walk(corpus, "9.0.2")
+        corpus_census.walk(corpus)
 
 
 def test_neither_divergence_tie_break_can_creep_back(tmp_path):
@@ -332,9 +332,9 @@ def test_neither_divergence_tie_break_can_creep_back(tmp_path):
     Because the two copies give the widget two different reasons, every
     tie-break lands on one of them and only exclusion lands on neither."""
     directory = _two_copies_classifying_differently(tmp_path)
-    both = corpus_census.walk(directory, "9.0.2")
-    only_a = corpus_census.walk(directory, "9.0.2", [directory / "a.zip"])
-    only_b = corpus_census.walk(directory, "9.0.2", [directory / "b.zip"])
+    both = corpus_census.walk(directory)
+    only_a = corpus_census.walk(directory, [directory / "a.zip"])
+    only_b = corpus_census.walk(directory, [directory / "b.zip"])
     a_reasons = only_a["widgets carrying nothing by reason"]
     b_reasons = only_b["widgets carrying nothing by reason"]
     reasons = both["widgets carrying nothing by reason"]
@@ -389,9 +389,9 @@ def test_an_object_its_copies_classify_differently_is_excluded_too(tmp_path):
     (directory / "a.zip").write_bytes(build("list"))
     (directory / "b.zip").write_bytes(build("donut-chart"))
 
-    both = corpus_census.walk(directory, "9.0.2")
-    only_a = corpus_census.walk(directory, "9.0.2", [directory / "a.zip"])
-    only_b = corpus_census.walk(directory, "9.0.2", [directory / "b.zip"])
+    both = corpus_census.walk(directory)
+    only_a = corpus_census.walk(directory, [directory / "a.zip"])
+    only_b = corpus_census.walk(directory, [directory / "b.zip"])
     a_reasons = only_a["objects carrying nothing by reason"]
     b_reasons = only_b["objects carrying nothing by reason"]
     reasons = both["objects carrying nothing by reason"]
@@ -441,9 +441,9 @@ def test_a_widget_whose_subject_differs_between_copies_is_excluded_too(tmp_path)
             z.writestr(name, data)
     (directory / "b.zip").write_bytes(out.getvalue())
 
-    both = corpus_census.walk(directory, "9.0.2")
-    only_a = corpus_census.walk(directory, "9.0.2", [directory / "a.zip"])
-    only_b = corpus_census.walk(directory, "9.0.2", [directory / "b.zip"])
+    both = corpus_census.walk(directory)
+    only_a = corpus_census.walk(directory, [directory / "a.zip"])
+    only_b = corpus_census.walk(directory, [directory / "b.zip"])
     a_subjects = only_a["widget subjects"]
     b_subjects = only_b["widget subjects"]
     subjects = both["widget subjects"]
@@ -494,7 +494,7 @@ def test_every_block_sums_to_the_figure_its_note_claims(tmp_path):
     arithmetic back out of step.
     """
     directory = _two_copies_disagreeing_on_code_and_subject(tmp_path)
-    report = corpus_census.walk(directory, "9.0.2")
+    report = corpus_census.walk(directory)
     # All three divergence figures differ, so no assertion below is vacuous:
     # a block that quietly counted divergent copies would print a different
     # number from the one its note claims.
@@ -546,7 +546,7 @@ def test_the_header_exempts_the_two_agreed_only_totals(tmp_path):
     """"The totals count every identity" is false for the two carrying-nothing
     counts, which are built from agreed copies. The header says so."""
     directory = _two_copies_disagreeing_on_code_and_subject(tmp_path)
-    report = corpus_census.walk(directory, "9.0.2")
+    report = corpus_census.walk(directory)
     text = corpus_census.render(report)
     header = text.splitlines()[1]
     assert "except" in header and "carrying-nothing" in header

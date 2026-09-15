@@ -1,4 +1,4 @@
-"""CLI contract: version, inspect, the floor, the M3 stubs."""
+"""CLI contract: version, inspect, the M3 stubs."""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,7 @@ from make_export_fixture import (
 )
 from vcfcf_migrator import __version__
 from vcfcf_migrator.cli import build_parser, main
-from vcfcf_migrator.export_reader import UnsupportedExport, read_export
+from vcfcf_migrator.export_reader import read_export
 
 
 def test_version_prints_both_versions(capsys):
@@ -31,24 +31,69 @@ def test_version_prints_both_versions(capsys):
 @pytest.mark.parametrize("command", ["inspect", "tree", "build", "preview",
                                     "corpus-check", "ui", "version"])
 def test_every_subcommand_takes_the_shared_options_after_it(command):
-    """The README's first command puts --source-version after the subcommand,
-    and argparse refuses an option a subparser does not have. That command
+    """A shared option typed after the subcommand has to parse, and argparse
+    refuses an option a subparser does not have. ``ui x.zip --log run.log``
     failed with "unrecognized arguments" until the shared parent carried the
-    corpus and source-version flags as well as the log ones."""
+    corpus flag as well as the log ones."""
     parser = build_parser()
     subparsers = [a for a in parser._actions
                   if isinstance(a, argparse._SubParsersAction)][0]
     options = set()
     for action in subparsers.choices[command]._actions:
         options.update(action.option_strings)
-    for flag in ("--source-version", "--corpus", "--log", "--log-level", "--log-format"):
+    for flag in ("--corpus", "--log", "--log-level", "--log-format"):
         assert flag in options, (command, flag)
 
 
 def test_the_readme_headline_command_parses(export_zip):
-    args = build_parser().parse_args(
-        ["ui", str(export_zip), "--source-version", "9.0.2", "--no-browser"])
-    assert args.command == "ui" and args.source_version == "9.0.2"
+    args = build_parser().parse_args(["ui", str(export_zip)])
+    assert args.command == "ui" and args.zip == str(export_zip)
+
+
+def test_the_source_version_flag_is_gone_and_saying_it_is_a_usage_error(export_zip, capsys):
+    """Pins the deletion. argparse refuses what it does not know, so the flag
+    is a loud usage error rather than an option that is quietly accepted and
+    does nothing, before *and* after the subcommand."""
+    for argv, expected in (
+            (["--source-version", "9.0.2", "inspect", str(export_zip)],
+             "invalid choice: '9.0.2'"),
+            (["inspect", str(export_zip), "--source-version", "9.0.2"],
+             "unrecognized arguments: --source-version 9.0.2")):
+        with pytest.raises(SystemExit) as exit_:
+            main(argv)
+        assert exit_.value.code == 2
+        captured = capsys.readouterr()
+        assert expected in captured.err, captured.err
+        # Nothing ran: a refused command line lists nothing.
+        assert "items:" not in captured.out
+
+
+def test_the_source_version_environment_variable_is_named_not_obeyed(export_zip, capsys,
+                                                                     monkeypatch):
+    """A variable this tool no longer reads is said out loud once and the run
+    carries on: refusing to start would make the tool unrunnable for anyone who
+    exported it in a shell profile."""
+    monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "8.6")
+    assert main(["inspect", str(export_zip)]) == 0
+    captured = capsys.readouterr()
+    assert "VCFCF_MIGRATOR_SOURCE_VERSION is set and is no longer used" in captured.err
+    assert "source version" not in captured.out.lower()
+
+
+def test_a_settings_file_written_by_an_older_release_loses_the_stale_key(config_dir):
+    """save_settings merges, so a source_version left in the file would ride
+    along for ever. It is dropped on load and gone from the file on the next
+    save."""
+    from vcfcf_migrator import settings
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "settings.json").write_text(
+        json.dumps({"source_version": "8.18.7", "corpus_dir": "/data/exports"}),
+        encoding="utf-8")
+    assert settings.load_settings() == {"corpus_dir": "/data/exports"}
+    settings.save_settings({"log_level": "debug"})
+    assert json.loads((config_dir / "settings.json").read_text()) == {
+        "corpus_dir": "/data/exports", "log_level": "debug"}
 
 
 def test_inspect_lists_every_item(export_zip, capsys):
@@ -61,8 +106,7 @@ def test_inspect_lists_every_item(export_zip, capsys):
             assert uuid in line
         else:
             assert "(no uuid)" in line
-    assert "source version: not declared" in out
-    assert "not declared (--source-version)" in out
+    assert "source version" not in out.lower()
     assert "marker: 1757800000000000000L.v1 (format v1, owner aaaa1111" in out
     assert "carried, not inspected: 1" in out
     for name in EXPECTED_CARRIED:
@@ -76,7 +120,7 @@ def test_inspect_json_carries_the_same_items(export_zip, capsys):
     assert got == EXPECTED_ITEMS
     assert doc["counts"]["dashboard"] == EXPECTED_DASHBOARD_LISTINGS
     assert set(doc["carried"]) == EXPECTED_CARRIED
-    assert doc["source_version"] is None
+    assert "source_version" not in doc
     # Derived from the fixture's own expectations rather than typed, so a
     # fixture that grows one view does not fail here for the wrong reason.
     assert doc["counts"]["view"] == sum(1 for kind, _n, _u in EXPECTED_ITEMS if kind == "view")
@@ -96,40 +140,9 @@ def test_read_export_uses_the_core_readers_for_dashboards_and_supermetrics(expor
     assert ("outboundsetting", "outboundsettings.json") in sources
 
 
-@pytest.mark.parametrize("declared", ["8.9.0", "8.9", "7.5.0"])
-def test_inspect_refuses_a_declared_version_below_the_floor(export_zip, capsys, declared):
-    assert main(["--source-version", declared, "inspect", str(export_zip)]) == 1
-    err = capsys.readouterr().err
-    assert "refused" in err and declared in err and "floor 8.10" in err
-
-
-@pytest.mark.parametrize("declared", ["8.10", "8.10.0", "8.18.7", "9.0.2"])
-def test_inspect_accepts_a_declared_version_at_or_above_the_floor(export_zip, capsys, declared):
-    assert main(["--source-version", declared, "inspect", str(export_zip)]) == 0
-    out = capsys.readouterr().out
-    assert f"source version: {declared} (declared; floor 8.10 passed)" in out
-    assert "not declared" not in out
-
-
-@pytest.mark.parametrize("declared", ["1", "eight", "8.", "v8.10", "8.10.1.2"])
-def test_inspect_rejects_a_malformed_declaration_as_usage(export_zip, capsys, declared):
-    assert main(["--source-version", declared, "inspect", str(export_zip)]) == 2
-    assert "not major.minor[.patch]" in capsys.readouterr().err
-
-
-def test_declared_version_comes_from_env_and_settings_too(export_zip, capsys, monkeypatch):
-    from vcfcf_migrator import settings
-
-    settings.save_settings({"source_version": "8.9.0"})
-    assert main(["inspect", str(export_zip)]) == 1
-    monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "8.18.7")
-    assert main(["inspect", str(export_zip)]) == 0
-    assert "source version: 8.18.7" in capsys.readouterr().out
-
-
 def test_a_manifest_format_version_integer_is_never_a_product_version(tmp_path, capsys):
     """Review W1: a bare {"version": 1} in configuration.json must not be
-    refused as VCF Operations 1. The reader no longer sniffs at all."""
+    read as a product version. The reader does not look for one at all."""
     import io
     import zipfile
 
@@ -144,7 +157,11 @@ def test_a_manifest_format_version_integer_is_never_a_product_version(tmp_path, 
     path = tmp_path / "fmt.zip"
     path.write_bytes(out.getvalue())
     assert main(["inspect", str(path)]) == 0
-    assert "source version: not declared" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # The manifest's own keys are echoed as the export wrote them, so
+    # "version=1" may appear there; what must not appear is the tool saying
+    # anything about a source version of its own.
+    assert "source version" not in out.lower()
 
 
 @pytest.mark.parametrize("drop", [
@@ -356,8 +373,7 @@ def test_the_ci_checker_agrees_with_the_fixture(export_zip, capsys, tmp_path):
     assert "listing matches the fixture" in ci_checks.check_listing(doc)
 
     out = tmp_path / "bundle.zip"
-    assert main(["--source-version", ci_checks.floor_text(), "build", str(export_zip),
-                 "--select-all", "--out", str(out)]) == 0
+    assert main(["build", str(export_zip), "--select-all", "--out", str(out)]) == 0
     capsys.readouterr()
     assert main(["inspect", "--json", str(out)]) == 0
     built = json.loads(capsys.readouterr().out)
@@ -373,18 +389,6 @@ def test_the_ci_checker_notices_a_listing_that_drifted(export_zip, capsys):
     with pytest.raises(AssertionError) as e:
         ci_checks.check_listing(doc)
     assert "does not match the fixture" in str(e.value)
-
-
-def test_the_ci_checker_derives_the_floor_from_the_code():
-    """The workflow declares no version of its own either."""
-    import ci_checks
-
-    from vcfcf_migrator.export_reader import VERSION_FLOOR_TEXT, check_source_version
-
-    assert ci_checks.floor_text() == VERSION_FLOOR_TEXT
-    assert check_source_version(ci_checks.floor_text()) == VERSION_FLOOR_TEXT
-    with pytest.raises(UnsupportedExport):
-        check_source_version(ci_checks.below_floor_text())
 
 
 def test_inspect_reports_navigation_links_pointing_outside_the_export(tmp_path, capsys):

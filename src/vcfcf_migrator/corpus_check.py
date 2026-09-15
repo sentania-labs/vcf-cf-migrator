@@ -7,8 +7,8 @@ tree, a preview of every object and a select-all build on each, then reads
 the bundle back and checks both halves of the pass-through contract: every
 document byte-identical to the source's, and every rebuilt container
 structurally identical, since a select-all drops nothing. One line per zip:
-ok with counts, refused with the reason, or error. Its output goes in a PR
-body; CI cannot run it and does not try.
+ok with counts, or error with what went wrong. Its output goes in a PR body;
+CI cannot run it and does not try.
 
 The preview pass renders every object rather than sampling: a renderer that
 throws does so on one document shape, and a sample is exactly how that shape
@@ -16,26 +16,21 @@ gets missed. It is the command this tool's admin looks at most, so leaving it
 out of the regression run meant the only proof it survives a real export was
 a script somebody wrote once and threw away.
 
-Two things it never does. It never writes into the corpus directory: bundles
+One thing it never does: it never writes into the corpus directory. Bundles
 go to a scratch directory that is removed afterwards, because the corpus is
 the admin's own data and a tool that writes there is a tool that can corrupt
-it. And it never guesses a source version: an export carries none, so the
-version comes from a ``versions.json`` beside the zips (``{"<file>":
-"8.18.7"}``, read only, never written), or from ``--source-version`` for the
-whole run. A zip with neither gets its build line refused, not a made-up
-version.
+it. Every zip in the directory is checked the same way; nothing has to be
+declared about any of them.
 
-Exit status: non-zero only on an error. A refusal is an answer, not a
-failure: it is the tool declining to guess.
+Exit status: non-zero only on an error.
 """
 from __future__ import annotations
 
-import json
 import shutil
 import zipfile
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, TextIO, Tuple
+from typing import Dict, List, Sequence, TextIO, Tuple
 
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import containers as _containers
@@ -45,47 +40,31 @@ from vcfcf_migrator import runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator.export_reader import (
     NotAnExport,
-    UnsupportedExport,
     read_export,
     read_members,
 )
 from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator.wording import plural
 
-VERSIONS_FILE = "versions.json"
-
-
-def read_versions(directory: Path) -> Dict[str, str]:
-    """``versions.json`` beside the zips, if the admin wrote one. Read only."""
-    path = directory / VERSIONS_FILE
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return {str(k): str(v) for k, v in doc.items()} if isinstance(doc, dict) else {}
-
-
-def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
+def check_one(path: Path, scratch: Path) -> str:
     """One line for one zip. Never writes next to *path*."""
-    with runlog.phase("corpus-zip", zip=str(path), source_version=declared):
-        line = _check_one(path, declared, scratch)
+    with runlog.phase("corpus-zip", zip=str(path)):
+        line = _check_one(path, scratch)
         runlog.info("corpus.zip_checked", zip=str(path), verdict=line.split()[0],
                     line=line)
         return line
 
 
-def _check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
+def _check_one(path: Path, scratch: Path) -> str:
     try:
-        export = read_export(path, source_version=declared)
-    except UnsupportedExport as e:
-        return f"refused  {path.name}: {e}"
+        export = read_export(path)
     except (NotAnExport, ValueError) as e:
         return f"error    {path.name}: {e}"
 
     try:
-        members = read_members(path, source_version=declared)
+        members = read_members(path)
         graph = _graph.build_graph(members.data)
-    except (NotAnExport, UnsupportedExport, RawDocError) as e:
+    except (NotAnExport, RawDocError) as e:
         return f"error    {path.name}: tree failed: {e}"
 
     inspect_counts = export.counts()
@@ -100,12 +79,6 @@ def _check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
         return (f"error    {path.name}: preview failed on {len(preview_errors)} of "
                 f"{plural(len(graph.nodes), 'object')}, first: {first}")
 
-    if declared is None:
-        return (f"refused  {path.name}: inspect and tree ok ({_fmt(tree_counts)}), "
-                f"{plural(rendered, 'object')} previewed, build needs a declared source "
-                "version "
-                "(versions.json or --source-version)")
-
     try:
         picked = _selection.select_all(graph)
         out = scratch / (path.stem + "-bundle.zip")
@@ -113,8 +86,8 @@ def _check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
                                       out, marker=members.marker,
                                       directories=members.directories,
                                       directory_order=members.directory_order)
-        rebuilt = read_export(out, source_version=declared)
-    except (RawDocError, NotAnExport, UnsupportedExport, ValueError, OSError) as e:
+        rebuilt = read_export(out)
+    except (RawDocError, NotAnExport, ValueError, OSError) as e:
         return f"error    {path.name}: build failed: {e}"
 
     synthesized = [n for n in result.members if n not in members.data
@@ -124,7 +97,7 @@ def _check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
         return (f"error    {path.name}: the bundle's zip entries do not match the export: "
                 + "; ".join(entry_problems[:4]))
 
-    bundle_members = read_members(out, source_version=declared).data
+    bundle_members = read_members(out).data
     source_docs = _containers.documents(members.data)
     bundle_docs = _containers.documents(bundle_members)
     changed = [k for k, v in source_docs.items() if bundle_docs.get(k) != v]
@@ -253,7 +226,7 @@ def _fmt(counts: Dict[str, int]) -> str:
     return ", ".join(f"{k}={counts[k]}" for k in _graph.KIND_ORDER if k in counts) or "no content"
 
 
-def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
+def run(directory, source: str, stream: TextIO) -> int:
     directory = Path(directory)
     if not directory.is_dir():
         runlog.error("corpus.absent", dir=str(directory), dir_from=source,
@@ -261,17 +234,15 @@ def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
         stream.write(f"corpus directory {directory} does not exist (from {source})\n")
         return 1
     zips = sorted(p for p in directory.iterdir() if p.suffix.lower() == ".zip")
-    runlog.info("corpus.walk", dir=str(directory), dir_from=source, zips=len(zips),
-                source_version=declared)
+    runlog.info("corpus.walk", dir=str(directory), dir_from=source, zips=len(zips))
     stream.write(f"corpus: {directory} (from {source}), {plural(len(zips), 'zip')}\n")
     if not zips:
         return 0
-    versions = read_versions(directory)
     scratch = Path(tempfile.mkdtemp(prefix="vcfcf-migrator-corpus-"))
     errors = 0
     try:
         for path in zips:
-            line = check_one(path, versions.get(path.name, declared), scratch)
+            line = check_one(path, scratch)
             stream.write(line + "\n")
             if line.startswith("error"):
                 errors += 1
@@ -281,10 +252,10 @@ def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
     return 1 if errors else 0
 
 
-def lines(directory, declared: Optional[str] = None) -> List[str]:
+def lines(directory) -> List[str]:
     """The same walk, as a list, for callers that are not a terminal."""
     import io
 
     buf = io.StringIO()
-    run(directory, "caller", declared, buf)
+    run(directory, "caller", buf)
     return buf.getvalue().splitlines()

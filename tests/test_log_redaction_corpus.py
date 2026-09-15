@@ -36,7 +36,6 @@ from pathlib import Path
 import pytest
 
 from vcfcf_migrator import bundle as _bundle
-from vcfcf_migrator import corpus_check as _corpus_check
 from vcfcf_migrator import graph as _graph
 from vcfcf_migrator import preview as _preview
 from vcfcf_migrator import runlog
@@ -168,7 +167,7 @@ def needles(path: Path) -> dict:
 # The run
 # ---------------------------------------------------------------------------
 
-def full_run(path: Path, declared, out_dir: Path) -> list:
+def full_run(path: Path, out_dir: Path) -> list:
     """Everything the tool does to an export, with the loudest log, returning
     the events it produced: inspect, tree, a preview of every object and a
     select-all build."""
@@ -177,10 +176,9 @@ def full_run(path: Path, declared, out_dir: Path) -> list:
     previous = runlog.set_current(log)
     try:
         log.header(["build", str(path), "--select-all"], tool_version="test",
-                   core_version="test", source_version=declared,
-                   source_version_from="versions.json")
-        read_export(path, source_version=declared)
-        members = read_members(path, source_version=declared)
+                   core_version="test")
+        read_export(path)
+        members = read_members(path)
         graph = _graph.build_graph(members.data)
         for node in graph.ordered():
             try:
@@ -200,8 +198,7 @@ def full_run(path: Path, declared, out_dir: Path) -> list:
 
 @pytest.mark.parametrize("path", corpus_zips(), ids=lambda p: p.stem)
 def test_no_excluded_value_reaches_any_event_of_a_full_run(path, tmp_path, config_dir):
-    declared = _corpus_check.read_versions(corpus_dir()).get(path.name, "9.0.2")
-    events = full_run(path, declared, tmp_path)
+    events = full_run(path, tmp_path)
     assert events, "the run produced no events"
     body = "\n".join(json.dumps(without_paths(event), ensure_ascii=False)
                      for event in events)
@@ -263,8 +260,7 @@ def test_an_account_uuid_nobody_declared_is_excluded_on_a_real_run(path, tmp_pat
                 text = text.replace('"name": "', f'"name": "{planted} {compact} ', 1)
                 raw = text.encode("utf-8")
             out.writestr(info, raw)
-    declared = _corpus_check.read_versions(corpus_dir()).get(path.name, "9.0.2")
-    events = full_run(source, declared, tmp_path)
+    events = full_run(source, tmp_path)
     body = "\n".join(json.dumps(without_paths(e), ensure_ascii=False) for e in events)
     assert planted not in body and compact not in body
     assert runlog.EXCLUDED_ID in body
@@ -273,8 +269,7 @@ def test_an_account_uuid_nobody_declared_is_excluded_on_a_real_run(path, tmp_pat
 @pytest.mark.parametrize("path", corpus_zips(), ids=lambda p: p.stem)
 def test_owners_are_pseudonyms_and_the_member_names_carrying_them_are_rewritten(
         path, tmp_path, config_dir):
-    declared = _corpus_check.read_versions(corpus_dir()).get(path.name, "9.0.2")
-    events = full_run(path, declared, tmp_path)
+    events = full_run(path, tmp_path)
     fingerprint = [e for e in events if e["event"] == "input.fingerprint"][0]
     dashboards = [n for n in fingerprint["member_names"] if n.startswith("dashboards/")]
     if not dashboards:

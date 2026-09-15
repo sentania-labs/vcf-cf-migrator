@@ -1,17 +1,14 @@
 """Persisted settings and their resolution order.
 
-Two settings exist in M3, each resolved the same way, first hit wins:
+The corpus directory resolves first hit wins:
 
-1. a value passed on the command line (``--corpus``, ``--source-version``),
-2. the environment (``VCFCF_MIGRATOR_CORPUS``, ``VCFCF_MIGRATOR_SOURCE_VERSION``),
+1. a value passed on the command line (``--corpus``),
+2. the environment (``VCFCF_MIGRATOR_CORPUS``),
 3. the settings file in the user's config directory,
-4. the default: ``./corpus`` for the corpus directory (relative to the
-   current working directory), nothing for the source version.
+4. the default: ``./corpus``, relative to the current working directory.
 
 The corpus directory is where the admin keeps real export zips (never inside
-the repo). The source version is the VCF Operations version the export came
-from; no export carries it, so the admin declares it and the tool remembers
-the declaration.
+the repo).
 
 The config directory follows the platform convention by hand (no
 platformdirs dependency): ``%APPDATA%`` on Windows, ``~/Library/Application
@@ -25,11 +22,21 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 ENV_CORPUS = "VCFCF_MIGRATOR_CORPUS"
-ENV_SOURCE_VERSION = "VCFCF_MIGRATOR_SOURCE_VERSION"
 ENV_CONFIG_DIR = "VCFCF_MIGRATOR_CONFIG_DIR"
+
+# Settings and environment variables this tool used to take and no longer
+# does. They are dropped rather than ignored: ``save_settings`` merges, so a
+# file written by a release that still had the key would otherwise carry it
+# for ever, and a variable exported in a shell profile would go on looking
+# like it did something. ``obsolete_env()`` is what the CLI says out loud.
+OBSOLETE_SETTINGS = ("source_version",)
+OBSOLETE_ENV = {
+    "VCFCF_MIGRATOR_SOURCE_VERSION":
+        "the tool no longer asks which version an export came from, so this is ignored",
+}
 DEFAULT_CORPUS = "corpus"
 APP_DIR_NAME = "vcfcf-migrator"
 SETTINGS_FILE = "settings.json"
@@ -54,13 +61,28 @@ def settings_path() -> Path:
 
 
 def load_settings() -> dict:
-    """The settings file as a dict; empty when absent or unreadable."""
+    """The settings file as a dict; empty when absent or unreadable.
+
+    An obsolete key is dropped here rather than left in place, so it goes out
+    of the file the next time anything is saved.
+    """
     path = settings_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    for key in OBSOLETE_SETTINGS:
+        data.pop(key, None)
+    return data
+
+
+def obsolete_env() -> List[Tuple[str, str]]:
+    """Environment variables that are set and no longer mean anything, each
+    with the sentence to say about it."""
+    return [(name, why) for name, why in sorted(OBSOLETE_ENV.items())
+            if os.environ.get(name)]
 
 
 def save_settings(values: dict) -> Path:
@@ -84,17 +106,3 @@ def corpus_dir(cli_value: Optional[str] = None) -> Tuple[Path, str]:
     if saved:
         return Path(str(saved)), f"settings file ({settings_path()})"
     return Path(DEFAULT_CORPUS), "default"
-
-
-def source_version(cli_value: Optional[str] = None) -> Tuple[Optional[str], str]:
-    """Resolve the declared source version and say where it came from;
-    ``(None, "not declared")`` when nothing declares it."""
-    if cli_value:
-        return str(cli_value).strip(), "command line"
-    env = os.environ.get(ENV_SOURCE_VERSION)
-    if env:
-        return env.strip(), f"environment ({ENV_SOURCE_VERSION})"
-    saved = load_settings().get("source_version")
-    if saved:
-        return str(saved).strip(), f"settings file ({settings_path()})"
-    return None, "not declared"

@@ -255,23 +255,13 @@ def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
 # Build
 # ---------------------------------------------------------------------------
 
-def test_build_refuses_without_a_declared_source_version(state, tmp_path):
-    state.toggle(DASH, on=True)
-    state.build(str(tmp_path / "b.zip"))
-    assert "no source version declared" in state.error
-    assert not (tmp_path / "b.zip").exists()
-
-
-def test_build_refuses_an_empty_selection(state, tmp_path, monkeypatch):
-    monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "9.0.2")
+def test_build_refuses_an_empty_selection(state, tmp_path):
     state.build(str(tmp_path / "b.zip"))
     assert "selection is empty" in state.error
 
 
-def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip, tmp_path,
-                                                              monkeypatch):
+def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip, tmp_path):
     """The page is another way in to one build path, not a second one."""
-    monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "9.0.2")
     state.toggle(DASH, on=True)
     state.toggle("symptom:SymptomDefinition-VMWARE-Fixture_CPU_high", on=True)
     from_page = tmp_path / "page.zip"
@@ -282,7 +272,7 @@ def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip,
     picks = tmp_path / "picks.txt"
     picks.write_text("\n".join(state.selection_lines().splitlines()) + "\n")
     from_cli = tmp_path / "cli.zip"
-    assert main(["--source-version", "9.0.2", "build", str(export_zip),
+    assert main(["build", str(export_zip),
                  "--select", str(picks), "--out", str(from_cli)]) == 0
 
     with zipfile.ZipFile(from_page) as page_zip, zipfile.ZipFile(from_cli) as cli_zip:
@@ -292,8 +282,7 @@ def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip,
     assert from_page.read_bytes() == from_cli.read_bytes()
 
 
-def test_two_builds_of_one_selection_are_byte_identical(state, tmp_path, monkeypatch):
-    monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "9.0.2")
+def test_two_builds_of_one_selection_are_byte_identical(state, tmp_path):
     state.select_all()
     first, second = tmp_path / "one.zip", tmp_path / "two.zip"
     state.build(str(first))
@@ -301,8 +290,7 @@ def test_two_builds_of_one_selection_are_byte_identical(state, tmp_path, monkeyp
     assert first.read_bytes() == second.read_bytes()
 
 
-def test_build_reports_where_the_bundle_went_and_what_is_in_it(state, tmp_path, monkeypatch):
-    monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "9.0.2")
+def test_build_reports_where_the_bundle_went_and_what_is_in_it(state, tmp_path):
     state.toggle(DASH, on=True)
     out = tmp_path / "b.zip"
     state.build(str(out))
@@ -335,7 +323,6 @@ def test_endpoints_drive_the_same_actions(server, export_zip, tmp_path):
 
 
 def test_build_endpoint_writes_the_bundle(server, tmp_path, config_dir):
-    _post(server, "/settings", {"source_version": "9.0.2"})
     _post(server, "/select", {"key": DASH, "on": "1"})
     out = tmp_path / "from-endpoint.zip"
     _, body = _post(server, "/build", {"out": str(out)})
@@ -388,7 +375,6 @@ def test_every_endpoint_refuses_a_cross_origin_post(server, path, form):
 
 def test_a_refused_cross_origin_build_writes_nothing(server, tmp_path):
     out = tmp_path / "never.zip"
-    _post(server, "/settings", {"source_version": "9.0.2"})
     _post(server, "/select", {"key": DASH, "on": "1"})
     with pytest.raises(urllib.error.HTTPError):
         _post(server, "/build", {"out": str(out)}, headers={"Origin": "http://evil.example"})

@@ -10,8 +10,6 @@ So the workflow asks here instead, and owns nothing:
 
     python tests/fixtures/ci_checks.py listing inspect.json
     python tests/fixtures/ci_checks.py listing bundle.json --bundle
-    python tests/fixtures/ci_checks.py floor          -> 8.10
-    python tests/fixtures/ci_checks.py below-floor    -> 8.9
     python tests/fixtures/ci_checks.py preview-object -> dashboard:<uuid>@<owner>
     python tests/fixtures/ci_checks.py python-floor   -> 3.9
     python tests/fixtures/ci_checks.py preview preview.html
@@ -19,9 +17,7 @@ So the workflow asks here instead, and owns nothing:
 
 ``listing`` compares an ``inspect --json`` document against
 ``make_export_fixture.EXPECTED_ITEMS``, the same set the suite asserts on, so
-the two can never disagree. ``floor`` and ``below-floor`` come from
-``export_reader.VERSION_FLOOR``, so moving the floor moves the workflow's
-declared versions with it.
+the two can never disagree.
 
 Run from anywhere; the fixture module is found next to this file.
 """
@@ -41,20 +37,6 @@ from make_export_fixture import (  # noqa: E402
     EXPECTED_ITEMS,
     OWNER,
 )
-
-
-def floor_text() -> str:
-    from vcfcf_migrator.export_reader import VERSION_FLOOR
-
-    return ".".join(str(part) for part in VERSION_FLOOR)
-
-
-def below_floor_text() -> str:
-    """A version the tool must refuse, derived from the floor it enforces."""
-    from vcfcf_migrator.export_reader import VERSION_FLOOR
-
-    major, minor = VERSION_FLOOR[0], VERSION_FLOOR[1]
-    return f"{major}.{minor - 1}" if minor else f"{major - 1}.0"
 
 
 def python_floor() -> tuple:
@@ -179,14 +161,12 @@ def check_listing(doc: dict, bundle: bool = False) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="what", required=True)
-    sub.add_parser("floor", help="the lowest source version the tool accepts")
     sub.add_parser("preview-object", help="an object of the fixture to preview")
     sub.add_parser("python-floor", help="the oldest Python this package supports")
     logs = sub.add_parser("log", help="check a run log the tool wrote")
     logs.add_argument("path", help="the jsonl log, or - for stdin")
     prev = sub.add_parser("preview", help="check a preview HTML file")
     prev.add_argument("path", help="the HTML file, or - for stdin")
-    sub.add_parser("below-floor", help="a source version the tool must refuse")
     listing = sub.add_parser("listing", help="check an inspect --json document")
     listing.add_argument("path", help="the JSON file, or - for stdin")
     listing.add_argument("--bundle", action="store_true",
@@ -194,12 +174,6 @@ def main(argv=None) -> int:
                               "member this tool does not understand")
     args = parser.parse_args(argv)
 
-    if args.what == "floor":
-        print(floor_text())
-        return 0
-    if args.what == "below-floor":
-        print(below_floor_text())
-        return 0
     if args.what == "python-floor":
         print(python_floor_text())
         return 0
