@@ -221,11 +221,17 @@ def test_the_page_has_no_two_controls_sharing_a_name_in_one_form(state):
         assert len(names) == len(set(names)), f"duplicate field name in {names}"
 
 
-def test_bridge_returns_the_anchor_so_the_window_does_not_jump_to_the_top(state):
+def test_bridge_returns_an_anchor_that_names_a_real_row(state):
+    """Non-empty is not enough, and asserting only that was how a broken
+    anchor passed review: the value has to be an id that is actually on the
+    page, or the window scrolls to the top exactly as if there were none."""
     bridge = desktop.Bridge(state)
-    res = bridge.act("/select", {"key": _some_key(state), "tick": "on"})
-    assert "anchor" in res
+    key = _some_key(state)
+    res = bridge.act("/select", {"key": key, "on": "1"})
     assert res["anchor"], "selecting an object must come back with somewhere to scroll to"
+    assert f"id='{res['anchor']}'" in res["html"], (
+        f"anchor {res['anchor']!r} names no element on the page"
+    )
 
 
 def _some_key(state):
