@@ -744,6 +744,12 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
     return head + _columns_table(columns[:6], rows=3, graph=ctx.get("graph"))
 
 
+def _attr_span(text: str, key: str) -> str:
+    """One attribute named in prose, with its key reachable."""
+    attr = f" title='{_e(key)}'" if key and key != text else ""
+    return f"<span{attr}>{_e(text)}</span>"
+
+
 def _non_list_view(presentation: str, columns: Sequence[Column],
                    graph: Optional[Graph] = None) -> str:  # noqa: D401
     """A view whose presentation is not a list says what it is.
@@ -758,7 +764,12 @@ def _non_list_view(presentation: str, columns: Sequence[Column],
     # A column with no display name falls back to its key here too, so this
     # states attribute names as uuids unless it resolves them like everywhere
     # else. The fixture had no unlabelled column, so nothing caught it.
-    attrs = ", ".join(_e(metric_text(graph, c.label, c.key)[0]) for c in columns[:6])
+    #
+    # The key stays reachable, as it does on every other path. Without it two
+    # super metrics the export does not carry both read "super metric (not in
+    # this export)" and there is nothing to tell them apart.
+    attrs = ", ".join(_attr_span(*metric_text(graph, c.label, c.key))
+                      for c in columns[:6])
     return (f"<div class='pv-placeholder'>a <b>{_e(presentation)}</b> view. This preview "
             f"lays out list views only, so its shape is stated rather than drawn.<br>"
             f"attributes: {attrs}</div>")

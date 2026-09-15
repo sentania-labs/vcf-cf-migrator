@@ -1261,3 +1261,23 @@ def test_an_unlabelled_super_metric_column_resolves_through_both_view_paths(buil
         "no dashboard resolved the column of the view it draws; the graph is "
         "not reaching the widget"
     )
+
+
+def test_a_non_list_view_keeps_its_attribute_keys_reachable(built):
+    """It states its attributes in prose rather than drawing them. Two super
+    metrics the export does not carry both read "super metric (not in this
+    export)", so without the key there is nothing to tell them apart.
+    """
+    _members, graph = built
+    for node in graph.ordered():
+        if node.kind != "view":
+            continue
+        body = _preview.build(graph, node).body
+        if "attributes:" not in body:
+            continue
+        spans = re.findall(r"attributes: (.*?)</div>", body, re.S)
+        assert spans, node.key
+        assert "title=" in spans[0], (
+            f"{node.key} states its attributes with no key behind them")
+        return
+    raise AssertionError("the fixture has no non-list view, so this proves nothing")
