@@ -581,13 +581,23 @@ def _act_pick_export(state: "PageState", _form: dict) -> str:
     and there is still exactly one place a page action runs.
     """
     if state.file_picker is None:
-        state.error = ("browsing for a file needs the window; type the path, "
-                       "or run without --server")
+        state.error = ("this window cannot open a file chooser; "
+                       "type the path into the box instead")
         return ""
     chosen = state.file_picker()
+    # Normalising happens here, in the layer the tests drive, not inside the
+    # dialog wrapper that needs a display to reach. A file dialog hands back a
+    # sequence even when it was told to allow one file, and an unwrapped tuple
+    # reaching open_export raises a TypeError that lands in front of the user
+    # as "argument should be a str or an os.PathLike".
+    if isinstance(chosen, (list, tuple)):
+        chosen = chosen[0] if chosen else None
     if not chosen:
         # Cancelling a file dialog is not an error and must not read as one.
         state.message = "no file chosen"
+        return ""
+    if not isinstance(chosen, str):
+        state.error = f"the file chooser returned something unusable: {type(chosen).__name__}"
         return ""
     state.open_export(chosen)
     return ""

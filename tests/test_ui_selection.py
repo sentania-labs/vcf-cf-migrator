@@ -237,7 +237,11 @@ def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
     """
     state.toggle(DASH, on=True)
     state.set_preview(DASH)
+    # The Browse button only renders when something can open a dialog, and a
+    # guard that never sees it is not guarding it.
+    state.file_picker = lambda: None
     page = state.render()
+    assert "Browse" in page
     # Single quoted, double quoted and unquoted, because this file writes both
     # quotings and a guard that sees one of them is not a guard: a reviewer
     # added onclick="..." to every button and this test stayed green.

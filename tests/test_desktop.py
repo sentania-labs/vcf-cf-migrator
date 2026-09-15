@@ -213,8 +213,12 @@ def test_the_page_has_no_two_controls_sharing_a_name_in_one_form(state):
     state.set_filter("dash")
     state.select_all()
     state.set_preview(_some_key(state))
+    # Every optional control has to be on the page, or this guard inspects
+    # markup that is not the markup a user sees.
+    state.file_picker = lambda: None
     page = state.render()
     assert "Clear</button>" in page, "the control this guards is not on the page"
+    assert "Browse" in page, "the control this guards is not on the page"
     for form in re.findall(r"<form\b.*?</form>", page, re.S):
         names = re.findall(r"""\bname=['"]([^'"]+)['"]""", form)
         # A checkbox group would legitimately repeat a name; this page has none.
@@ -339,9 +343,86 @@ def test_a_dialog_that_blows_up_does_not_take_the_window_with_it(state):
     assert "<html" in res["html"].lower()
 
 
-def test_the_picker_resolves_its_window_when_pressed_not_when_built():
+class _FakeWindow:
+    """Stands in for the pywebview window, which needs a display."""
+
+    def __init__(self, result=None, raises=None):
+        self.result = result
+        self.raises = raises
+        self.calls = 0
+
+    def create_file_dialog(self, *_args, **kwargs):
+        self.calls += 1
+        self.kwargs = kwargs
+        if self.raises is not None:
+            raise self.raises
+        return self.result
+
+
+@pytest.fixture
+def fake_webview(monkeypatch):
+    """`desktop._picker_for` imports webview for its OPEN_DIALOG constant."""
+    import sys
+    import types
+
+    mod = types.ModuleType("webview")
+    mod.OPEN_DIALOG = 10
+    monkeypatch.setitem(sys.modules, "webview", mod)
+    return mod
+
+
+def test_the_picker_resolves_its_window_when_pressed_not_when_built(fake_webview):
     """The page has to render before there is a window, and the render decides
     whether the button is there at all, so an eagerly bound window would hide
-    the button on the first page shown."""
-    src = inspect.getsource(desktop._picker_for)
-    assert 'holder.get("window")' in src
+    the button on the first page shown.
+
+    This drives the function rather than reading it. The version of this test
+    that grepped the source passed while the binding was broken.
+    """
+    holder = {}
+    pick = desktop._picker_for(holder)          # built with no window at all
+    assert pick() is None                        # pressed too early: no crash
+    holder["window"] = _FakeWindow(result=("/tmp/x.zip",))
+    assert pick() == ("/tmp/x.zip",)             # pressed later: finds it
+
+
+def test_the_picker_asks_for_one_file(fake_webview):
+    holder = {"window": _FakeWindow(result=None)}
+    desktop._picker_for(holder)()
+    assert holder["window"].kwargs["allow_multiple"] is False
+
+
+def test_a_dialog_that_raises_returns_nothing_rather_than_propagating(fake_webview):
+    holder = {"window": _FakeWindow(raises=RuntimeError("no portal"))}
+    assert desktop._picker_for(holder)() is None
+
+
+@pytest.mark.parametrize("returned,expect_open", [
+    ("PATH", True),            # a bare string
+    (("PATH",), True),         # the sequence a dialog actually hands back
+    (["PATH"], True),
+    (None, False),
+    ((), False),
+    ("", False),
+])
+def test_every_shape_a_file_dialog_can_return(state, export_zip, returned, expect_open):
+    """Unwrapped, a one-item tuple reaches open_export and raises a TypeError
+    that lands in front of the user as "argument should be a str or an
+    os.PathLike". Normalising is done in this layer because this is the layer
+    a test can reach without a display."""
+    state.zip_path = ""
+    value = returned
+    if returned is not None:
+        value = type(returned)(str(export_zip) for _ in returned) if isinstance(
+            returned, (list, tuple)) else (str(export_zip) if returned else "")
+    state.file_picker = lambda: value
+    ui.dispatch(state, "/pick-export", {})
+    assert state.error == "", state.error
+    assert (state.zip_path == str(export_zip)) is expect_open
+
+
+def test_a_dialog_returning_something_unusable_says_so_instead_of_crashing(state):
+    state.file_picker = lambda: b"/tmp/bytes.zip"
+    ui.dispatch(state, "/pick-export", {})
+    assert "unusable" in state.error
+    assert "bytes" in state.error

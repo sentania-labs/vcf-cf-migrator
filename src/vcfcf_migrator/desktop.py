@@ -176,22 +176,23 @@ class Bridge:
         return {"html": page_html(self._state), "anchor": anchor or ""}
 
 
-def _picker_for(holder: Dict[str, Any]) -> Any:  # pragma: no cover - needs a display
-    """A callable that asks the machine for an export zip, or None.
+def _picker_for(holder: Dict[str, Any]) -> Any:
+    """A callable that asks the machine for an export zip, or returns None.
 
-    Returns None when the dialog is cancelled, which the page treats as a
-    non-event rather than an error, and None on a dialog that fails outright:
-    a broken file chooser must not take the window down with it, because the
-    path box beside it still works.
+    The window is taken out of ``holder`` when the button is pressed, not when
+    this is built. The page has to be rendered before there is a window to
+    create, and the render is what decides whether the button appears at all,
+    so binding the window eagerly would hide the button on the first page and
+    show it only after some other action had redrawn.
+
+    ``holder`` is the seam that makes this testable without a display: a test
+    puts an object with a ``create_file_dialog`` method in it. An earlier
+    version of this function was marked no-cover and guarded only by a test
+    that grepped its source, which passed while the function was broken.
     """
     import webview
 
     def pick() -> Any:
-        # Looked up when the button is pressed, not when this is built. The
-        # page has to be rendered before there is a window to create, and the
-        # render is what decides whether the button appears at all, so binding
-        # the window eagerly would hide the button on the first page and show
-        # it only after some other action had redrawn.
         window = holder.get("window")
         if window is None:
             return None
@@ -202,11 +203,10 @@ def _picker_for(holder: Dict[str, Any]) -> Any:  # pragma: no cover - needs a di
                 file_types=("Content export (*.zip)", "All files (*.*)"),
             )
         except Exception:
+            # A broken file chooser must not take the window down with it:
+            # the path box beside it still works.
             return None
-        if not chosen:
-            return None
-        # pywebview hands back a sequence even when only one file was allowed.
-        return chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+        return chosen
 
     return pick
 
