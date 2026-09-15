@@ -279,19 +279,63 @@ def test_no_rule_truncates_a_name_in_the_tree(state):
     """
     page = state.render()
     css = page[page.index("<style>"):page.index("</style>")].replace(" ", "").replace("\n", "")
-    for selector in (".row.name{", ".row.why{"):
-        i = css.find(selector)
-        assert i > 0, f"{selector} is no longer in the stylesheet"
-        rule = css[i:css.index("}", i)]
-        assert "text-overflow:ellipsis" not in rule, f"{selector} truncates again: {rule}"
-        assert "white-space:nowrap" not in rule, f"{selector} cannot wrap: {rule}"
+    # Every rule whose selector ends in .name or .why, not just the first.
+    # Checking only the first let the old rule come back inside the
+    # max-width:900px block, which is exactly where someone reaches for
+    # nowrap, and named two spellings of truncation out of several.
+    bad = ("text-overflow:ellipsis", "white-space:nowrap", "text-wrap:nowrap",
+           "-webkit-line-clamp")
+    found = 0
+    for match in re.finditer(r"\{[^{}]*\}", css):
+        selector = css[:match.start()].rsplit("}", 1)[-1].rsplit("{", 1)[-1]
+        if not (selector.endswith(".name") or selector.endswith(".why")):
+            continue
+        found += 1
+        for smell in bad:
+            assert smell not in match.group(0), f"{selector} truncates again: {match.group(0)}"
+    assert found >= 2, f"the rules this guards are gone from the stylesheet ({found})"
+    # And the layout that keeps the name a readable width. "required by" used
+    # to share the name's line, and because both can shrink, the two squeezed
+    # each other: measured on a real export at a normal 1280 desktop, 402 of
+    # 756 rows went over 60px tall and the worst name was eight lines deep in
+    # a 110px column. Giving it a line of its own is the fix, so it is guarded.
+    assert "flex-wrap:wrap" in css[css.index(".row{"):css.index("}", css.index(".row{"))]
+    why = css[css.index(".row.why{"):css.index("}", css.index(".row.why{"))]
+    assert "flex:10100%" in why.replace(" ", ""), (
+        f"required by shares the name's line again: {why}")
 
 
-def test_a_long_name_is_in_the_row_not_only_in_the_tooltip(state):
-    """The full name has to be readable without hovering: a printed page, a
-    screen reader and a touch screen have no hover."""
-    longest = max(state.graph.ordered(), key=lambda n: len(n.name))
-    assert len(longest.name) > 20, "the fixture has no name long enough to prove this"
-    page = state.render()
+def test_the_name_is_in_the_visible_label_not_only_in_an_attribute(state):
+    """A version of this stripped the title and asserted the name was still
+    somewhere on the page. It passed with the visible label replaced by a
+    placeholder, because the same row carries the name a third time in the
+    checkbox's aria-label. It has to be in the element a reader sees.
+    """
     import html as _html
-    assert _html.escape(longest.name) in page.replace("title='" + _html.escape(longest.name), "")
+
+    longest = max(state.graph.ordered(), key=lambda n: len(n.name))
+    page = state.render()
+    labels = re.findall(r"<span class='name'[^>]*>(.*?)</span></span>", page, re.S)
+    assert labels, "no name labels on the page"
+    visible = [re.sub(r"<[^>]+>", "", one) for one in labels]
+    assert _html.escape(longest.name) in "".join(labels) or longest.name in visible, (
+        f"{longest.name!r} is not in any visible row label")
+
+
+def test_the_identifier_beside_a_name_is_a_uuid_or_nothing(state):
+    """It used to be the first eight characters of whatever the identifier
+    was. On the corpus that rendered "SymptomD" 43 times and "AlertDef" 13,
+    and for a custom group, which has no uuid, it was the name cut to eight
+    characters, sitting immediately beside the full name.
+    """
+    from vcfcf_migrator.uipage import _short_ident
+
+    assert _short_ident("SymptomDefinition-VMWARE-CPU_high", "CPU high") == ""
+    assert _short_ident("Hosts, VMs and Datastores", "Hosts, VMs and Datastores") == ""
+    assert _short_ident("2d7b8c1e-4f11-4c7a-9a55-0c1f2e3d4a5b", "A dash") == "2d7b8c1e"
+
+    page = state.render()
+    shown = [s for s in re.findall(r"<span class='uuid'>([^<]+)</span>", page)
+             if not s.startswith("owner ")]
+    for one in shown:
+        assert re.fullmatch(r"[0-9a-fA-F]{8}", one), f"not a uuid prefix: {one!r}"
