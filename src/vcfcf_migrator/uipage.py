@@ -157,7 +157,10 @@ def _button(label: str, name: str = "", value: str = "", primary: bool = False,
             ghost: bool = False) -> str:
     klass = "primary" if primary else ("ghost" if ghost else "")
     attrs = f" name='{e(name)}' value='{e(value)}'" if name else ""
-    return f"<button type='submit'{attrs}{f' class=\"{klass}\"' if klass else ''}>{e(label)}</button>"
+    # Built outside the f-string: a backslash inside an f-string expression is
+    # a SyntaxError before 3.12, and this package supports 3.9.
+    css = f' class="{klass}"' if klass else ""
+    return f"<button type='submit'{attrs}{css}>{e(label)}</button>"
 
 
 def render(state) -> str:

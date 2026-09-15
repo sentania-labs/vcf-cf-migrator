@@ -13,6 +13,7 @@ So the workflow asks here instead, and owns nothing:
     python tests/fixtures/ci_checks.py floor          -> 8.10
     python tests/fixtures/ci_checks.py below-floor    -> 8.9
     python tests/fixtures/ci_checks.py preview-object -> dashboard:<uuid>@<owner>
+    python tests/fixtures/ci_checks.py python-floor   -> 3.9
     python tests/fixtures/ci_checks.py preview preview.html
 
 ``listing`` compares an ``inspect --json`` document against
@@ -53,6 +54,31 @@ def below_floor_text() -> str:
 
     major, minor = VERSION_FLOOR[0], VERSION_FLOOR[1]
     return f"{major}.{minor - 1}" if minor else f"{major - 1}.0"
+
+
+def python_floor() -> tuple:
+    """The oldest Python this package supports, read from pyproject.
+
+    From ``requires-python``, never typed here: the floor is declared in one
+    place and the release builds binaries from it, so a second copy of the
+    number is a second thing to forget. Parsed with a regex rather than a TOML
+    reader because ``tomllib`` arrived in 3.11 and this has to run on the
+    floor itself.
+    """
+    import re
+
+    text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^requires-python\s*=\s*"([^"]+)"', text, re.M)
+    if not match:
+        raise AssertionError("pyproject.toml declares no requires-python")
+    version = re.search(r"(\d+)\.(\d+)", match.group(1))
+    if not version:
+        raise AssertionError(f"cannot read a version out of {match.group(1)!r}")
+    return (int(version.group(1)), int(version.group(2)))
+
+
+def python_floor_text() -> str:
+    return ".".join(str(part) for part in python_floor())
 
 
 def preview_object() -> str:
@@ -124,6 +150,7 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="what", required=True)
     sub.add_parser("floor", help="the lowest source version the tool accepts")
     sub.add_parser("preview-object", help="an object of the fixture to preview")
+    sub.add_parser("python-floor", help="the oldest Python this package supports")
     prev = sub.add_parser("preview", help="check a preview HTML file")
     prev.add_argument("path", help="the HTML file, or - for stdin")
     sub.add_parser("below-floor", help="a source version the tool must refuse")
@@ -139,6 +166,9 @@ def main(argv=None) -> int:
         return 0
     if args.what == "below-floor":
         print(below_floor_text())
+        return 0
+    if args.what == "python-floor":
+        print(python_floor_text())
         return 0
     if args.what == "preview-object":
         print(preview_object())
