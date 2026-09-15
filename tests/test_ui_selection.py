@@ -358,6 +358,9 @@ ENDPOINT_FORMS = [
     ("/settings", {"corpus_dir": "/pwned"}),
     ("/run", {"cmd": "tree"}),
     ("/diagnostics", {"out": "/tmp/pwned-diagnostics.jsonl"}),
+    # A cross-origin page must not be able to make the machine pop a file
+    # dialog, let alone act on what it returns.
+    ("/pick-export", {}),
 ]
 
 

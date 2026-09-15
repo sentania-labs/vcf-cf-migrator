@@ -191,6 +191,12 @@ def _header(state) -> str:
         "placeholder='/path/to/export.zip'></div>",
         _button("Open", primary=True),
         "</form>",
+        # Its own form, so the path box is not posted with it: the dialog is
+        # what names the file, and carrying a half-typed path alongside would
+        # only be something to get wrong.
+        ("<form method='post' action='/pick-export'>"
+         "<button type='submit'>Browse\u2026</button></form>"
+         if state.file_picker is not None else ""),
         "</header>",
     ])
 

@@ -292,3 +292,56 @@ def test_short_reason_drops_the_host_path():
     long = "ImportError: dlopen(/Users/someone/private/lib/_objc.so): not found"
     assert desktop.short_reason(long) == "ImportError"
     assert "/Users/someone" not in desktop.short_reason(long)
+
+
+# --- browsing for an export (#10) ------------------------------------------
+
+def test_browse_button_appears_only_when_something_can_open_a_dialog(state):
+    """Browser mode cannot read a path off the machine, so offering the button
+    there would be a control that does nothing."""
+    assert state.file_picker is None
+    assert "Browse" not in state.render()
+    state.file_picker = lambda: None
+    assert "Browse" in state.render()
+
+
+def test_browsing_opens_whatever_the_dialog_returns(state, export_zip):
+    state.zip_path = ""
+    state.file_picker = lambda: str(export_zip)
+    ui.dispatch(state, "/pick-export", {})
+    assert state.zip_path == str(export_zip)
+    assert state.graph is not None
+
+
+def test_cancelling_the_dialog_is_not_an_error(state):
+    """A cancelled dialog returns nothing, and a red error bar for "I changed
+    my mind" is the kind of thing that makes a tool feel broken."""
+    before = state.zip_path
+    state.file_picker = lambda: None
+    ui.dispatch(state, "/pick-export", {})
+    assert state.error == ""
+    assert state.zip_path == before
+
+
+def test_browsing_without_a_dialog_says_what_to_do_instead(state):
+    state.file_picker = None
+    ui.dispatch(state, "/pick-export", {})
+    assert "type the path" in state.error
+
+
+def test_a_dialog_that_blows_up_does_not_take_the_window_with_it(state):
+    def broken():
+        raise RuntimeError("no portal service")
+
+    state.file_picker = broken
+    res = desktop.Bridge(state).act("/pick-export", {})
+    assert "no portal service" in state.error
+    assert "<html" in res["html"].lower()
+
+
+def test_the_picker_resolves_its_window_when_pressed_not_when_built():
+    """The page has to render before there is a window, and the render decides
+    whether the button is there at all, so an eagerly bound window would hide
+    the button on the first page shown."""
+    src = inspect.getsource(desktop._picker_for)
+    assert 'holder.get("window")' in src

@@ -176,12 +176,51 @@ class Bridge:
         return {"html": page_html(self._state), "anchor": anchor or ""}
 
 
+def _picker_for(holder: Dict[str, Any]) -> Any:  # pragma: no cover - needs a display
+    """A callable that asks the machine for an export zip, or None.
+
+    Returns None when the dialog is cancelled, which the page treats as a
+    non-event rather than an error, and None on a dialog that fails outright:
+    a broken file chooser must not take the window down with it, because the
+    path box beside it still works.
+    """
+    import webview
+
+    def pick() -> Any:
+        # Looked up when the button is pressed, not when this is built. The
+        # page has to be rendered before there is a window to create, and the
+        # render is what decides whether the button appears at all, so binding
+        # the window eagerly would hide the button on the first page and show
+        # it only after some other action had redrawn.
+        window = holder.get("window")
+        if window is None:
+            return None
+        try:
+            chosen = window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=("Content export (*.zip)", "All files (*.*)"),
+            )
+        except Exception:
+            return None
+        if not chosen:
+            return None
+        # pywebview hands back a sequence even when only one file was allowed.
+        return chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+
+    return pick
+
+
 def run(state: Any, title: str = "VCF content migrator", width: int = 1280,
         height: int = 860) -> None:  # pragma: no cover - needs a display
     """Open the window and block until the user closes it."""
     import webview
 
     bridge = Bridge(state)
-    webview.create_window(title, html=page_html(state), js_api=bridge,
-                          width=width, height=height)
+    holder: Dict[str, Any] = {}
+    # Set before the first render, so the very first page carries the button.
+    state.file_picker = _picker_for(holder)
+    holder["window"] = webview.create_window(title, html=page_html(state),
+                                             js_api=bridge, width=width,
+                                             height=height)
     webview.start()
