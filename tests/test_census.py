@@ -384,3 +384,92 @@ def test_a_widget_whose_subject_differs_between_copies_is_excluded_too(tmp_path)
     assert subjects["fed"] == a_subjects["fed"] - 1
     assert subjects["selector"] == a_subjects["selector"] - 1
     assert subjects["never-shows"] == b_subjects["never-shows"] - 2
+
+
+def _blocks(text):
+    """The rendered report as ``heading -> ([counted values], [note lines])``.
+
+    A count line ends in a number; a note line does not. Parsing the rendered
+    text rather than the dict is the point: the note and the arithmetic have
+    to agree on the page an admin reads.
+    """
+    blocks, heading = {}, None
+    for line in text.splitlines():
+        if not line.startswith(" "):
+            heading = None
+            continue
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if indent <= 2 and not stripped.split()[-1].isdigit():
+            heading = stripped
+            blocks.setdefault(heading, ([], []))
+            continue
+        if heading is None:
+            continue
+        values, notes = blocks[heading]
+        if stripped.split()[-1].isdigit():
+            values.append(int(stripped.split()[-1]))
+        else:
+            notes.append(stripped)
+    return blocks
+
+
+def test_every_block_sums_to_the_figure_its_note_claims(tmp_path):
+    """The test this round asked for. One note used to cover four blocks and
+    was wrong about two of them: the subject block leaves nothing out, and the
+    carrying-nothing totals are agreed-only rather than everything. Each
+    block's own sum is asserted against the figure its note claims, on a
+    corpus whose copies disagree, so a future edit cannot put the note and the
+    arithmetic back out of step.
+    """
+    directory = _two_copies_classifying_differently(tmp_path)
+    report = corpus_census.walk(directory, "9.0.2")
+    assert report["divergent widgets"] >= 1, "the fixture must have a disagreement"
+    text = corpus_census.render(report)
+    blocks = _blocks(text)
+
+    empty_block = blocks["widgets carrying nothing, by reason"]
+    elsewhere_block = blocks["widgets whose content is elsewhere, by reason"]
+    objects_block = blocks["objects carrying nothing, by reason"]
+    subject_block = blocks["how widgets come by their subject"]
+
+    # Each block sums to its own figure.
+    assert sum(empty_block[0]) == report["widgets carrying nothing"]
+    assert sum(objects_block[0]) == report["objects carrying nothing"]
+    assert sum(subject_block[0]) == report["widgets with a subject"]
+
+    # And each note states the figures that block actually covers.
+    agreed_widgets = report["widgets classified"] - report["divergent widgets"]
+    widget_note = elsewhere_block[1][0]
+    assert str(agreed_widgets) in widget_note
+    assert str(report["divergent widgets"]) in widget_note
+    assert str(report["widgets disputed as carrying nothing"]) in widget_note
+    subject_note = subject_block[1][0]
+    assert str(report["widgets with a subject"]) in subject_note
+    assert str(report["divergent widget subjects"]) in subject_note
+    object_note = objects_block[1][0]
+    assert str(report["objects"] - report["divergent objects"]) in object_note
+
+    # The subject block leaves out only subject disagreements, which is a
+    # different set from the code disagreements the other blocks leave out.
+    assert (report["widgets with a subject"]
+            == report["widgets classified"] - report["divergent widget subjects"])
+    assert report["widgets with a subject"] != agreed_widgets or \
+        report["divergent widgets"] == report["divergent widget subjects"]
+
+
+def test_the_header_exempts_the_two_agreed_only_totals(tmp_path):
+    """"The totals count every identity" is false for the two carrying-nothing
+    counts, which are built from agreed copies. The header says so."""
+    directory = _two_copies_classifying_differently(tmp_path)
+    report = corpus_census.walk(directory, "9.0.2")
+    text = corpus_census.render(report)
+    header = text.splitlines()[1]
+    assert "except" in header and "carrying-nothing" in header
+    # The claim is checkable: the two carrying-nothing totals exclude the
+    # divergent identities, and every other total includes them.
+    assert report["widgets"] == report["widgets classified"]
+    assert report["widgets"] > report["widgets classified"] - report["divergent widgets"]
+    empty_lines = [line for line in text.splitlines()
+                   if line.strip().startswith("widgets carrying nothing ")]
+    assert empty_lines and int(empty_lines[0].split()[-1]) == report["widgets carrying nothing"]

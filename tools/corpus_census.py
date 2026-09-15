@@ -163,10 +163,18 @@ class Census:
                         if len(v) == 1}
         divergent_objects = sum(1 for v in self.object_empty.values() if len(v) > 1)
         unfinished = {k: c for k, c in empty.items() if c in UNFINISHED_CODES}
+        # A divergent identity is in no by-reason block, so the count of the
+        # ones whose copies disagree *about carrying nothing* is the figure
+        # that would otherwise go missing between the block and the total.
+        disputed_widgets = sum(1 for v in widgets.values() if len(v) > 1
+                               and any(c in UNFINISHED_CODES for c in v))
+        disputed_objects = sum(1 for v in self.object_empty.values() if len(v) > 1
+                               and any(c for c in v))
         return {
             "objects": len(self.object_names),
             "objects with two names": sum(1 for v in self.object_names.values() if len(v) > 1),
             "objects carrying nothing": sum(1 for v in object_empty.values() if v),
+            "objects disputed as carrying nothing": disputed_objects,
             "divergent objects": divergent_objects,
             "objects carrying nothing by reason": dict(
                 Counter(v for v in object_empty.values() if v)),
@@ -182,11 +190,13 @@ class Census:
             "widgets classified": len(self.widget_state),
             "divergent widgets": divergent_widgets,
             "widgets carrying nothing": len(unfinished),
+            "widgets disputed as carrying nothing": disputed_widgets,
             "widgets carrying nothing by reason": dict(
                 Counter(c for c in unfinished.values())),
             "widgets shown elsewhere by reason": dict(
                 Counter(c for c in empty.values() if c not in UNFINISHED_CODES)),
             "widget subjects": dict(subjects),
+            "widgets with a subject": sum(subjects.values()),
             "divergent widget subjects": divergent_subjects,
             "occurrences": dict(self.occurrences),
             "_codes": dict(by_code),
@@ -205,9 +215,21 @@ def walk(directory: Path, declared: Optional[str] = None,
 
 
 def render(report: dict) -> str:
+    """The report as text, with a note against each block saying what that
+    block counts.
+
+    One note covering four blocks was wrong about two of them: the subject
+    block filters on subject agreement, which nothing in the corpus breaks, so
+    it leaves nothing out; and the two carrying-nothing totals are built from
+    agreed copies, so the header's claim that the totals count everything was
+    false for them. Each note now belongs to one block, and
+    ``tests/test_census.py`` asserts every block's own sum against the figure
+    its note claims, so a future edit cannot put the two back out of step.
+    """
     lines = ["distinct content across the corpus",
-             "  (the totals below count every identity, including the ones whose copies "
-             "disagree)"]
+             "  (the totals below count every identity, divergent copies included, except "
+             "the two carrying-nothing counts, which count only identities whose copies "
+             "agree)"]
     for key in ("objects", "objects carrying nothing", "dashboards",
                 "dashboards interaction driven", "widgets", "widgets classified",
                 "widgets carrying nothing"):
@@ -218,16 +240,24 @@ def render(report: dict) -> str:
     lines.append("  widgets whose content is elsewhere, by reason")
     for code, count in sorted(report["widgets shown elsewhere by reason"].items()):
         lines.append(f"    {code:34s} {count:6d}")
+    lines.append(f"    the two blocks above cover the {report['widgets classified'] - report['divergent widgets']} "
+                 f"widgets whose copies agree on what they carry; the other "
+                 f"{report['divergent widgets']} are in neither, and "
+                 f"{report['widgets disputed as carrying nothing']} of those carry nothing "
+                 "in at least one copy")
     lines.append("  objects carrying nothing, by reason")
     for code, count in sorted(report["objects carrying nothing by reason"].items()):
         lines.append(f"    {code:34s} {count:6d}")
+    lines.append(f"    this block covers the {report['objects'] - report['divergent objects']} "
+                 f"objects whose copies agree; the other {report['divergent objects']} are "
+                 f"not in it, and {report['objects disputed as carrying nothing']} of those "
+                 "carry nothing in at least one copy")
     lines.append("  how widgets come by their subject")
     for kind, count in sorted(report["widget subjects"].items()):
         lines.append(f"    {kind:34s} {count:6d}")
-    lines.append(f"  the four blocks above count only identities whose copies agree: "
-                 f"{report['divergent widgets']} widgets and "
-                 f"{report['divergent objects']} objects are left out of them, and are "
-                 "in the totals at the top")
+    lines.append(f"    this block covers the {report['widgets with a subject']} widgets whose "
+                 f"copies agree on the subject; {report['divergent widget subjects']} "
+                 "disagree and are not in it")
     lines.append("  where copies of one identity disagree")
     for key in ("objects with two names", "divergent objects", "divergent dashboards",
                 "divergent widgets", "divergent widget subjects"):
