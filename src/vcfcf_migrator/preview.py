@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from urllib.parse import unquote
@@ -142,7 +143,8 @@ PREVIEW_CSS = """
   grid-auto-rows:minmax(26px,auto); gap:8px; align-items:start }
 .pv .pv-w { background:var(--pv-panel); border:1px solid var(--pv-line); border-radius:4px;
   padding:8px 10px; overflow:hidden; min-height:64px }
-.pv .pv-w > h3 { font-size:12px; font-weight:600; margin:0 0 6px; display:flex; gap:8px; align-items:baseline }
+.pv .pv-w > h3 { font-size:12px; font-weight:600; margin:0 0 6px; display:flex; gap:8px;
+  align-items:baseline; flex-wrap:wrap }
 .pv .pv-w > h3 .pv-type { margin-left:auto; font-weight:400; font-size:10px; color:var(--pv-ink3);
   text-transform:uppercase; letter-spacing:.04em; white-space:nowrap }
 .pv .pv-flow { font-size:10px; font-weight:500; padding:1px 6px; border-radius:9px;
@@ -160,10 +162,12 @@ PREVIEW_CSS = """
 .pv .pv-wiring .arrow { color:var(--pv-accent); font-weight:600 }
 .pv .pv-key { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px; color:var(--pv-ink3);
   word-break:break-all }
-.pv table.pv-tbl { width:100%; border-collapse:collapse; font-size:11.5px }
+.pv table.pv-tbl { width:100%; table-layout:fixed; border-collapse:collapse; font-size:11.5px }
 .pv table.pv-tbl th { text-align:left; color:var(--pv-ink3); font-weight:500; font-size:10.5px;
-  padding:3px 6px; border-bottom:1px solid var(--pv-line); white-space:nowrap }
-.pv table.pv-tbl td { padding:3px 6px; border-bottom:1px solid var(--pv-line); color:var(--pv-ink2) }
+  padding:3px 6px; border-bottom:1px solid var(--pv-line); white-space:normal;
+  overflow-wrap:anywhere }
+.pv table.pv-tbl td { padding:3px 6px; border-bottom:1px solid var(--pv-line); color:var(--pv-ink2);
+  overflow-wrap:anywhere }
 .pv table.pv-tbl td.num { text-align:right; font-variant-numeric:tabular-nums }
 .pv .pv-scroll { overflow-x:auto }
 .pv .pv-tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:6px }
@@ -204,7 +208,8 @@ PREVIEW_CSS = """
 .pv .pv-notes { margin:14px 0 0; padding:8px 10px; background:var(--pv-panel2); border-radius:4px;
   color:var(--pv-ink2); font-size:11px }
 .pv .pv-notes ul { margin:4px 0 0; padding-left:18px }
-.pv .pv-text { color:var(--pv-ink2); font-size:12px; white-space:pre-wrap }
+.pv .pv-text { color:var(--pv-ink2); font-size:12px; white-space:pre-wrap;
+  max-height:100%; overflow:auto }
 @media (max-width: 720px) {
   .pv .pv-grid { display:block }
   .pv .pv-grid > .pv-w { margin-bottom:8px }
@@ -501,6 +506,10 @@ def _columns_table(columns: Sequence[Column], rows: int = MOCK_ROWS,
             cells.append(f"<td class='num'>{_e(text)}</td>" if numeric
                          else f"<td>{_e(text)}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
+    # Fixed layout and wrapping headers rather than one nowrap row: a column
+    # header wider than the widget used to be cut mid-word ("vCPU:pCPU Rat"),
+    # which reads as a broken tool rather than as a narrow widget. The columns
+    # now share the width and wrap; pv-scroll stays as the backstop.
     return ("<div class='pv-scroll'><table class='pv-tbl'><thead><tr>" + head
             + "</tr></thead><tbody>" + "".join(body) + "</tbody></table></div>")
 
@@ -682,15 +691,90 @@ def _widget_pareto(cfg: dict, ctx: dict) -> str:
             + _bars(key or label, count, unit))
 
 
-def _widget_heatmap(cfg: dict, ctx: dict) -> str:
+def metric_ref(value) -> Tuple[str, str]:
+    """``(label, key)`` for a metric reference, however the export writes it.
+
+    A heatmap names what it colours and sizes by in two shapes: the flat string
+    ``"cpu|usage_average"``, and the pair ``{"metricKey": "...", "value":
+    "CPU Contention %"}``, which is what all 41 heatmaps in the corpus carry.
+    Reading the second with ``str()`` printed the dict itself onto the page,
+    braces and quotes and all, under every corpus heatmap.
+    """
+    if isinstance(value, dict):
+        key = str(value.get("metricKey") or value.get("key") or "")
+        label = str(value.get("value") or value.get("metricName")
+                    or value.get("name") or "")
+        return label, key
+    return "", str(value or "")
+
+
+def heatmap_metrics(cfg: dict) -> List[Tuple[str, str]]:
+    """What a heatmap colours and sizes by: ``(label, key)`` for each, skipping
+    the ones the export leaves empty. The renderer and the emptiness rule both
+    read it, so neither can call a heatmap configured that the other draws
+    blank."""
     configs = cfg.get("configs")
-    label = ""
+    out: List[Tuple[str, str]] = []
     if isinstance(configs, list) and configs and isinstance(configs[0], dict):
         first = configs[0]
-        label = str(first.get("colorBy") or first.get("sizeBy") or "")
+        for field in ("colorBy", "sizeBy"):
+            label, key = metric_ref(first.get(field))
+            if label or key:
+                out.append((label, key))
+    return out
+
+
+# VCF Operations' heat colours, green at the good end and red at the bad end.
+# Not invented here and not the page's own chrome: these are the hex values the
+# corpus's own heatmaps carry in ``config.configs[].color.thresholds.colors``
+# (the shape documented in the factory's
+# knowledge/context/api-surface/widget_types_survey.md, "Heatmap"), and they are
+# the product's badge scale. The page's blue accent is chart ink and says
+# nothing about a value, so it never appears in a heat scale: a VCF Operations
+# heatmap runs red to green and never shows blue.
+HEAT_GOOD = "#74B43B"    # green, the good end
+HEAT_FAIR = "#ECC33E"    # yellow
+HEAT_POOR = "#E07720"    # orange
+HEAT_BAD = "#DE3F30"     # red, the bad end
+HEAT_RAMP = (HEAT_GOOD, HEAT_GOOD, HEAT_FAIR, HEAT_POOR, HEAT_BAD)
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def heatmap_palette(cfg: dict) -> Tuple[str, ...]:
+    """The colours to draw a heatmap in: the widget's own, where the export
+    carries them.
+
+    A heatmap declares its scale, thresholds and colours both, and the scale
+    runs either way round depending on the metric (high CPU contention is bad,
+    high free capacity is good). Twenty of the corpus's heatmap layers carry a
+    green-to-red list and several carry the reverse, so taking the widget's own
+    list keeps each one pointing the way its author meant. Anything not a plain
+    hex colour is ignored, and a widget that declares none gets the product
+    ramp, good to bad.
+    """
+    configs = cfg.get("configs")
+    if isinstance(configs, list):
+        for block in configs:
+            if not isinstance(block, dict):
+                continue
+            colour = block.get("color")
+            thresholds = colour.get("thresholds") if isinstance(colour, dict) else None
+            colours = thresholds.get("colors") if isinstance(thresholds, dict) else None
+            kept = tuple(c for c in colours or [] if isinstance(c, str) and _HEX.match(c))
+            if kept:
+                return kept
+    return HEAT_RAMP
+
+
+def _widget_heatmap(cfg: dict, ctx: dict) -> str:
+    metrics = heatmap_metrics(cfg)
+    label, key = metrics[0] if metrics else ("", "")
+    if key and label:
+        label = f"{label} | {key}"
+    else:
+        label = label or key
     cells = []
-    palette = ("var(--pv-ok)", "var(--pv-ok)", "var(--pv-warn)", "var(--pv-bad)",
-               "var(--pv-accent)")
+    palette = heatmap_palette(cfg)
     for i in range(24):
         colour = mockdata.pick(palette, "heat", ctx["seed"], i)
         cells.append(f"<i style='background:{colour}'></i>")
@@ -762,18 +846,57 @@ def _widget_resourcelist(cfg: dict, ctx: dict) -> str:
             + "".join(rows) + "</tbody></table>")
 
 
-def _widget_text(cfg: dict, ctx: dict) -> str:
-    """The widget's own text, shown as text.
+def text_widget_content(cfg: dict) -> Tuple[str, Optional[bool]]:
+    """A text widget's words, and whether the export says they are markup.
 
-    ``viewModeHTML`` is markup the export carries, and this page never injects
-    it: the preview is a local file an admin opens, and pasting a document's
-    markup into it would let an export decide what the admin's browser runs.
-    The tags are stripped for readability and the result is escaped.
+    **``viewModeHTML`` is a flag, not the text.** Every one of the 25
+    TextDisplay widgets in the corpus carries it as the boolean ``True``, with
+    the words themselves in ``editorData`` (682, 671, 808, 382, 139, 262, 364,
+    631 and 715 characters of them, and seven widgets where it is empty). The
+    first version of this read ``viewModeHTML or editorData``, so the flag won
+    the ``or`` on all 25 and every text widget on every dashboard rendered as
+    the single word ``True``, including the one in the README's own screenshot.
+    That is the same mistake ``instanced="false"`` was: a field's truthiness
+    taken for its content, which is what ``declared_flag`` exists to stop.
+
+    So the content comes from ``editorData``, and the flag says how to read it.
+    A string in ``viewModeHTML`` is still accepted as content, because a flag
+    and a body sharing one key is exactly the kind of shape an export turns out
+    to write two ways, and nothing here may assume the corpus has shown all of
+    them.
+
+    Returns the raw content and the flag (``None`` where the export does not
+    say). One function, because the renderer and the emptiness rule have to
+    agree about what "carries no text" means.
     """
-    raw = cfg.get("viewModeHTML") or cfg.get("editorData") or ""
+    raw = cfg.get("editorData")
     if isinstance(raw, dict):
         raw = json.dumps(raw)
-    text = _strip_tags(str(raw))
+    if not isinstance(raw, str) or not raw.strip():
+        other = cfg.get("viewModeHTML")
+        raw = other if isinstance(other, str) else ""
+    return str(raw or ""), declared_flag(cfg.get("viewModeHTML"), key="viewModeHTML")
+
+
+def text_widget_words(cfg: dict) -> str:
+    """The readable words of a text widget, however the export wrote them.
+
+    The page never injects an export's markup: the preview is a local file an
+    admin opens, and pasting a document's markup into it would let an export
+    decide what the admin's browser runs. So markup has its tags stripped and
+    the result is escaped by the caller. Text the export says is *not* markup
+    keeps its own characters, since stripping there would eat any ``<`` the
+    admin wrote on purpose.
+    """
+    raw, is_html = text_widget_content(cfg)
+    if is_html is False and "<" not in raw:
+        return " ".join(raw.split())
+    return _strip_tags(raw)
+
+
+def _widget_text(cfg: dict, ctx: dict) -> str:
+    """The widget's own text, shown as text."""
+    text = text_widget_words(cfg)
     if not text:
         location = cfg.get("locationUrl") or cfg.get("locationFile") or ""
         if location:
@@ -782,7 +905,13 @@ def _widget_text(cfg: dict, ctx: dict) -> str:
                     "not fetch</div>")
         return _record_empty(ctx, "widget-no-text",
                              "this text widget carries no text and points at no file")
-    return f"<div class='pv-text'>{_e(text[:600])}</div>"
+    # Long text is cut at a length the widget can show, and says so: a
+    # paragraph ending mid-word with nothing to explain it reads as a fault in
+    # the tool rather than as a widget with more text in it than fits.
+    shown = text[:600]
+    if len(text) > len(shown):
+        shown = shown.rsplit(" ", 1)[0] + f" ... ({len(text)} characters in all)"
+    return f"<div class='pv-text'>{_e(shown)}</div>"
 
 
 class _TextOnly(HTMLParser):
@@ -825,8 +954,14 @@ def _strip_tags(markup: str) -> str:
                     reason="the text widget's markup did not parse, so its words are shown "
                            "with the tags stripped by hand; nothing is said on the page "
                            "because the page cannot be acted on")
-        return " ".join(markup.split())
-    return " ".join("".join(parser.parts).split())
+        return _tidy(" ".join(markup.split()))
+    return _tidy(" ".join("".join(parser.parts).split()))
+
+
+def _tidy(text: str) -> str:
+    """A tag break is a word break, which puts a space before the full stop of
+    ``<strong>after HA</strong>.`` Closing punctuation keeps its place."""
+    return re.sub(r"\s+([,.;:!?%)\]])", r"\1", text)
 
 
 def _widget_healthchart(cfg: dict, ctx: dict) -> str:
@@ -835,7 +970,10 @@ def _widget_healthchart(cfg: dict, ctx: dict) -> str:
     unit = _cfg_unit(cfg)
     head = (f"<div class='pv-key'>{_e(label)}{(' | ' + _e(key)) if key else ''}</div>"
             if (label or key) else "")
-    return head + _sparkline(key or label or ctx["seed"], unit, "var(--pv-ok)")
+    # Chart ink, not a verdict. This used to draw in the page's green, which
+    # is the product's "healthy" colour, over a value this page invented: a
+    # health chart cannot claim health it has not read.
+    return head + _sparkline(key or label or ctx["seed"], unit)
 
 
 def _widget_section(cfg: dict, ctx: dict) -> str:
@@ -957,16 +1095,19 @@ def _widget_nothing(widget_type: str, cfg: dict, widget: dict) -> Tuple[str, str
             return ("widget-no-health-metric",
                     "this chart names no metric, so it shows nothing until someone picks one")
     elif widget_type == "Heatmap":
-        configs = cfg.get("configs")
-        if not (isinstance(configs, list) and any(isinstance(c, dict) and c for c in configs)):
+        # Through the same reader as the renderer: a configs list holding a
+        # block that names neither a colour nor a size metric is a heatmap with
+        # nothing to draw, however full the block looks.
+        if not heatmap_metrics(cfg):
             return ("widget-no-heatmap-metric",
                     "this heatmap declares no colour or size metric, so it shows nothing "
                     "until someone picks them")
     elif widget_type == "TextDisplay":
-        raw = cfg.get("viewModeHTML") or cfg.get("editorData") or ""
-        if isinstance(raw, dict):
-            raw = json.dumps(raw)
-        if not _strip_tags(str(raw)) and not (cfg.get("locationUrl") or cfg.get("locationFile")):
+        # Through the same reader as the renderer: a widget whose editorData is
+        # empty carries no text, whatever its viewModeHTML flag says, and the
+        # two surfaces may not disagree about that.
+        if (not text_widget_words(cfg)
+                and not (cfg.get("locationUrl") or cfg.get("locationFile"))):
             return ("widget-no-text",
                     "this text widget carries no text and points at no file")
     elif widget_type == "Section":

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- `preview`: three reads of a field corrected, all the same shape as the
+  `instanced="false"` finding, a field's truthiness taken for its content.
+  `viewModeHTML` is a flag saying a text widget's words are markup, not the
+  words: all 25 TextDisplay widgets in the corpus carry it as `True` with the
+  text in `editorData`, so every one of them rendered as the single word
+  "True". A heatmap's `colorBy` and `sizeBy` are `{metricKey, value}` pairs on
+  all 41 corpus heatmaps, and `str()` on one printed the document itself onto
+  the page. Both now go through one reader that the renderer and the emptiness
+  rule share. A health chart no longer draws in the product's healthy green
+  over a value this page invented.
+
+- `preview`: heatmaps draw in the colours the widget declares in
+  `color.thresholds.colors`, and in VCF Operations' own green-to-red ramp where
+  it declares none. The page's blue is chart ink and no longer appears in a
+  heat scale. Table headers wrap instead of being cut mid-word.
+
 - `--log FILE`: a run log, off until asked for, with `--log-level`
   (error, warn, info, detail, debug; detail by default) and `--log-format`
   (`jsonl`, one JSON object per line, or `text`, the same events as lines a

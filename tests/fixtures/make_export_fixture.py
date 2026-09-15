@@ -361,8 +361,13 @@ def _laid_out_widgets() -> list:
         {"type": "Heatmap", "title": "[Fixture] Cluster heat", "id": WIDGET_HEATMAP,
          "gridsterCoords": {"x": 5, "y": 13, "w": 4, "h": 6},
          "config": {"title": "[Fixture] Cluster heat", "mode": "all",
-                    "configs": [{"colorBy": "cpu|usage_average",
-                                 "sizeBy": "cpu|demandmhz"}]}},
+                    # The shape all 41 corpus heatmaps carry: the metric is a
+                    # pair of key and label, not a bare key. Reading it with
+                    # str() printed the dict onto the page.
+                    "configs": [{"colorBy": {"metricKey": "cpu|usage_average",
+                                             "value": "CPU Usage %"},
+                                 "sizeBy": {"metricKey": "cpu|demandmhz",
+                                            "value": "CPU Demand"}}]}},
         # The bare selector and the widget it drives: config {} on the
         # selector, and a state blob carrying its column layout.
         {"type": "ResourceList", "title": "[Fixture] Bare selector",
@@ -483,6 +488,21 @@ def _laid_out_widgets() -> list:
         {"type": "TextDisplay", "title": "[Fixture] Text with no text",
          "gridsterCoords": {"x": 5, "y": 45, "w": 4, "h": 4},
          "config": {"title": "[Fixture] Text with no text", "viewModeHTML": "",
+                    "editorData": ""}},
+        # The shape every TextDisplay in the corpus actually has: viewModeHTML
+        # is the boolean flag saying the words are markup, and the words are in
+        # editorData. Reading the flag as the content rendered all 25 corpus
+        # text widgets as "True", so the fixture carries the shape now.
+        {"type": "TextDisplay", "title": "[Fixture] About these metrics",
+         "gridsterCoords": {"x": 1, "y": 49, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] About these metrics", "viewModeHTML": True,
+                    "editorData": "<p>Cluster headroom is measured "
+                                  "<strong>after HA</strong>.</p>"}},
+        # And the same shape with nothing in it: a flag saying "this is markup"
+        # over an empty body is a widget with no text, not a widget with text.
+        {"type": "TextDisplay", "title": "[Fixture] Flagged but empty",
+         "gridsterCoords": {"x": 5, "y": 49, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] Flagged but empty", "viewModeHTML": True,
                     "editorData": ""}},
         {"type": "Section", "title": "",
          "gridsterCoords": {"x": 9, "y": 45, "w": 4, "h": 1},
