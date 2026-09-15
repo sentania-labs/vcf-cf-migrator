@@ -1,0 +1,108 @@
+# Ask Apple what happened to a notarization submission.
+#
+# This exists because the only machine that can answer that question is a Mac
+# with the notary credentials, and there is not one to hand: notarytool ships
+# with Xcode and is macOS-only, and the API key deliberately lives nowhere but
+# this repository's secrets. Without this workflow, a notarization that times
+# out or gets rejected during a release is a dead end until someone borrows a
+# Mac.
+#
+# It reads and reports. It signs nothing, publishes nothing, and touches no
+# tag. Run it by hand from the Actions tab.
+#
+# Placement (github-ci skill): needs no lab and no Docker daemon, but it does
+# need macOS, so a GitHub-hosted macOS runner. Free on this public repo.
+
+name: Notary diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission_ids:
+        description: "Submission UUIDs to detail, separated by spaces or commas. Leave blank for just the recent history."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ask-apple:
+    if: github.repository == 'sentania-labs/vcf-cf-migrator'
+    runs-on: macos-latest
+    steps:
+      - name: Ask Apple
+        env:
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          SUBMISSION_IDS: ${{ inputs.submission_ids }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NOTARY_ISSUER_ID:-}" ] || [ -z "${NOTARY_KEY_ID:-}" ] || [ -z "${NOTARY_KEY_P8:-}" ]; then
+            echo "::error::the notary secrets are not set on this repository"
+            exit 1
+          fi
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          creds=(--key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+
+          ok=0
+          bad=0
+
+          # Every query here is fail-soft, deliberately. This workflow exists
+          # because someone is already stuck, and the worst thing it could do
+          # is let the first failing query hide the answer to the question that
+          # prompted the run. One refusal from Apple must not stop the rest.
+          ask() {
+            label="$1"; shift
+            echo "::group::$label"
+            if "$@" > "$RUNNER_TEMP/q.out" 2> "$RUNNER_TEMP/q.err"; then
+              # Pretty-print when it is JSON, show it raw when it is not,
+              # rather than letting a formatter decide whether you get output.
+              python3 -m json.tool < "$RUNNER_TEMP/q.out" 2>/dev/null || cat "$RUNNER_TEMP/q.out"
+              ok=$((ok + 1))
+            else
+              echo "this query failed; Apple said:"
+              cat "$RUNNER_TEMP/q.err" 2>/dev/null || true
+              cat "$RUNNER_TEMP/q.out" 2>/dev/null || true
+              bad=$((bad + 1))
+            fi
+            echo "::endgroup::"
+          }
+
+          # Newest first, with the status Apple settled on. A release that gave
+          # up waiting still appears here: the timeout was our client hanging
+          # up, never Apple's verdict.
+          ask "Recent submissions" xcrun notarytool history "${creds[@]}" --output-format json
+
+          # Commas or spaces, and trailing whitespace from a copy-paste out of
+          # a log, all normalise to the same list.
+          ids="$(printf '%s' "${SUBMISSION_IDS:-}" | tr ',' ' ' | xargs || true)"
+          if [ -z "$ids" ]; then
+            echo "No submission ids given, so only the history above was fetched."
+          fi
+          for id in $ids; do
+            # A malformed id would otherwise become a confusing Apple-side
+            # error rather than an obvious typo.
+            if ! printf '%s' "$id" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+              echo "::warning::'$id' is not a submission UUID; skipping it"
+              continue
+            fi
+            ask "Status of $id" xcrun notarytool info "$id" "${creds[@]}" --output-format json
+            # The only thing that says WHY something was rejected. Absent while
+            # a submission is still in progress, which is not an error.
+            ask "Apple's log for $id" xcrun notarytool log "$id" "${creds[@]}"
+          done
+
+          rm -f "$RUNNER_TEMP/q.out" "$RUNNER_TEMP/q.err"
+          echo "queries answered: $ok, failed: $bad"
+          # Red only when Apple told us nothing at all. A partial answer is
+          # still an answer and should not look like a broken workflow.
+          if [ "$ok" = "0" ]; then
+            echo "::error::every query failed; Apple returned nothing usable"
+            exit 1
+          fi
+
+      - name: Remove the notary key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/notary.p8" 2>/dev/null || true
