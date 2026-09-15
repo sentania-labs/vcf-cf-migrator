@@ -50,6 +50,52 @@ def test_the_readme_headline_command_parses(export_zip):
     assert args.command == "ui" and args.zip == str(export_zip)
 
 
+def test_the_source_version_flag_is_gone_and_saying_it_is_a_usage_error(export_zip, capsys):
+    """Pins the deletion. argparse refuses what it does not know, so the flag
+    is a loud usage error rather than an option that is quietly accepted and
+    does nothing, before *and* after the subcommand."""
+    for argv, expected in (
+            (["--source-version", "9.0.2", "inspect", str(export_zip)],
+             "invalid choice: '9.0.2'"),
+            (["inspect", str(export_zip), "--source-version", "9.0.2"],
+             "unrecognized arguments: --source-version 9.0.2")):
+        with pytest.raises(SystemExit) as exit_:
+            main(argv)
+        assert exit_.value.code == 2
+        captured = capsys.readouterr()
+        assert expected in captured.err, captured.err
+        # Nothing ran: a refused command line lists nothing.
+        assert "items:" not in captured.out
+
+
+def test_the_source_version_environment_variable_is_named_not_obeyed(export_zip, capsys,
+                                                                     monkeypatch):
+    """A variable this tool no longer reads is said out loud once and the run
+    carries on: refusing to start would make the tool unrunnable for anyone who
+    exported it in a shell profile."""
+    monkeypatch.setenv("VCFCF_MIGRATOR_SOURCE_VERSION", "8.6")
+    assert main(["inspect", str(export_zip)]) == 0
+    captured = capsys.readouterr()
+    assert "VCFCF_MIGRATOR_SOURCE_VERSION is set and is no longer used" in captured.err
+    assert "source version" not in captured.out.lower()
+
+
+def test_a_settings_file_written_by_an_older_release_loses_the_stale_key(config_dir):
+    """save_settings merges, so a source_version left in the file would ride
+    along for ever. It is dropped on load and gone from the file on the next
+    save."""
+    from vcfcf_migrator import settings
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "settings.json").write_text(
+        json.dumps({"source_version": "8.18.7", "corpus_dir": "/data/exports"}),
+        encoding="utf-8")
+    assert settings.load_settings() == {"corpus_dir": "/data/exports"}
+    settings.save_settings({"log_level": "debug"})
+    assert json.loads((config_dir / "settings.json").read_text()) == {
+        "corpus_dir": "/data/exports", "log_level": "debug"}
+
+
 def test_inspect_lists_every_item(export_zip, capsys):
     assert main(["inspect", str(export_zip)]) == 0
     out = capsys.readouterr().out

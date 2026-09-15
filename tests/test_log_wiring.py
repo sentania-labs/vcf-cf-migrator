@@ -408,9 +408,15 @@ def test_the_header_the_page_keeps_is_the_one_the_run_is_using(tmp_path, export_
     two synthetic ``run.start`` events, which the page never produces, so it
     passed while the real path kept the header from before the settings change:
     after a truncation the log stated a setting the run was not using.
+
+    **The assertion has to be on a field the second open changes.** It was on
+    the declared source version, which is gone; counting the headers is not
+    enough, because every other field of ``run.start`` is the same in both.
+    The level is what the second ``save_setting`` moves, so ``log.contents``
+    is what tells a stale head from a fresh one: under first-one-wins this
+    test goes red on the level, which is the regression it is named after.
     """
     state = PageState(str(export_zip))
-    state.save_setting({"corpus_dir": str(tmp_path / "corpus")})
     state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
     state.save_setting({"log_level": "debug"})       # a second open_log
     state.run_tree()
@@ -419,6 +425,9 @@ def test_the_header_the_page_keeps_is_the_one_the_run_is_using(tmp_path, export_
         state.log.detail("noise", index=index)
     headers = [e for e in state.log.events if e["event"] == "run.start"]
     assert len(headers) == 1, headers
+    contents = [e for e in state.log.events if e["event"] == "log.contents"]
+    assert len(contents) == 1, contents
+    assert contents[0]["level"] == "debug", contents[0]
     kept = {e["event"] for e in state.log.events}
     for head in runlog.HEAD_EVENTS:
         assert head in kept, (head, kept)

@@ -27,6 +27,13 @@
   export was. No member of any of the five corpus exports names a product
   version, so there is nothing else to observe.
 
+  Two things to tidy on your own machine, neither of which the tool touches.
+  A `versions.json` beside your corpus zips is never read now and can be
+  deleted. And a `source_version` left in your settings file by an earlier
+  release is dropped the next time anything is saved; `VCFCF_MIGRATOR_SOURCE_VERSION`
+  is named on stderr if it is still set, rather than obeyed or ignored in
+  silence.
+
 ## v0.1.0 (2026-09-15)
 
 - Three from the external review, each on a guarantee this release makes.

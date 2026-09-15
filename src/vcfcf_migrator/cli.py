@@ -365,6 +365,21 @@ def open_run_log(args, argv: List[str]) -> _runlog.Log:
     return log
 
 
+def say_what_is_ignored() -> None:
+    """Name any environment variable that is set and no longer does anything.
+
+    A flag this tool has dropped is a loud usage error, because argparse
+    refuses what it does not know. An environment variable cannot be refused
+    the same way without making the tool unrunnable for anyone who exported it
+    in a shell profile, which is a permanent cost for a variable that is
+    merely inert. So it is said once, on stderr, and the run carries on.
+    """
+    for name, why in _settings.obsolete_env():
+        print(f"vcfcf-migrator: {name} is set and is no longer used: {why}",
+              file=sys.stderr)
+        _runlog.warn("setting.ignored", setting=name, reason=_runlog.prose(why))
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     given = list(argv) if argv is not None else sys.argv[1:]
@@ -377,6 +392,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (_runlog.BadLogSetting, OSError) as e:
         print(f"vcfcf-migrator: {e}", file=sys.stderr)
         return 2
+    say_what_is_ignored()
     command = COMMANDS.get(args.command)
     if command is None:
         parser.print_help()

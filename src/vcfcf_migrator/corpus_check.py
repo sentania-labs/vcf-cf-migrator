@@ -7,8 +7,8 @@ tree, a preview of every object and a select-all build on each, then reads
 the bundle back and checks both halves of the pass-through contract: every
 document byte-identical to the source's, and every rebuilt container
 structurally identical, since a select-all drops nothing. One line per zip:
-ok with counts, refused with the reason, or error. Its output goes in a PR
-body; CI cannot run it and does not try.
+ok with counts, or error with what went wrong. Its output goes in a PR body;
+CI cannot run it and does not try.
 
 The preview pass renders every object rather than sampling: a renderer that
 throws does so on one document shape, and a sample is exactly how that shape
@@ -22,8 +22,7 @@ the admin's own data and a tool that writes there is a tool that can corrupt
 it. Every zip in the directory is checked the same way; nothing has to be
 declared about any of them.
 
-Exit status: non-zero only on an error. A refusal is an answer, not a
-failure: it is the tool declining to guess.
+Exit status: non-zero only on an error.
 """
 from __future__ import annotations
 

@@ -22,10 +22,21 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 ENV_CORPUS = "VCFCF_MIGRATOR_CORPUS"
 ENV_CONFIG_DIR = "VCFCF_MIGRATOR_CONFIG_DIR"
+
+# Settings and environment variables this tool used to take and no longer
+# does. They are dropped rather than ignored: ``save_settings`` merges, so a
+# file written by a release that still had the key would otherwise carry it
+# for ever, and a variable exported in a shell profile would go on looking
+# like it did something. ``obsolete_env()`` is what the CLI says out loud.
+OBSOLETE_SETTINGS = ("source_version",)
+OBSOLETE_ENV = {
+    "VCFCF_MIGRATOR_SOURCE_VERSION":
+        "the tool no longer asks which version an export came from, so this is ignored",
+}
 DEFAULT_CORPUS = "corpus"
 APP_DIR_NAME = "vcfcf-migrator"
 SETTINGS_FILE = "settings.json"
@@ -50,13 +61,28 @@ def settings_path() -> Path:
 
 
 def load_settings() -> dict:
-    """The settings file as a dict; empty when absent or unreadable."""
+    """The settings file as a dict; empty when absent or unreadable.
+
+    An obsolete key is dropped here rather than left in place, so it goes out
+    of the file the next time anything is saved.
+    """
     path = settings_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    for key in OBSOLETE_SETTINGS:
+        data.pop(key, None)
+    return data
+
+
+def obsolete_env() -> List[Tuple[str, str]]:
+    """Environment variables that are set and no longer mean anything, each
+    with the sentence to say about it."""
+    return [(name, why) for name, why in sorted(OBSOLETE_ENV.items())
+            if os.environ.get(name)]
 
 
 def save_settings(values: dict) -> Path:
