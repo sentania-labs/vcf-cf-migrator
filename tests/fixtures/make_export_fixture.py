@@ -179,6 +179,9 @@ def _view_controls(sm_id: str) -> str:
     """
     columns = (
         (f"Super Metric|sm_{sm_id}", "[Fixture] Cluster Score", "false", ""),
+        # No display name. The preview has to resolve this through the graph
+        # or print a uuid, which is the whole point of passing the graph in.
+        (f"Super Metric|sm_{sm_id}", "", "false", ""),
         ("cpu|usage_average", "CPU Usage", "false", "percent"),
         ("summary|parentCluster", "Cluster", "true", ""),
     )
@@ -345,7 +348,8 @@ def _laid_out_widgets() -> list:
          # The nested shape every corpus widget carries.
          "config": {"title": "[Fixture] CPU over time",
                     "selfProvider": {"selfProvider": False},
-                    "metric": _kind_metric("cpu|usage_average", "CPU|Usage", "percent")}},
+                    "metric": _kind_metric(f"Super Metric|sm_{SM_IDS[1]}",
+                                           "CPU|Usage", "percent")}},
         {"type": "SparklineChart", "title": "[Fixture] Latency sparkline",
          "gridsterCoords": {"x": 7, "y": 7, "w": 6, "h": 5},
          "config": {"title": "[Fixture] Latency sparkline",
@@ -354,7 +358,7 @@ def _laid_out_widgets() -> list:
         {"type": "ParetoAnalysis", "title": "[Fixture] Top consumers",
          "gridsterCoords": {"x": 1, "y": 13, "w": 4, "h": 6},
          "config": {"title": "[Fixture] Top consumers", "barsCount": 8,
-                    "metric": {"metricKey": "mem|consumed_average",
+                    "metric": {"metricKey": f"Super Metric|sm_{SM_IDS[1]}",
                                "name": "Memory|Consumed"},
                     "metricName": "Memory consumed",
                     "metricUnit": {"metricUnitId": "gb", "metricUnitName": "GB"}}},
@@ -364,7 +368,11 @@ def _laid_out_widgets() -> list:
                     # The shape all 41 corpus heatmaps carry: the metric is a
                     # pair of key and label, not a bare key. Reading it with
                     # str() printed the dict onto the page.
-                    "configs": [{"colorBy": {"metricKey": "cpu|usage_average",
+                    # Coloured by a super metric, because that is what the
+                    # corpus heatmaps do and it is the case that used to print
+                    # "CPU Usage % | Super Metric|sm_<uuid>" onto the page. A
+                    # plain metric key here left that path untested.
+                    "configs": [{"colorBy": {"metricKey": f"Super Metric|sm_{SM_IDS[1]}",
                                              "value": "CPU Usage %"},
                                  "sizeBy": {"metricKey": "cpu|demandmhz",
                                             "value": "CPU Demand"}}]}},
@@ -380,7 +388,8 @@ def _laid_out_widgets() -> list:
          "gridsterCoords": {"x": 7, "y": 49, "w": 6, "h": 4},
          "config": {"title": "[Fixture] Driven properties",
                     "selfProvider": {"selfProvider": False},
-                    "metric": _kind_metric("config|hardware|num_Cpu", "Hardware|vCPUs")}},
+                    "metric": _kind_metric(f"Super Metric|sm_{SM_IDS[1]}",
+                                           "Hardware|vCPUs")}},
         # No config at all, a saved-state blob, and it drives nothing: the
         # widget is configured where this preview does not read.
         {"type": "AlertList", "title": "[Fixture] Layout kept in state",
@@ -510,7 +519,8 @@ def _laid_out_widgets() -> list:
         {"type": "HealthChart", "title": "[Fixture] Health", "id": WIDGET_HEALTH,
          "gridsterCoords": {"x": 1, "y": 25, "w": 6, "h": 5},
          "config": {"title": "[Fixture] Health", "mode": "all",
-                    "metricName": "Badge|Health", "metricKey": "badge|health",
+                    "metricName": "Badge|Health",
+                    "metricKey": f"Super Metric|sm_{SM_IDS[1]}",
                     "metricUnit": {"metricUnitId": -1,
                                    "metricUnitName": "Default Unit"}}},
         {"type": "Section", "title": "[Fixture] Second half",
