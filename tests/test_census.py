@@ -161,6 +161,57 @@ def _two_copies_classifying_differently(tmp_path):
     return directory
 
 
+def _two_copies_disagreeing_on_code_and_subject(tmp_path):
+    """Two exports of one dashboard whose copies disagree in two different
+    ways at once, on different widgets.
+
+    Copy b drops one interaction, so two widget identities change subject (the
+    selector stops being one, the widget it fed stops being fed), and blanks a
+    third widget's configuration, so that identity changes code while its
+    subject stays put. The three figures the report prints about divergence
+    are therefore all different from one another, which is what makes an
+    assertion on any of them say something.
+    """
+    import io
+    import json
+    import zipfile
+
+    from make_export_fixture import WIDGET_BARE_SELECTOR
+
+    directory = tmp_path / "corpus"
+    directory.mkdir()
+    (directory / "a.zip").write_bytes(build_export_zip())
+
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name in src.namelist():
+            data = src.read(name)
+            if name.startswith("dashboards/"):
+                inner = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:
+                    with zipfile.ZipFile(inner, "w") as w:
+                        for member in dash_zip.namelist():
+                            body = dash_zip.read(member)
+                            if member.endswith("dashboard.json"):
+                                doc = json.loads(body)
+                                for dash in doc["dashboards"]:
+                                    dash["widgetInteractions"] = [
+                                        entry for entry in dash.get("widgetInteractions", [])
+                                        if entry.get("widgetIdProvider")
+                                        != WIDGET_BARE_SELECTOR]
+                                    for widget in dash.get("widgets", []):
+                                        if widget.get("title") == "[Fixture] Health":
+                                            widget["config"] = {}
+                                            widget.pop("states", None)
+                                body = json.dumps(doc).encode()
+                            w.writestr(member, body)
+                data = inner.getvalue()
+            z.writestr(name, data)
+    (directory / "b.zip").write_bytes(out.getvalue())
+    return directory
+
+
 def test_a_widget_its_copies_classify_differently_is_reported_not_picked(tmp_path):
     """No tie-break: an earlier version sorted, which silently picked clean
     for widgets and empty for objects. A classification the exports disagree
@@ -422,9 +473,14 @@ def test_every_block_sums_to_the_figure_its_note_claims(tmp_path):
     corpus whose copies disagree, so a future edit cannot put the note and the
     arithmetic back out of step.
     """
-    directory = _two_copies_classifying_differently(tmp_path)
+    directory = _two_copies_disagreeing_on_code_and_subject(tmp_path)
     report = corpus_census.walk(directory, "9.0.2")
-    assert report["divergent widgets"] >= 1, "the fixture must have a disagreement"
+    # All three divergence figures differ, so no assertion below is vacuous:
+    # a block that quietly counted divergent copies would print a different
+    # number from the one its note claims.
+    assert report["divergent widgets"] > report["divergent widget subjects"] > 0
+    assert (report["widgets disputed as carrying nothing"]
+            != report["divergent widgets"])
     text = corpus_census.render(report)
     blocks = _blocks(text)
 
@@ -450,6 +506,14 @@ def test_every_block_sums_to_the_figure_its_note_claims(tmp_path):
     object_note = objects_block[1][0]
     assert str(report["objects"] - report["divergent objects"]) in object_note
 
+    # The disputed figure counts divergent identities that carry *nothing* in
+    # at least one copy, not every divergent identity: this fixture has three
+    # of the second and two of the first, so dropping the filter prints the
+    # wrong number here.
+    assert report["widgets disputed as carrying nothing"] == 2
+    assert report["divergent widgets"] == 3
+    assert f"and {report['widgets disputed as carrying nothing']} of those" in widget_note
+
     # The subject block leaves out only subject disagreements, which is a
     # different set from the code disagreements the other blocks leave out.
     assert (report["widgets with a subject"]
@@ -461,7 +525,7 @@ def test_every_block_sums_to_the_figure_its_note_claims(tmp_path):
 def test_the_header_exempts_the_two_agreed_only_totals(tmp_path):
     """"The totals count every identity" is false for the two carrying-nothing
     counts, which are built from agreed copies. The header says so."""
-    directory = _two_copies_classifying_differently(tmp_path)
+    directory = _two_copies_disagreeing_on_code_and_subject(tmp_path)
     report = corpus_census.walk(directory, "9.0.2")
     text = corpus_census.render(report)
     header = text.splitlines()[1]
