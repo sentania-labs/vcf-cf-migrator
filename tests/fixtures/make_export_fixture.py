@@ -22,6 +22,18 @@ import sys
 import zipfile
 from pathlib import Path
 
+# Invented people and invented secrets. Nothing here comes from any instance:
+# the log's exclusion rules are a correctness requirement, so the committed
+# fixture has to carry something of every excluded class for the suite to
+# prove they are excluded.
+PERSON_USER_NAME = "fixture-operator"
+PERSON_DISPLAY_NAME = "Fixture Administrator"
+PERSON_DISPLAY_NAME_2 = "Fixture Operator"
+PERSON_MAIL = "fixture.admin@example.invalid"
+PERSON_SERVICE_ACCOUNT = "fixture-service-account"
+SECRET_CIPHER_TEXT = "ENC(invented-cipher-text-not-a-secret)"
+SECRET_TOKEN = "invented-bearer-token-not-a-secret"
+
 OWNER = "aaaa1111-0000-4000-8000-00000000000a"
 OWNER_2 = "bbbb2222-0000-4000-8000-00000000000b"  # shares the dashboard with OWNER
 MARKER = "1757800000000000000L.v1"
@@ -712,12 +724,18 @@ def build_export_zip(without=()) -> bytes:
             {"id": TEMPLATE_ID_2, "Name": "[Fixture] Host template", "pluginTypeId": "StandardEmailPlugin"},
         ],
     }]}}
-    outbound = {"serviceCredentials": [], "exportId": "fixture", "plugins": [{
+    # An invented cipher text and an invented token, so the committed tier can
+    # prove the log excludes an export's encrypted values as well as its
+    # people. Neither is a real secret and neither decrypts to anything.
+    outbound = {"serviceCredentials": [
+        {"id": "c0ffee00-0000-4000-8000-00000000c0de",
+         "userName": PERSON_SERVICE_ACCOUNT, "password": SECRET_CIPHER_TEXT}],
+        "exportId": "fixture", "plugins": [{
         "pluginType": "StandardEmailPlugin",
         # "false" as a string: JSON writes real booleans today, and nothing
         # stops an export writing the word.
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": "false",
-                         "resIdent": []},
+                         "authToken": SECRET_TOKEN, "resIdent": []},
     }]}
     manifest = {"dashboards": 4, "views": 4, "superMetrics": 4, "customGroups": 3, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
@@ -729,9 +747,15 @@ def build_export_zip(without=()) -> bytes:
         ("configuration.json", json.dumps(manifest)),
         ("views.zip", views_inner.getvalue()),
         # Real exports write {"sources": [], "users": [{"userId": ...}, ...]}.
+        # Every person value here is invented. They exist so the log's
+        # exclusion rules have something to exclude in the committed tier:
+        # a user name, a display name and a mail address, none of them from
+        # any real instance.
         ("usermappings.json", json.dumps({"sources": [], "users": [
-            {"userName": "admin", "userId": OWNER},
-            {"userName": "operator", "userId": OWNER_2}]})),
+            {"userName": "admin", "userId": OWNER, "displayName": PERSON_DISPLAY_NAME,
+             "emailAddress": PERSON_MAIL},
+            {"userName": PERSON_USER_NAME, "userId": OWNER_2,
+             "displayName": PERSON_DISPLAY_NAME_2}]})),
         (f"dashboards/{OWNER}", dash_inner),
         (f"dashboardsharings/{OWNER}",
          json.dumps([{"groupName": "Everyone", "sourceType": "LOCAL",
