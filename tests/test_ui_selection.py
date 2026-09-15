@@ -220,12 +220,18 @@ def test_previewing_something_absent_is_refused(state):
 def test_the_page_carries_no_external_resource(state):
     state.toggle(DASH, on=True)
     state.set_preview(DASH)
-    page = state.render()
-    assert "http://" not in page and "https://" not in page
-    assert "<script" not in page.lower()
-    assert "<img" not in page.lower()
-    assert "@import" not in page
-    assert not re.search(r"\bsrc\s*=", page)
+    # Every panel, not just the one that happens to be showing. Two of the
+    # three are behind tabs now, and a guard that renders only the default
+    # panel stops guarding the markup on the other two.
+    from vcfcf_migrator.ui import TABS
+    for tab in TABS:
+        state.tab = tab
+        page = state.render()
+        assert "http://" not in page and "https://" not in page, tab
+        assert "<script" not in page.lower(), tab
+        assert "<img" not in page.lower(), tab
+        assert "@import" not in page, tab
+        assert not re.search(r"\bsrc\s*=", page), tab
 
 
 def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
@@ -240,6 +246,19 @@ def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
     # The Browse button only renders when something can open a dialog, and a
     # guard that never sees it is not guarding it.
     state.file_picker = lambda: None
+    from vcfcf_migrator.ui import TABS
+    # Every panel. The Commands and Settings markup is behind a tab now, and
+    # a handler added there would be invisible to a guard that renders only
+    # the default panel.
+    for tab in TABS:
+        state.tab = tab
+        other = re.findall(r"""\son([a-z]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""",
+                           state.render())
+        assert {(n, v.strip("\"'")) for n, v in other} <= {
+            ("change",
+             "this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()")
+        }, f"unexpected inline handler on the {tab} panel: {other}"
+    state.tab = "preview"
     page = state.render()
     assert "Browse" in page
     # Single quoted, double quoted and unquoted, because this file writes both
@@ -365,6 +384,7 @@ ENDPOINT_FORMS = [
     # A cross-origin page must not be able to make the machine pop a file
     # dialog, let alone act on what it returns.
     ("/pick-export", {}),
+    ("/tab", {"tab": "settings"}),
 ]
 
 

@@ -70,6 +70,12 @@ header.top { position:sticky; top:0; z-index:5; background:var(--card);
 header.top .ver { color:var(--ink3); font-size:11.5px; font-family:ui-monospace,monospace }
 header.top form { display:flex; gap:8px; align-items:flex-end; flex:1 1 380px }
 header.top form.nogrow { flex:0 0 auto }
+nav.tabs { display:flex; gap:2px; margin:0 0 10px 0; border-bottom:1px solid var(--line) }
+nav.tabs form.tabform { margin:0 }
+nav.tabs button.tab { background:none; border:0; border-bottom:2px solid transparent;
+  padding:8px 14px; font:inherit; color:var(--ink2); cursor:pointer; border-radius:0 }
+nav.tabs button.tab:hover { color:var(--ink) }
+nav.tabs button.tab.on { color:var(--ink); border-bottom-color:var(--accent); font-weight:600 }
 header.top form .grow { flex:1 1 auto }
 
 .msg, .err { margin:10px 18px 0; padding:9px 12px; border-radius:6px; font-size:13px }
@@ -170,8 +176,7 @@ def render(state) -> str:
         _messages(state),
         "<div class='cols'>",
         f"<div class='left'>{_selection_panel(state)}{_tree_panel(state)}</div>",
-        f"<div class='right'>{_right_panel(state)}{_commands_panel(state)}"
-        f"{_settings_panel(state)}</div>",
+        f"<div class='right'>{_tabs(state)}{_current_panel(state)}</div>",
         "</div>",
     ])
     title = "vcfcf-migrator"
@@ -179,6 +184,41 @@ def render(state) -> str:
         title = f"vcfcf-migrator: {state.zip_path.rsplit('/', 1)[-1]}"
     return PAGE.format(title=e(title), style=STYLE,
                        preview_css=_preview.PREVIEW_CSS, body=body)
+
+
+# The right-hand column used to stack all three of these, so the settings
+# were a permanent block of controls sitting under whatever you were actually
+# looking at. One at a time, and the tab you are on is part of the page state
+# because every action redraws the whole page.
+# Labels only. The keys come from ui.TABS, which is what /tab validates
+# against: two lists would let a tab render a button that every click refuses.
+_TAB_LABELS = {"preview": "Preview", "commands": "Commands", "settings": "Settings"}
+
+
+def _tabs(state) -> str:
+    out = ["<nav class='tabs' aria-label='panels'>"]
+    from vcfcf_migrator.ui import TABS
+
+    for key in TABS:
+        label = _TAB_LABELS.get(key, key.title())
+        here = getattr(state, "tab", "preview") == key
+        out.append(
+            "<form method='post' action='/tab' class='tabform'>"
+            f"<input type='hidden' name='tab' value='{key}'>"
+            f"<button type='submit' class='tab{' on' if here else ''}'"
+            + (" aria-current='true'" if here else "")
+            + f">{e(label)}</button></form>")
+    out.append("</nav>")
+    return "".join(out)
+
+
+def _current_panel(state) -> str:
+    tab = getattr(state, "tab", "preview")
+    if tab == "commands":
+        return _commands_panel(state)
+    if tab == "settings":
+        return _settings_panel(state)
+    return _right_panel(state)
 
 
 def _header(state) -> str:
@@ -485,11 +525,6 @@ def _right_panel(state) -> str:
         parts.append("<h2>Start here</h2><p class='note'>Give the page a content export "
                      "zip at the top. Nothing leaves this machine: the tool reads the "
                      "zip, and the page is served on 127.0.0.1 only.</p>")
-    if state.listing:
-        parts += ["<h2 style='margin-top:18px'>Listing</h2>", f"<pre>{e(state.listing)}</pre>"]
-    if state.command_output:
-        parts += ["<h2 style='margin-top:18px'>Command output</h2>",
-                  f"<pre>{e(state.command_output)}</pre>"]
     parts.append("</div>")
     return "".join(parts)
 
@@ -531,7 +566,18 @@ def _commands_panel(state) -> str:
         parts.append("<form method='post' action='/run' style='display:inline'>"
                      f"<input type='hidden' name='cmd' value='{cmd}'>"
                      + _button(f"show the {cmd} command", ghost=True) + "</form>")
-    parts += ["</div>", "</div>"]
+    parts += ["</div>"]
+    # What the buttons above produce. This used to render on the preview
+    # panel, which was harmless while everything was on one page and became a
+    # bug the moment they were separated: running `tree` moved you here and
+    # left the tree behind on the panel you had just left.
+    if state.listing:
+        parts += ["<h2 style='margin-top:18px'>Listing</h2>",
+                  f"<pre>{e(state.listing)}</pre>"]
+    if state.command_output:
+        parts += ["<h2 style='margin-top:18px'>Command output</h2>",
+                  f"<pre>{e(state.command_output)}</pre>"]
+    parts += ["</div>"]
     return "".join(parts)
 
 

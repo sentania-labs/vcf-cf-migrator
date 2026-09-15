@@ -444,6 +444,8 @@ def test_a_head_event_written_twice_keeps_one_slot():
 
 
 def test_the_page_has_a_control_for_the_log_file_and_the_level(state):
+    # These live on the Settings panel, which is one of three tabs now.
+    state.tab = "settings"
     page = state.render()
     assert "Run log file" in page and "Log level" in page
     for level in runlog.LEVEL_NAMES:
@@ -452,6 +454,7 @@ def test_the_page_has_a_control_for_the_log_file_and_the_level(state):
 
 
 def test_the_diagnostics_button_names_what_the_file_holds(state):
+    state.tab = "settings"
     page = state.render()
     assert ("Save the run header, the export&#x27;s fingerprint, every log event and the "
             "bundle&#x27;s manifest to one file") in page

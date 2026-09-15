@@ -125,6 +125,10 @@ class PageState:
         # rather than name the file. The page shows the Browse button only
         # when there is something behind it.
         self.file_picker = None
+        # Which of the right-hand panels is showing. Server-side, because every
+        # action re-renders the whole page: a tab remembered only in the
+        # browser would snap back to the first one on every click.
+        self.tab = "preview"
         self.message = ""
         self.error = ""
         self.listing = ""
@@ -573,6 +577,21 @@ def _act_open(state: "PageState", form: dict) -> str:
     return ""
 
 
+# The right-hand panels, and which action lands you on which. An action whose
+# output appears on a panel has to move you to that panel, or the button
+# appears to do nothing at all.
+TABS = ("preview", "commands", "settings")
+
+
+def _act_tab(state: "PageState", form: dict) -> str:
+    wanted = (form.get("tab") or "").strip()
+    if wanted in TABS:
+        state.tab = wanted
+    else:
+        state.error = f"there is no {wanted!r} panel"
+    return ""
+
+
 def _act_pick_export(state: "PageState", _form: dict) -> str:
     """Open the machine's own file dialog and load whatever comes back.
 
@@ -604,11 +623,13 @@ def _act_pick_export(state: "PageState", _form: dict) -> str:
 
 
 def _act_inspect(state: "PageState", form: dict) -> str:
+    state.tab = "commands"
     state.run_inspect(form.get("zip", "").strip(), as_json=form.get("json") == "1")
     return ""
 
 
 def _act_tree(state: "PageState", form: dict) -> str:
+    state.tab = "commands"
     state.run_tree(as_json=form.get("json") == "1")
     return ""
 
@@ -637,6 +658,7 @@ def _act_apply_lines(state: "PageState", form: dict) -> str:
 
 
 def _act_preview(state: "PageState", form: dict) -> str:
+    state.tab = "preview"
     state.set_preview(form.get("key", ""))
     return ""
 
@@ -655,21 +677,32 @@ def _act_filter(state: "PageState", form: dict) -> str:
 
 
 def _act_build(state: "PageState", form: dict) -> str:
+    # The Build button sits in the left column, so it can be pressed from any
+    # panel, and the report it produces renders on the Preview one. Without
+    # this, building from Settings gives you the green banner and hides the
+    # report that says what the bundle carries and what it could not find.
+    state.tab = "preview"
     state.build(form.get("out", ""))
     return ""
 
 
 def _act_corpus_check(state: "PageState", form: dict) -> str:
+    state.tab = "commands"
     state.run_corpus_check(form.get("dir", "").strip())
     return ""
 
 
 def _act_diagnostics(state: "PageState", form: dict) -> str:
+    # No tab change, deliberately. What this produces is a file and a banner,
+    # and the banner renders above the panels, so there is nothing on any one
+    # panel to land on. Moving someone here anyway would be a rule invented to
+    # match the shape of the other actions rather than to help anyone.
     state.save_diagnostics(form.get("out", ""))
     return ""
 
 
 def _act_run(state: "PageState", form: dict) -> str:
+    state.tab = "commands"
     cmd = form.get("cmd", "")
     if cmd in COMMANDS:
         state.message = state.command_line(cmd)
@@ -682,6 +715,7 @@ ACTIONS = {
     "/settings": _act_settings,
     "/open": _act_open,
     "/pick-export": _act_pick_export,
+    "/tab": _act_tab,
     "/inspect": _act_inspect,
     "/tree": _act_tree,
     "/select": _act_select,
