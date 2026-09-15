@@ -238,9 +238,12 @@ def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
     state.toggle(DASH, on=True)
     state.set_preview(DASH)
     page = state.render()
-    handlers = re.findall(r"\son([a-z]+)\s*=\s*'([^']*)'", page)
-    assert {(name, value) for name, value in handlers} == {
-        ("change", "this.form.submit()")}, handlers
+    # Single quoted, double quoted and unquoted, because this file writes both
+    # quotings and a guard that sees one of them is not a guard: a reviewer
+    # added onclick="..." to every button and this test stayed green.
+    handlers = re.findall(r"""\son([a-z]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", page)
+    stripped = {(name, value.strip("\"'")) for name, value in handlers}
+    assert stripped == {("change", "this.form.submit()")}, handlers
     # One handler per tree checkbox, and each of those forms has a button.
     checkboxes = page.count("type='checkbox' class='tick'")
     assert len(handlers) == checkboxes

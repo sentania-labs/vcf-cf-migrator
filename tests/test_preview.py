@@ -14,12 +14,18 @@ import pytest
 from make_export_fixture import (
     DASHBOARD_ID,
     DASHBOARD_ID_2,
+    EMPTY_SM_ID,
+    EMPTY_VIEW_ID,
     GROUP_NAME,
+    GROUP_NAME_3,
     OWNER,
     OWNER_2,
     REPORT_ID,
     SM_IDS,
     VIEW_IDS,
+    WIDGET_ORPHAN,
+    WIDGET_PROVIDER,
+    WIDGET_RECEIVER,
 )
 from vcfcf_migrator import graph as _graph
 from vcfcf_migrator import preview as _preview
@@ -91,7 +97,7 @@ def test_every_widget_type_the_preview_claims_is_exercised(built):
     ("[Fixture] Open alerts", "[Fixture] Cluster CPU alert"),  # AlertList, by name
     ("[Fixture] Clusters", "Memory|Usage"),                    # ResourceList
     ("[Fixture] Health", "badge|health"),                      # HealthChart
-    ("[Fixture] Second half", "pv-section"),                   # Section
+    ("[Fixture] Second half", "[Fixture] Second half"),        # Section, see below
 ])
 def test_each_laid_out_widget_draws_what_the_export_named(built, title, expected):
     """Each renderer puts the export's own label or key on the page. A
@@ -101,6 +107,21 @@ def test_each_laid_out_widget_draws_what_the_export_named(built, title, expected
     page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
     assert title in page
     assert expected in page
+
+
+def test_the_section_renderer_draws_a_divider_and_nothing_else(built):
+    """A Section is a divider: its renderer deliberately returns no body, and
+    the frame carries the heading alone. Asserting the frame's class would
+    assert what ``_widget_cell`` derives from the widget type, which is true
+    whatever the renderer does."""
+    assert _preview.WIDGET_RENDERERS["Section"]({"title": "x"}, {}) == ""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    row = re.search(r"<div class='pv-section'[^>]*>(.*?)</div>", page, re.S)
+    assert row, "the Section widget should render as a divider row"
+    assert "[Fixture] Second half" in row.group(1)
+    # Heading only: no table, no chart, no placeholder inside the divider.
+    assert not re.search(r"<(table|svg|div)\b", row.group(1))
 
 
 def test_the_chart_widgets_draw_a_chart_and_the_heatmap_draws_cells(built):
@@ -425,3 +446,211 @@ def test_preview_filename_is_safe_for_a_file_system(built):
     name = preview_filename(node)
     assert "/" not in name and "\\" not in name and " " not in name
     assert name.startswith("preview-customgroup-") and name.endswith(".html")
+
+
+# ---------------------------------------------------------------------------
+# Never an empty preview: the three states
+# ---------------------------------------------------------------------------
+
+def test_no_preview_renders_a_box_that_says_nothing(built):
+    """The rule, asserted over every object the fixture carries: a widget
+    frame always has a body, and that body always says something."""
+    _members, graph = built
+    frame = re.compile(r"<div class='pv-w[^']*'[^>]*>(.*?)</h3>(.*?)(?=<div class='pv-w|$)",
+                       re.S)
+    for node in graph.ordered():
+        page = _preview.render_page(graph, node)
+        for _head, body in frame.findall(page):
+            text = re.sub(r"<[^>]+>", "", body).strip()
+            assert text, f"{node.key} has a widget frame with an empty body"
+
+
+def test_an_empty_widget_of_an_undrawn_type_is_empty_first(built):
+    """The Skittles case. State 3 beats state 2: the fact the admin can act on
+    is that the widget carries no configuration, not that this page does not
+    draw Skittles."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    empty = {title: reason for title, _kind, reason in preview.empty_widgets}
+    assert "[Fixture] Unfinished widget" in empty
+    assert "carries no configuration at all" in empty["[Fixture] Unfinished widget"]
+    # And it is not counted as a type this page cannot draw.
+    assert "Skittles" not in preview.unhandled_types
+    page = _preview.render_page(graph, node)
+    assert "nothing to show" in page
+    # The wording is about the content, never about the tool.
+    for _title, _kind, reason in preview.empty_widgets:
+        assert "this preview" not in reason.lower()
+        assert "lay out" not in reason.lower()
+
+
+def test_an_empty_widget_of_a_drawn_type_says_what_is_missing(built):
+    _members, graph = built
+    preview = _preview.build(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}"))
+    empty = {title: reason for title, _kind, reason in preview.empty_widgets}
+    assert "a title and nothing else" in empty["[Fixture] Empty scoreboard"]
+
+
+def test_the_notes_count_the_empty_widgets(built):
+    _members, graph = built
+    preview = _preview.build(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}"))
+    note = [n for n in preview.notes if "with nothing to show" in n]
+    assert note, preview.notes
+    assert str(len(preview.empty_widgets)) in note[0]
+    assert "[Fixture] Unfinished widget" in note[0]
+
+
+def test_the_three_states_are_distinguishable_at_a_glance(built):
+    """Drawn, named-but-not-drawn, and empty each get their own markup, so a
+    reader can tell them apart without reading the sentences."""
+    _members, graph = built
+    # State 3 and state 1 live on the Cluster Overview, state 2 (a Geo widget
+    # that does carry a configuration) on the VM Overview.
+    drawn_and_empty = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    named = page_for(graph, f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}")
+    assert "class='pv-nothing'" in drawn_and_empty   # state 3
+    assert "class='pv-tbl'" in drawn_and_empty       # state 1
+    assert "class='pv-placeholder'" in named         # state 2
+    assert "does not lay out this type" in named
+    # And the three never collapse into one another's markup.
+    assert "class='pv-nothing'" not in named
+
+
+@pytest.mark.parametrize("prefix,expected", [
+    (f"view:{EMPTY_VIEW_ID}", "declares no columns"),
+    (f"supermetric:{EMPTY_SM_ID}", "empty formula"),
+    (f"customgroup:{GROUP_NAME_3}", "no membership rules"),
+])
+def test_an_object_carrying_nothing_says_so_in_its_own_words(built, prefix, expected):
+    _members, graph = built
+    node = node_for(graph, prefix)
+    preview = _preview.build(graph, node)
+    assert preview.empty_reason, f"{prefix} should be state 3"
+    assert expected in preview.empty_reason
+    assert "nothing to show" in _preview.render_page(graph, node)
+    assert "this preview" not in preview.empty_reason.lower()
+
+
+def test_an_empty_object_is_not_described_as_a_tool_limitation(built):
+    _members, graph = built
+    for node in graph.ordered():
+        preview = _preview.build(graph, node)
+        if preview.empty_reason:
+            assert "does not lay out" not in preview.empty_reason
+
+
+# ---------------------------------------------------------------------------
+# Relationships: which widget drives which
+# ---------------------------------------------------------------------------
+
+def test_the_wiring_is_read_from_the_document(built):
+    _members, graph = built
+    doc = _preview._json_doc(
+        _preview.raw_document(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")))
+    wiring = _preview.read_wiring(doc, doc["widgets"])
+    assert wiring.providers[WIDGET_RECEIVER] == [(WIDGET_PROVIDER, "resourceId")]
+    assert wiring.receivers[WIDGET_PROVIDER] == [(WIDGET_RECEIVER, "resourceId")]
+    assert wiring.title(WIDGET_PROVIDER) == "[Fixture] Clusters"
+
+
+def test_a_receiver_names_its_provider_and_a_provider_says_what_it_feeds(built):
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    assert "driven by [Fixture] Clusters" in page
+    assert "drives 1 widget" in page
+    assert "is-receiver" in page and "is-provider" in page
+    # The flow is visible above the layout, not only inside the boxes.
+    assert "This dashboard is interaction driven" in page
+    assert "[Fixture] Clusters</b> <span class='arrow'>drives</span> " \
+           "[Fixture] CPU over time" in page
+
+
+def test_a_receiver_labels_whose_selection_its_mock_values_stand_for(built):
+    """The chosen presentation: the widget is drawn, so its columns and
+    metrics can be recognised, and the values are labelled as standing for one
+    object the provider would supply."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    assert "values below stand for one object picked in [Fixture] Clusters" in page
+    assert "shows nothing until that selection is made" in page
+
+
+def test_a_receiver_nothing_feeds_will_never_show_data(built):
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    empty = {title: reason for title, _kind, reason in preview.empty_widgets}
+    assert "[Fixture] Orphaned trend" in empty
+    # The widget the fixture marks as the orphan, by id, so renaming the title
+    # cannot quietly make this test assert nothing.
+    doc = _preview._json_doc(_preview.raw_document(graph, node))
+    orphan = [w for w in doc["widgets"] if w.get("id") == WIDGET_ORPHAN]
+    assert orphan and _preview._widget_title(orphan[0]) == "[Fixture] Orphaned trend"
+    assert "nothing on this dashboard feeds it" in empty["[Fixture] Orphaned trend"]
+    assert "will never show data" in empty["[Fixture] Orphaned trend"]
+    assert preview.orphan_receivers == 1
+    assert any("never show data" in note for note in preview.notes)
+
+
+def test_the_notes_count_the_widgets_driven_by_a_selection(built):
+    _members, graph = built
+    preview = _preview.build(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}"))
+    assert preview.receivers == 1 and preview.providers == 1
+    assert any("driven by the object picked in another widget" in n for n in preview.notes)
+
+
+def test_a_dashboard_with_no_interactions_says_nothing_about_wiring(built):
+    """The VM Overview dashboard has no widgetInteractions, so no flow block,
+    no badges, and no note about selections."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}")
+    preview = _preview.build(graph, node)
+    page = _preview.render_page(graph, node)
+    assert preview.receivers == 0 and preview.providers == 0
+    assert "This dashboard is interaction driven" not in page
+    assert "class='pv-flow" not in page
+    assert not any("driven by the object picked" in n for n in preview.notes)
+
+
+def test_wiring_never_claims_a_relationship_it_cannot_name_on_both_ends(built):
+    """An interaction naming a widget that is not in the document is dropped
+    rather than rendered as a relationship to something unnamed. No corpus
+    entry does this; the guard is what keeps a future one honest."""
+    _members, graph = built
+    doc = _preview._json_doc(
+        _preview.raw_document(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")))
+    doc["widgetInteractions"] = [
+        {"widgetIdProvider": WIDGET_PROVIDER, "type": "resourceId",
+         "widgetIdReceiver": "not-a-widget-in-this-document"}]
+    wiring = _preview.read_wiring(doc, doc["widgets"])
+    assert wiring.providers == {} and wiring.receivers == {}
+
+
+def test_a_receiver_on_an_unwired_dashboard_takes_its_subject_from_outside(built):
+    """Two different situations wear the same two keys, and the corpus
+    separates them cleanly. A dashboard that wires nothing at all and whose
+    widgets all wait on a selection is a dashboard opened in an object's
+    context, not a broken one: 117 widgets in the corpus are like that, whole
+    Summary Pages dashboards where seven of eight widgets wait. Calling those
+    broken would be inventing a fault."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}")
+    preview = _preview.build(graph, node)
+    assert preview.context_driven == 1
+    assert preview.orphan_receivers == 0
+    page = _preview.render_page(graph, node)
+    assert "takes its subject from a selection made outside this dashboard" in page
+    assert any("from outside this dashboard" in note for note in preview.notes)
+
+
+def test_the_nested_and_the_flat_self_provider_are_both_read():
+    """Every corpus widget nests it; the flat boolean is what the key's name
+    implies. Reading only the flat form treated 674 real widgets as 'not
+    stated', which would have missed the case this rule exists for."""
+    assert _preview._self_provider({"selfProvider": {"selfProvider": False}}) is False
+    assert _preview._self_provider({"selfProvider": False}) is False
+    assert _preview._self_provider({"selfProvider": {"selfProvider": True}}) is True
+    assert _preview._self_provider({"selfProvider": "false"}) is False
+    assert _preview._self_provider({}) is None
+    assert _preview._self_provider({"selfProvider": {"other": 1}}) is None

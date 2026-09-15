@@ -32,9 +32,18 @@ DASHBOARD_ID = "2d7b8c1e-4f11-4c7a-9a55-0c1f2e3d4a5b"
 # Only OWNER_2 has this one, so a selection can cross two owner members.
 DASHBOARD_ID_2 = "8e1c2d3f-5a6b-4c7d-9e8f-0a1b2c3d4e5f"
 VIEW_IDS = ("6e8310ed-1753-45a4-aacc-7f1025c03d11", "9a1b2c3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d")
+# A view whose document is present and declares no columns.
+EMPTY_VIEW_ID = "7b8c9d0e-1f2a-4b3c-8d4e-5f6a7b8c9d0e"
+# A super metric whose document is present and whose formula is empty.
+EMPTY_SM_ID = "44444444-4444-4444-8444-444444444444"
 SM_IDS = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
           "33333333-3333-4333-8333-333333333333")
 REPORT_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f"
+# Widget ids inside [Fixture] Cluster Overview: one drives another, and a
+# third waits on a selection nothing provides.
+WIDGET_PROVIDER = "4a5b6c7d-1111-4111-8111-0a1b2c3d4e5f"
+WIDGET_RECEIVER = "4a5b6c7d-2222-4222-8222-0a1b2c3d4e5f"
+WIDGET_ORPHAN = "4a5b6c7d-3333-4333-8333-0a1b2c3d4e5f"
 # A super metric uuid nothing in the fixture defines, so an edge to an object
 # the export does not carry can be exercised. Real exports are full of these.
 ABSENT_SM_ID = "deadbeef-0000-4000-8000-000000000001"
@@ -65,9 +74,11 @@ EXPECTED_ITEMS = {
     ("dashboard", "[Fixture] VM Overview", DASHBOARD_ID_2),
     ("view", "[Fixture] Cluster List", VIEW_IDS[0]),
     ("view", "[Fixture] VM List", VIEW_IDS[1]),
+    ("view", "[Fixture] Empty List", EMPTY_VIEW_ID),
     ("supermetric", "[Fixture] SM 1", SM_IDS[0]),
     ("supermetric", "[Fixture] SM 2", SM_IDS[1]),
     ("supermetric", "[Fixture] SM 3", SM_IDS[2]),
+    ("supermetric", "[Fixture] SM Empty", EMPTY_SM_ID),
     ("customgroup", GROUP_NAME, ""),
     ("customgroup", GROUP_NAME_2, ""),
     ("customgroup", GROUP_NAME_3, ""),
@@ -148,6 +159,14 @@ def _views_xml() -> str:
             VIEW_IDS, ("[Fixture] Cluster List", "[Fixture] VM List"), controls,
             presentations, providers)
     )
+    # A third view with no attributes selector at all: its document is here
+    # and declares no columns, so it shows an empty table wherever it is used.
+    defs += (f'<ViewDef id="{EMPTY_VIEW_ID}"><Title>[Fixture] Empty List</Title>'
+             '<Description>made up</Description>'
+             '<SubjectType adapterKind="VMWARE" resourceKind="ClusterComputeResource" type="self"/>'
+             '<Usage>dashboard</Usage>'
+             '<DataProviders><DataProvider dataType="list-view" id="dp-empty"/></DataProviders>'
+             '<Presentation type="list"/></ViewDef>')
     return f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Content><Views>{defs}</Views></Content>'
 
 
@@ -222,9 +241,13 @@ def _laid_out_widgets() -> list:
     ``_cluster_overview`` already cover.
     """
     return [
-        {"type": "MetricChart", "title": "[Fixture] CPU over time",
+        # Driven by the resource list below: selfProvider false, and an
+        # interaction naming it as the receiver.
+        {"type": "MetricChart", "title": "[Fixture] CPU over time", "id": WIDGET_RECEIVER,
          "gridsterCoords": {"x": 1, "y": 7, "w": 6, "h": 5},
+         # The nested shape every corpus widget carries.
          "config": {"title": "[Fixture] CPU over time",
+                    "selfProvider": {"selfProvider": False},
                     "metric": _kind_metric("cpu|usage_average", "CPU|Usage", "percent")}},
         {"type": "SparklineChart", "title": "[Fixture] Latency sparkline",
          "gridsterCoords": {"x": 7, "y": 7, "w": 6, "h": 5},
@@ -254,11 +277,28 @@ def _laid_out_widgets() -> list:
                     # The one alert this export carries, so the widget's rows
                     # can be checked against a name the preview resolved.
                     "alertDefinitions": ["AlertDefinition-VMWARE-Fixture_Cluster_CPU"]}},
-        {"type": "ResourceList", "title": "[Fixture] Clusters",
+        {"type": "ResourceList", "title": "[Fixture] Clusters", "id": WIDGET_PROVIDER,
          "gridsterCoords": {"x": 7, "y": 19, "w": 6, "h": 5},
          "config": {"title": "[Fixture] Clusters", "mode": "all",
                     "additionalColumns": [{"name": "Memory|Usage",
                                            "metricKey": "mem|usage_average"}]}},
+        # selfProvider false and nothing feeds it: on the real dashboard this
+        # widget is permanently blank, which is state 3, not a tool limit.
+        {"type": "SparklineChart", "title": "[Fixture] Orphaned trend",
+         "id": WIDGET_ORPHAN, "gridsterCoords": {"x": 7, "y": 25, "w": 6, "h": 5},
+         # The flat shape, which is what the key's name implies.
+         "config": {"title": "[Fixture] Orphaned trend", "selfProvider": False,
+                    "metric": _kind_metric("mem|usage_average", "Memory|Usage", "percent")}},
+        # State 3, the Skittles case: a widget whose config is an empty
+        # object. It shows nothing on the dashboard either, and saying that
+        # beats naming a type this preview does not draw.
+        {"type": "Skittles", "title": "[Fixture] Unfinished widget",
+         "gridsterCoords": {"x": 1, "y": 37, "w": 4, "h": 4}, "config": {}},
+        # State 3 on a type the preview does draw: a scoreboard carrying a
+        # title and nothing else.
+        {"type": "Scoreboard", "title": "[Fixture] Empty scoreboard",
+         "gridsterCoords": {"x": 5, "y": 37, "w": 4, "h": 4},
+         "config": {"title": "[Fixture] Empty scoreboard"}},
         {"type": "HealthChart", "title": "[Fixture] Health",
          "gridsterCoords": {"x": 1, "y": 25, "w": 6, "h": 5},
          "config": {"title": "[Fixture] Health", "mode": "all",
@@ -295,7 +335,12 @@ def _cluster_overview() -> dict:
              "config": {"metrics": [{"metricKey": f"Super Metric|sm_{SM_IDS[1]}"}],
                         "resource": [{"name": GROUP_NAME_2, "id": "resource:id:4_::_"}]}},
         ] + _laid_out_widgets(),
-        "widgetInteractions": [],
+        # The shape every corpus export writes: a flat list of
+        # provider/type/receiver, every id a widget in this same document.
+        "widgetInteractions": [
+            {"widgetIdProvider": WIDGET_PROVIDER, "type": "resourceId",
+             "widgetIdReceiver": WIDGET_RECEIVER},
+        ],
     }
 
 
@@ -313,8 +358,12 @@ def _vm_overview() -> dict:
                         "resource": {"resourceId": "resource:id:0_::_",
                                      "resourceName": GROUP_NAME,
                                      "resourceKindId": "002009ContainerEnvironment"}}},
+            # selfProvider false on a dashboard that wires nothing at all:
+            # its subject arrives from outside, the way it does for a
+            # dashboard opened in an object's context. Not a fault.
             {"type": "ProblemAlertsList", "gridsterCoords": {}, "tabId": "tab-one",
-             "config": {"resource": {"resourceId": "resource:id:1_::_",
+             "config": {"selfProvider": {"selfProvider": False},
+                        "resource": {"resourceId": "resource:id:1_::_",
                                      "resourceName": GROUP_NAME_3}}},
             # A widget type the preview does not lay out: it has to be named,
             # not drawn as something else.
@@ -390,6 +439,9 @@ def build_export_zip(without=()) -> bytes:
                     "formula": '${this, metric=Super Metric|@supermetric:"[Fixture] SM 3"} * 2',
                     "description": "", "unitId": "", "resourceKinds": []},
         # SM 3 names one that does not exist, which must be reported missing.
+        # An empty formula: the document is here and computes nothing.
+        EMPTY_SM_ID: {"name": "[Fixture] SM Empty", "formula": "", "description": "",
+                      "unitId": "", "resourceKinds": []},
         SM_IDS[2]: {"name": "[Fixture] SM 3",
                     "formula": f'${{this, metric=Super Metric|@supermetric:"{ABSENT_SM_NAME}"}}',
                     "description": "", "unitId": "", "resourceKinds": []},
@@ -474,7 +526,7 @@ def build_export_zip(without=()) -> bytes:
         "pluginType": "StandardEmailPlugin",
         "pluginConfig": {"pluginName": "[Fixture] Mail relay", "enabled": True, "resIdent": []},
     }]}
-    manifest = {"dashboards": 3, "views": 2, "superMetrics": 3, "customGroups": 3, "reports": 1,
+    manifest = {"dashboards": 3, "views": 3, "superMetrics": 4, "customGroups": 3, "reports": 1,
                 "symptomDefs": 1, "alertDefs": 1, "notificationRules": 2, "payloadTemplates": 2, "type": "CUSTOM",
                 "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 2}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'

@@ -53,7 +53,9 @@ def test_inspect_json_carries_the_same_items(export_zip, capsys):
     assert doc["counts"]["dashboard"] == EXPECTED_DASHBOARD_LISTINGS
     assert set(doc["carried"]) == EXPECTED_CARRIED
     assert doc["source_version"] is None
-    assert doc["counts"]["view"] == 2
+    # Derived from the fixture's own expectations rather than typed, so a
+    # fixture that grows one view does not fail here for the wrong reason.
+    assert doc["counts"]["view"] == sum(1 for kind, _n, _u in EXPECTED_ITEMS if kind == "view")
 
 
 def test_read_export_uses_the_core_readers_for_dashboards_and_supermetrics(export_zip):

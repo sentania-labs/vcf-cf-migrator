@@ -12,7 +12,7 @@ So the workflow asks here instead, and owns nothing:
     python tests/fixtures/ci_checks.py listing bundle.json --bundle
     python tests/fixtures/ci_checks.py floor          -> 8.10
     python tests/fixtures/ci_checks.py below-floor    -> 8.9
-    python tests/fixtures/ci_checks.py preview-object -> view:<fixture uuid>
+    python tests/fixtures/ci_checks.py preview-object -> dashboard:<uuid>@<owner>
     python tests/fixtures/ci_checks.py preview preview.html
 
 ``listing`` compares an ``inspect --json`` document against
@@ -33,10 +33,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from make_export_fixture import (  # noqa: E402
+    DASHBOARD_ID,
     EXPECTED_CARRIED,
     EXPECTED_DASHBOARD_LISTINGS,
     EXPECTED_ITEMS,
-    VIEW_IDS,
+    OWNER,
 )
 
 
@@ -56,8 +57,13 @@ def below_floor_text() -> str:
 
 def preview_object() -> str:
     """An object spelling the workflow can preview, taken from the fixture so
-    the workflow owns no identifier of its own."""
-    return f"view:{VIEW_IDS[0]}"
+    the workflow owns no identifier of its own.
+
+    A dashboard rather than a view: the dashboard carries one widget of every
+    type the preview draws, so the installed console script exercises the
+    renderers rather than only the view path.
+    """
+    return f"dashboard:{DASHBOARD_ID}@{OWNER}"
 
 
 def check_preview(text: str) -> str:
@@ -69,7 +75,12 @@ def check_preview(text: str) -> str:
     assert text.startswith("<!doctype html>"), text[:80]
     for forbidden in ("http://", "https://", "<script", "<img", "@import"):
         assert forbidden not in text.lower(), forbidden
-    assert "[Fixture] Cluster List" in text, "the view's own title is missing"
+    # Names from the export: the dashboard's own title, and the embedded
+    # view's. Plus the marks of two renderers actually running, so a preview
+    # that degraded to placeholders fails here.
+    for expected in ("[Fixture] Cluster Overview", "[Fixture] Cluster List",
+                     "<polyline", "pv-tiles"):
+        assert expected in text, f"{expected} is missing from the preview"
     return f"preview is self-contained HTML, {len(text)} bytes, no external reference"
 
 

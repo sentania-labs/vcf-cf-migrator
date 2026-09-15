@@ -23,6 +23,32 @@
   attributes listed, and no donut is drawn over buckets this tool does not
   read.
 
+  **No box ever says nothing.** Every widget and every object resolves to one
+  of three statements, visually distinct: drawn; carried but of a type this
+  page does not lay out, named; or carrying nothing, with what is missing said
+  plainly. The third wins over the second, because "this widget carries no
+  configuration at all" is a fact about the admin's content and "this preview
+  does not lay out Skittles" is a fact about the tool. It covers objects too:
+  a view with no columns, a super metric with an empty formula, an alert with
+  no symptom sets, a group with no membership rules, a dashboard with no
+  widgets. The notes count the empties. Census over the corpus: 82 of 1017
+  widgets and 4 of 802 objects carry nothing to show.
+
+  **The preview shows the dashboard's wiring.** `widgetInteractions` is read
+  and rendered: a summary above the grid naming which widget drives which, a
+  badge and a coloured edge per provider and receiver, and on a receiver a
+  line saying whose selection its mock values stand for. Values are shown
+  rather than an empty frame, because the preview exists so a widget can be
+  recognised and a blank box shows neither its columns nor its metrics; the
+  label is what keeps that honest. `selfProvider` is read in both the nested
+  and the flat spelling (every corpus widget nests it). A widget waiting on a
+  selection nothing feeds, on a dashboard that wires other widgets, is state 3
+  and will never show data; one on a dashboard that wires nothing at all takes
+  its subject from outside, which is how a dashboard opened in an object's
+  context works, and says that instead. Census: 148 dashboards, 109
+  interaction driven, 585 receiver widgets, 199 providers, 32 wired to
+  nothing, 117 context driven.
+
   Widths and order are the dashboard's own, heights are the preview's (taken
   from the content, so nothing is clipped), and the banner on every page says
   so. A widget the dashboard places outside its own declared columns widens

@@ -171,6 +171,35 @@ preview's, taken from the content so a table is never clipped, and every page
 says so above the layout. A widget the dashboard places outside its own
 declared columns widens the grid rather than being squashed into a sliver.
 
+**No box ever says nothing.** Every widget, and every object, resolves to one
+of three statements, and the three look different at a glance:
+
+1. here is the thing, drawn;
+2. the export carries this, but the preview does not lay out that type, named;
+3. the export carries nothing here, with what is missing said plainly.
+
+State 3 wins. An empty widget of a type the preview does not draw is empty
+first: "carries no configuration at all" is a fact about your content, which
+shows nothing on the real dashboard either and is usually an unfinished
+leftover, while "this preview does not lay out Skittles" is a fact about the
+tool. The same rule covers a view with no columns, a super metric with an
+empty formula, an alert with no symptom sets, a group with no membership
+rules and a dashboard with no widgets. The notes count the empties, so a
+fourteen-widget dashboard does not have to be read box by box.
+
+**The preview shows the dashboard's wiring.** Most widgets on a real
+dashboard do not choose their own subject: they show whatever object is
+picked in the widget that feeds them, and a preview that draws each one as
+though it stood alone hides the main thing about an interaction-driven
+dashboard. So the layout carries the flow: a summary above the grid naming
+which widget drives which, a badge and a coloured edge on each provider and
+receiver, and on a receiver a line saying whose selection its values stand
+for. A widget that waits on a selection nothing on the dashboard provides,
+while other widgets there are wired, is state 3: it will never show data. A
+widget that waits on a selection where the dashboard wires nothing at all
+takes its subject from outside, the way a dashboard opened in an object's
+context does, and says that instead.
+
 The file reaches nothing: inline CSS, inline SVG, no script, no font, no
 image, no CDN. It opens on a workstation with no route anywhere.
 
