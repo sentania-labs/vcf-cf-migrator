@@ -78,7 +78,7 @@ def test_the_page_shows_every_object_with_a_checkbox(state):
     assert page.count("type='checkbox'") >= len(state.graph.nodes)
     # Grouped by kind, with a count per group, so 66 dashboards do not arrive
     # as 66 undifferentiated rows.
-    assert "<details class='kindgroup'" in page
+    assert "class='kindgroup" in page
     assert "dashboard<span class='n'>" in page
 
 
@@ -385,6 +385,7 @@ ENDPOINT_FORMS = [
     # dialog, let alone act on what it returns.
     ("/pick-export", {}),
     ("/tab", {"tab": "settings"}),
+    ("/disclose", {"id": "kind:dashboard", "on": "1"}),
 ]
 
 

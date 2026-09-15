@@ -20,6 +20,7 @@ indented rows. A filter box narrows the whole thing to what the admin typed.
 """
 from __future__ import annotations
 
+import hashlib
 import html
 from typing import Dict, List, Optional, Sequence
 
@@ -101,12 +102,18 @@ header.top form .grow { flex:1 1 auto }
 .pill.on { background:var(--accent-soft); color:#12376f }
 
 .kindgroup { border-top:1px solid var(--line2); padding:2px 0 }
-.kindgroup > summary { cursor:pointer; padding:6px 2px; font-weight:600; font-size:13px;
+.discloser { margin:0 }\n
+.kindgroup > .discloser > .summary, .deps > .discloser > .summary {
+  background:none; border:0; border-radius:0; width:100%; text-align:left;
+  font:inherit; cursor:pointer }
+.kindgroup > .discloser > .summary { cursor:pointer; padding:6px 2px; font-weight:600; font-size:13px;
   list-style:none; display:flex; align-items:center; gap:8px }
-.kindgroup > summary::-webkit-details-marker { display:none }
-.kindgroup > summary::before { content:"\\25B8"; color:var(--ink3); font-size:11px }
-.kindgroup[open] > summary::before { content:"\\25BE" }
-.kindgroup > summary .n { margin-left:auto; color:var(--ink3); font-weight:400; font-size:12px }
+.kindgroup > .discloser > .summary::before { content:"\\25B8"; color:var(--ink3); font-size:11px }
+.kindgroup.on > .discloser > .summary::before { content:"\\25BE" }
+.deps > .discloser > .summary::before { content:"\\25B8"; color:var(--ink3); font-size:10px;
+  margin-right:4px }
+.deps.on > .discloser > .summary::before { content:"\\25BE" }
+.kindgroup > .discloser > .summary .n { margin-left:auto; color:var(--ink3); font-weight:400; font-size:12px }
 
 ul.tree { list-style:none; margin:0; padding:0 }
 ul.tree ul { list-style:none; margin:2px 0 4px; padding-left:14px;
@@ -123,7 +130,7 @@ li.node { padding:1px 0 }
 .row .kindtag { color:var(--ink3); font-size:11px }
 .row.preview-on { box-shadow:inset 0 0 0 2px var(--accent) }
 .tick { width:15px; height:15px; margin:0; accent-color:var(--accent) }
-details.deps > summary { cursor:pointer; font-size:11.5px; color:var(--ink2); padding:2px 6px }
+.deps > .discloser > .summary { font-size:11.5px; color:var(--ink2); padding:2px 6px }
 .missing { color:var(--warn); font-size:11.5px; padding:2px 6px }
 
 .stack { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end }
@@ -387,13 +394,49 @@ def _tree_panel(state) -> str:
             if not nodes:
                 continue
             parts.append(_kind_group(state, kind, nodes, open_default=False,
-                                     with_children=False))
+                                     with_children=False, section="viadep"))
     parts.append("</div>")
     return "".join(parts)
 
 
+def _disclosure(state, did: str, summary: str, body, open_default: bool,
+                cls: str = "kindgroup") -> str:
+    """A group that stays as the user left it.
+
+    This was a <details> element. That toggles in the browser and tells the
+    server nothing, so every action redrew the tree from its default and shut
+    whatever had been opened: ticking a checkbox collapsed the very list being
+    ticked. The summary is a form now, like every other control on the page,
+    so the state survives the redraw.
+    """
+    shown = state.disclosure.get(did, open_default)
+    # hidden='until-found' rather than a bare hidden: the browser can still
+    # find text inside and expand it to show a match, which is what a <details>
+    # did and what a long tree needs. A display:none rule of our own would
+    # defeat it, so there is deliberately none. Browsers without until-found
+    # treat the attribute as an ordinary hidden, which is the old behaviour.
+    shut_attr = "" if shown else " hidden='until-found'"
+    return ("<div class='" + cls + ("" if not shown else " on")
+            + f"' id='{e(anchor(did))}'>"
+            "<form method='post' action='/disclose' class='discloser'>"
+            f"<input type='hidden' name='id' value='{e(did)}'>"
+            f"<input type='hidden' name='on' value='{'0' if shown else '1'}'>"
+            f"<button type='submit' class='summary' aria-expanded='{str(shown).lower()}'>"
+            f"{summary}</button></form>"
+            # The body is always in the page, shut or not, exactly as a
+            # <details> kept it. Dropping it would have been cheaper, and
+            # would also have taken the rows out of reach of the browser's own
+            # find, which is a real way people look through a long tree.
+            # hidden='until-found' rather than a bare hidden: the browser can
+            # still find text in here and expand it, which is what a <details>
+            # did and what a long tree needs. A display:none rule of our own
+            # would defeat it, so there is deliberately none.
+            + f"<div class='disc-body'{shut_attr}>{body()}</div>"
+            + "</div>")
+
+
 def _kind_group(state, kind: str, nodes: Sequence[Node], open_default: bool,
-                with_children: bool = True) -> str:
+                with_children: bool = True, section: str = "roots") -> str:
     picked = sum(1 for n in nodes if n.key in state.selected_keys())
     here = len(nodes)
     total = sum(1 for n in state.graph.by_kind(kind)) if state.graph else here
@@ -402,15 +445,20 @@ def _kind_group(state, kind: str, nodes: Sequence[Node], open_default: bool,
     # split it is.
     count = f"{here}" if here == total else f"{here} of {total} here"
     tail = f"{picked} of {count} selected" if picked else count
-    return ("<details class='kindgroup'" + (" open" if open_default else "") + ">"
-            f"<summary>{e(kind)}<span class='n'>{e(tail)}</span></summary>"
-            "<ul class='tree'>"
-            + "".join(_node_row(state, node, 0, with_children) for node in nodes)
-            + "</ul></details>")
+    # Scoped by section: six kinds appear in both tree sections on the corpus,
+    # and a shared id made them one control with one state, so opening the
+    # lower group expanded the upper one and sent you there.
+    return _disclosure(
+        state, f"kind:{section}:{kind}",
+        f"{e(kind)}<span class='n'>{e(tail)}</span>",
+        lambda: ("<ul class='tree'>"
+                 + "".join(_node_row(state, node, 0, with_children) for node in nodes)
+                 + "</ul>"),
+        open_default)
 
 
 def _node_row(state, node: Node, depth: int, with_children: bool = True,
-              seen: Optional[frozenset] = None) -> str:
+              seen: Optional[frozenset] = None, path: str = "") -> str:
     graph = state.graph
     seen = seen or frozenset()
     selected = node.key in state.selection_keys()
@@ -462,18 +510,28 @@ def _node_row(state, node: Node, depth: int, with_children: bool = True,
     ])
 
     children_html = ""
+    # Where this row sits in the tree, not just what it is. The same object is
+    # rendered once per route to it, and an id built from the object alone
+    # made every copy one control: opening the dependencies under one
+    # dashboard opened them under the other and scrolled you there.
+    here = f"{path}>{node.key}" if path else node.key
     if with_children and depth < MAX_DEPTH and node.key not in seen:
         targets = [graph.nodes[t] for t in graph.edges.get(node.key, []) if t in graph.nodes]
         gaps = graph.missing_for(node.key)
         if targets or gaps:
-            inner = "".join(_node_row(state, child, depth + 1, True, seen | {node.key})
+            inner = "".join(_node_row(state, child, depth + 1, True,
+                                      seen | {node.key}, path=here)
                             for child in targets)
             inner += "".join(
                 f"<li class='node'><div class='missing'>missing {e(gap.kind)} "
                 f"{e(gap.ident)} (via {e(gap.via)})</div></li>" for gap in gaps)
-            children_html = (f"<details class='deps'><summary>depends on "
-                             f"{len(targets)}{', ' + str(len(gaps)) + ' not in this export' if gaps else ''}"
-                             f"</summary><ul>{inner}</ul></details>")
+            children_html = _disclosure(
+                state, f"deps:{here}",
+                "depends on "
+                + f"{len(targets)}"
+                + (f", {len(gaps)} not in this export" if gaps else ""),
+                lambda: f"<ul>{inner}</ul>",
+                False, cls="deps")
     return f"<li class='node'>{row}{children_html}</li>"
 
 
@@ -488,7 +546,22 @@ def anchor(key: str) -> str:
     which is the exact thing the anchor exists to prevent. One function now
     produces the id and the row uses it verbatim.
     """
-    return "node-" + "".join(ch if ch.isalnum() else "-" for ch in key)
+    # ASCII only. str.isalnum() is true for Japanese, Cyrillic and every other
+    # script, and the server puts this value straight into a Location header,
+    # which http.server encodes as Latin-1: a custom group named in Japanese
+    # raised UnicodeEncodeError and the response was dropped, so the click did
+    # nothing. That predates disclosures, since selecting a row anchors the
+    # same way.
+    #
+    # A key that is already plain ASCII is spelled exactly as before, so the
+    # readable ids stay readable. Anything else keeps a short digest of the
+    # original, because collapsing every non-ASCII character to a dash would
+    # give two differently named groups the same id.
+    flat = "".join(ch if ("a" <= ch <= "z" or "A" <= ch <= "Z" or "0" <= ch <= "9")
+                   else "-" for ch in key)
+    if not key.isascii():
+        flat += "-" + hashlib.blake2s(key.encode("utf-8"), digest_size=4).hexdigest()
+    return "node-" + flat
 
 
 def _matches(graph: Graph, text: str) -> List[Node]:
