@@ -231,15 +231,15 @@ def cmd_preview(args) -> int:
     keys = _selection.match_line(graph, args.object)
     if not keys:
         _runlog.error("command.refused", command="preview", asked_for=str(args.object),
-                      reason="this export carries no object of that name or uuid")
+                      reason=_runlog.prose("this export carries no object of that name or uuid"))
         print(f"vcfcf-migrator preview: this export carries no object named "
               f"{args.object!r}", file=sys.stderr)
         return 1
     if len(keys) > 1:
         _runlog.error("command.refused", command="preview", asked_for=str(args.object),
                       matches=len(keys),
-                      reason="the spelling names more than one object, and picking one "
-                             "would preview an object the admin did not ask for")
+                      reason=_runlog.prose("the spelling names more than one object, and picking one "
+                             "would preview an object the admin did not ask for"))
         # One uuid under two owners, or one name two objects answer to. Picking
         # one would preview an object the admin did not ask for, so it says
         # which spellings name exactly one.
@@ -279,14 +279,15 @@ def cmd_build(args) -> int:
     declared, _source = _settings.source_version(args.source_version)
     if bool(args.select) == bool(args.select_all):
         _runlog.error("command.refused", command="build",
-                      reason="pass exactly one of --select FILE or --select-all")
+                      reason=_runlog.prose("pass exactly one of --select FILE or --select-all"))
         print("vcfcf-migrator build: pass exactly one of --select FILE or --select-all",
               file=sys.stderr)
         return 2
     if declared is None:
         _runlog.error("command.refused", command="build",
-                      reason="no source version declared; an export carries none, so the "
-                             f"admin declares it (floor {VERSION_FLOOR_TEXT})")
+                      reason=_runlog.prose(
+                          "no source version declared; an export carries none, so the "
+                          f"admin declares it (floor {VERSION_FLOOR_TEXT})"))
         print("vcfcf-migrator build: refused, no source version declared. An export carries "
               f"none, so declare it with --source-version (floor {VERSION_FLOOR_TEXT})",
               file=sys.stderr)
@@ -312,7 +313,7 @@ def cmd_build(args) -> int:
         return 1
     if not picked.keys:
         _runlog.error("command.refused", command="build",
-                      reason="the selection is empty, so no bundle is written")
+                      reason=_runlog.prose("the selection is empty, so no bundle is written"))
         print("vcfcf-migrator build: the selection is empty, no bundle written", file=sys.stderr)
         return 1
 

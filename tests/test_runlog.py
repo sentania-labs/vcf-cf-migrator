@@ -237,6 +237,110 @@ def test_a_logging_failure_never_takes_the_command_down(log, monkeypatch):
     assert "anything" not in text_of(log)
 
 
+def test_a_sentence_this_package_wrote_is_never_person_substituted(log):
+    """The exemption is a property of the value. The reader harvests the word
+    "member" as a person out of an LDAP mapping in authsources.json, and
+    without this one corpus-check wrote 282 mangled sentences, including the
+    answer to "why did policies.xml not come across"."""
+    runlog.person("member")
+    runlog.info("member.not_carried", member="policies.xml",
+                reason=runlog.prose("policies.xml is in the export but is a member this "
+                                    "tool never carries into a bundle"),
+                name="member of staff dashboard")
+    event = events(log)[0]
+    assert event["reason"].endswith("is a member this tool never carries into a bundle")
+    # And the same word as data, out of a document, is still excluded.
+    assert runlog.EXCLUDED_PERSON in event["name"]
+
+
+def test_an_exception_message_is_not_prose_however_it_is_keyed(log):
+    runlog.person("Thornbury")
+    try:
+        raise KeyError("Thornbury")
+    except KeyError as e:
+        runlog.error("run.crashed", detail=str(e), reason=str(e),
+                     says=str(e), note=str(e))
+    event = events(log)[0]
+    for key in ("detail", "reason", "says", "note"):
+        assert "Thornbury" not in event[key], key
+
+
+def test_every_literal_reason_in_the_package_is_marked_as_prose():
+    """The gate against this coming back. A literal reason a call site passes
+    is a sentence this package wrote; anything computed is data. An unwrapped
+    literal reads as data and gets rewritten by somebody else's name."""
+    import ast
+    from pathlib import Path
+
+    from vcfcf_migrator import runlog as module
+
+    package = Path(module.__file__).parent
+    unwrapped = []
+    for path in sorted(package.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id in ("runlog", "_runlog")):
+                continue
+            for keyword in node.keywords or []:
+                if keyword.arg != "reason":
+                    continue
+                value = keyword.value
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    unwrapped.append(f"{path.name}:{value.lineno}")
+    assert unwrapped == [], unwrapped
+
+
+def test_the_spellings_a_person_value_needs_are_generated(log):
+    """``_spellings`` is load-bearing and was ungated: re.I covers the Turkish
+    and long-s cases on its own, so the only work this function does is the one
+    where case folding changes length. German sharp s is that case."""
+    assert "weiss hausmeister" in [s.lower() for s in runlog._spellings("Wei\u00df Hausmeister")]
+    runlog.person("Wei\u00df Hausmeister")
+    runlog.info("widget.classified", title="WEISS HAUSMEISTER dashboard")
+    runlog.info("widget.classified", title="Wei\u00df Hausmeister dashboard")
+    for event in events(log):
+        assert runlog.EXCLUDED_PERSON in event["title"], event["title"]
+
+
+def test_the_buffer_survives_a_batch_drop_and_stays_cheap():
+    """The head is kept by what an event is, and trimming does not rebuild the
+    buffer: the first fix was O(n) per event past the cap, which made a long
+    page session look like a hang."""
+    import time
+
+    log = runlog.Log(level="debug")
+    log.events = []
+    log.event_cap = 200
+    log.header(["inspect", "export.zip"], tool_version="0.0.0", core_version="0.1.0")
+    log.info("input.fingerprint", sha256="a" * 64, members=3)
+    # A batch of events far larger than the cap, in one go.
+    for index in range(5000):
+        log.detail("noise", index=index)
+    kept = {e["event"] for e in log.events}
+    for head in runlog.HEAD_EVENTS:
+        assert head in kept, head
+    assert len(log.events) <= log.event_cap + len(runlog.HEAD_EVENTS)
+
+    # The cost is a function of the cap, so the timing runs at the shipped one:
+    # the O(n) version measured 1.67 ms per event there, against 0.0018 ms
+    # while filling. A smaller cap hides it, which is why the first version of
+    # this test passed against the defect.
+    big = runlog.Log(level="debug")
+    big.events = []
+    for index in range(big.event_cap + 200):
+        big.detail("noise", index=index)
+    start = time.perf_counter()
+    for index in range(2000):
+        big.detail("noise", index=index)
+    per_event_ms = (time.perf_counter() - start) * 1000 / 2000
+    assert per_event_ms < 0.05, per_event_ms
+
+
 def test_a_person_in_a_case_pair_python_and_the_regex_disagree_about(log):
     """re.I and str.lower() are two definitions of case: they agree on ASCII
     and disagree on 77 pairs, and the disagreement raised KeyError inside a

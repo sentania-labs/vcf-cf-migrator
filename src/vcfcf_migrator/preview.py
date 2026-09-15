@@ -359,8 +359,8 @@ def raw_document(graph: Graph, node: Node) -> bytes:
                 return entry.raw
     runlog.warn("document.absent", kind=node.kind, uuid=node.uuid or "", name=node.name,
                 member=node.member, index=node.index, owner=node.owner or None,
-                reason="the graph places this object in a member that holds no document "
-                       "matching its kind, index and identifier")
+                reason=runlog.prose("the graph places this object in a member that holds no document "
+                       "matching its kind, index and identifier"))
     raise PreviewError(f"{node.label()} has no document in {node.member}")
 
 
@@ -631,9 +631,9 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
         runlog.warn("swallowed.widget_view_unreadable", kind=node.kind,
                     uuid=node.uuid or "", name=node.name, member=node.member,
                     detail=str(e),
-                    reason="the view this widget shows has a document the page cannot "
+                    reason=runlog.prose("the view this widget shows has a document the page cannot "
                            "read; the widget draws a placeholder rather than failing the "
-                           "whole preview")
+                           "whole preview"))
         return f"<div class='pv-placeholder'>{_e(str(e))}</div>"
     columns = view_columns(root)
     presentation = (root.find("Presentation").get("type")
@@ -955,9 +955,9 @@ def _strip_tags(markup: str) -> str:
         # is not quiet in the log, which is the whole point of the log.
         runlog.warn("swallowed.markup_unparsed", failure=type(e).__name__,
                     detail=str(e), markup_bytes=len(markup),
-                    reason="the text widget's markup did not parse, so its words are shown "
+                    reason=runlog.prose("the text widget's markup did not parse, so its words are shown "
                            "with the tags stripped by hand; nothing is said on the page "
-                           "because the page cannot be acted on")
+                           "because the page cannot be acted on"))
         return _tidy(" ".join(markup.split()))
     return _tidy(" ".join("".join(parser.parts).split()))
 
@@ -1211,7 +1211,7 @@ def _grid_columns(doc: dict, widgets: Sequence[dict]) -> int:
     if not isinstance(columns, int) or not 1 <= columns <= MAX_GRID_COLUMNS:
         runlog.detail("grid.columns_defaulted", declared=str(declared),
                       columns=DEFAULT_GRID_COLUMNS,
-                      reason="the dashboard declares no usable column count")
+                      reason=runlog.prose("the dashboard declares no usable column count"))
         columns = DEFAULT_GRID_COLUMNS
     for widget in widgets:
         coords = widget.get("gridsterCoords")
@@ -1222,17 +1222,17 @@ def _grid_columns(doc: dict, widgets: Sequence[dict]) -> int:
         except (TypeError, ValueError):
             runlog.debug("grid.coords_unreadable", widget=str(widget.get("id") or ""),
                          widget_type=str(widget.get("type") or ""),
-                         reason="this widget's coordinates are not numbers, so it does not "
-                                "widen the grid and flows after the placed widgets")
+                         reason=runlog.prose("this widget's coordinates are not numbers, so it does not "
+                                "widen the grid and flows after the placed widgets"))
             continue
         if needed > columns:
             runlog.detail("grid.widened", declared=columns,
                           columns=min(needed, MAX_GRID_COLUMNS),
                           widget=str(widget.get("id") or ""),
                           widget_type=str(widget.get("type") or ""),
-                          reason="a widget runs past the grid the dashboard declares; "
+                          reason=runlog.prose("a widget runs past the grid the dashboard declares; "
                                  "widening keeps every widget its declared width rather "
-                                 "than drawing this one as a sliver")
+                                 "than drawing this one as a sliver"))
         columns = max(columns, min(needed, MAX_GRID_COLUMNS))
     return columns
 
@@ -1457,8 +1457,8 @@ def _ordered_widgets(widgets: Sequence[dict]) -> List[dict]:
             runlog.debug("widget.order_unreadable",
                          widget=str(widget.get("id") or ""),
                          widget_type=str(widget.get("type") or ""),
-                         reason="this widget's coordinates are not numbers, so it is "
-                                "drawn after the placed widgets in document order")
+                         reason=runlog.prose("this widget's coordinates are not numbers, so it is "
+                                "drawn after the placed widgets in document order"))
             return (1 << 30, 1 << 30, index)
 
     return [w for _pos, w in sorted(enumerate(widgets), key=position)]
@@ -1646,8 +1646,8 @@ def _widget_cell(widget: dict, widget_type: str, title: str, inner: str,
         except (TypeError, ValueError):
             runlog.debug("widget.placement_unreadable",
                          widget=str(widget.get("id") or ""), widget_type=widget_type,
-                         reason="this widget's coordinates are not numbers, so it flows "
-                                "after the placed widgets")
+                         reason=runlog.prose("this widget's coordinates are not numbers, so it flows "
+                                "after the placed widgets"))
             style = ""
         else:
             x = max(1, min(raw_x, columns))
@@ -1656,8 +1656,8 @@ def _widget_cell(widget: dict, widget_type: str, title: str, inner: str,
                 runlog.detail("widget.clamped", widget=str(widget.get("id") or ""),
                               widget_type=widget_type, declared_x=raw_x, declared_w=raw_w,
                               drawn_x=x, drawn_w=w, columns=columns,
-                              reason="the widget does not fit the grid even after widening, "
-                                     "so the preview moves it and says so")
+                              reason=runlog.prose("the widget does not fit the grid even after widening, "
+                                     "so the preview moves it and says so"))
                 preview.notes.append(
                     f"{title or '(untitled widget)'} ({widget_type or 'no type'}) sits at "
                     f"column {raw_x} spanning {raw_w} of a {columns} column grid, so it is "
@@ -2161,8 +2161,8 @@ def build(graph: Graph, node: Node) -> Preview:
         preview.notes.append(f"no preview is written for {node.kind} objects")
         runlog.detail("preview.kind_not_drawn", kind=node.kind, uuid=node.uuid or "",
                       name=node.name,
-                      reason="this preview does not lay out this kind, so the object is "
-                             "named rather than drawn")
+                      reason=runlog.prose("this preview does not lay out this kind, so the object is "
+                             "named rather than drawn"))
         return preview
     preview.body = renderer(graph, node, preview)
     if preview.selectors:

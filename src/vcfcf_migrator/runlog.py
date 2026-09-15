@@ -71,7 +71,8 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, TextIO
+from collections import deque
+from typing import Deque, Dict, Iterable, List, Optional, Sequence, TextIO
 
 LEVELS: Dict[str, int] = {"error": 40, "warn": 30, "info": 20, "detail": 10, "debug": 5}
 LEVEL_NAMES = ("error", "warn", "info", "detail", "debug")
@@ -83,9 +84,43 @@ ENV_LOG = "VCFCF_MIGRATOR_LOG"
 ENV_LOG_LEVEL = "VCFCF_MIGRATOR_LOG_LEVEL"
 ENV_LOG_FORMAT = "VCFCF_MIGRATOR_LOG_FORMAT"
 
+class Prose(str):
+    """A sentence this module wrote, marked as such by the call site.
+
+    It is scanned for uuids and mail addresses like everything else, and never
+    for person values, because a literal in this package carries nobody's name.
+
+    **Why a type and not a set of key names.** The first version of this
+    exemption was ``{"reason", "says", "detail"}``, which fourteen call sites
+    reuse for ``str(e)``: the exemption then covered arbitrary exception text,
+    and an exception whose message was a person's name went verbatim into the
+    log and into the diagnostics file. Deleting the exemption closed that hole
+    and opened a worse one: the reader harvests the word ``member`` as a person
+    out of an ``authsources.json`` LDAP mapping, and one ``corpus-check`` at
+    debug then wrote 282 mangled sentences, including "policies.xml is in the
+    export but is a [excluded:person] this tool never carries into a bundle".
+    An admin asking why a member did not come across was told about somebody's
+    name. So the exemption is a property of the value: a literal this package
+    wrote is ``prose``, a value computed from anything else is data and is
+    scanned, and the two can no longer be confused by a keyword name.
+
+    ``COMMON_WORDS`` and the left boundary do not substitute for this. They are
+    a heuristic over a person table this tool fills from whatever an instance's
+    identity configuration happens to contain, and that table overlaps this
+    package's own vocabulary.
+    """
+
+    __slots__ = ()
+
+
+def prose(text) -> Prose:
+    """Mark a sentence this package wrote. See ``Prose``."""
+    return text if isinstance(text, Prose) else Prose("" if text is None else str(text))
+
+
 # The one line at the top of every log saying what classes of thing are in it,
 # so an admin can decide before sending it on.
-CONTENTS = (
+CONTENTS = prose(
     "this log carries content identity (kind, uuid, name, metric and property keys), "
     "export member names, counts, timings and the reason for every decision, plus the "
     "file paths you gave the tool, which on your machine may carry your own user name; "
@@ -192,18 +227,6 @@ PATH_FIELDS = frozenset({"path", "cwd", "argv", "out", "zip", "dir", "file",
 # header and in every later event.
 VERBATIM_FIELDS = PATH_FIELDS - {"argv"}
 
-# There is no exemption from person redaction, by key or otherwise. There was
-# one: ``reason``, ``says`` and ``detail`` were treated as sentences this module
-# wrote and skipped. Fourteen call sites pass ``detail=str(e)`` or
-# ``reason=str(e)``, so the exemption covered arbitrary exception text, and an
-# exception whose message was a person's name was written verbatim into the log
-# and into the diagnostics file a customer is told to mail. An exemption keyed
-# on a name any caller can reuse is not a property of the value, so the
-# exemption is gone: every value a call site passes is scanned. What stopped
-# the tool's own English being mangled is COMMON_WORDS and the left boundary,
-# which are properties of the value and hold wherever it appears.
-
-
 # ---------------------------------------------------------------------------
 # Redaction
 # ---------------------------------------------------------------------------
@@ -296,7 +319,10 @@ class Redactor:
         Case first: a name declared as "Marguerite Thornbury" is written
         "MARGUERITE THORNBURY" in one widget title and "marguerite thornbury" in
         the next, and a case-sensitive pattern let both through at the default
-        level. Replacements are therefore keyed by the lowercased value.
+        level. The replacement comes from the group that matched, so there is
+        no second key and nothing to disagree about: keying by the lowercased
+        value is what raised KeyError on every pair ``re.I`` and ``str.lower``
+        fold differently.
 
         Boundaries second: without them a person value is replaced inside any
         longer word, which rewrote content names and the tool's own sentences.
@@ -343,9 +369,12 @@ class Redactor:
                 self._pattern = re.compile(r"(?!x)x")  # matches nothing
         return self._pattern
 
-    def text(self, value: str) -> str:
-        """One string, with everything excluded taken out of it."""
-        out = self._compiled().sub(self._replacement_for, value)
+    def text(self, value: str, people: bool = True) -> str:
+        """One string, with everything excluded taken out of it.
+
+        *people* is false only for a ``Prose`` value: see that class.
+        """
+        out = self._compiled().sub(self._replacement_for, value) if people else value
         out = _MAIL_RE.sub(EXCLUDED_MAIL, out)
         return _UUID_RE.sub(
             lambda m: m.group(0) if _normal_id(m.group(0)) in self._allowed
@@ -382,6 +411,9 @@ class Redactor:
             return self._person_field(value)
         return self.value(value)
 
+    def _is_prose(self, value) -> bool:
+        return isinstance(value, Prose)
+
     def _owner_field(self, value):
         if isinstance(value, str):
             return self.owner(value)
@@ -414,7 +446,7 @@ class Redactor:
         this layer exists to avoid.
         """
         if isinstance(value, str):
-            return self.text(value)
+            return self.text(value, people=not isinstance(value, Prose))
         if isinstance(value, (list, tuple)):
             return [self.value(v) for v in value]
         if isinstance(value, dict):
@@ -461,7 +493,8 @@ class Log:
         # it may not have been asked to write. Capped, because the page is a
         # long-lived process and a select-all over a large export is tens of
         # thousands of events; the oldest go first and the drop is recorded.
-        self.events: Optional[List[dict]] = None
+        self._head: List[dict] = []
+        self._tail: Optional[Deque[dict]] = None
         self.event_cap = 40000
         self.dropped = 0
         self._broken = 0
@@ -469,8 +502,40 @@ class Log:
     # -- state -------------------------------------------------------------
 
     @property
+    def events(self) -> Optional[List[dict]]:
+        """The events kept in memory, head first. Built on read, which is rare
+        (the diagnostics file), rather than maintained on write, which is not."""
+        if self._tail is None:
+            return None
+        return self._head + list(self._tail)
+
+    @events.setter
+    def events(self, value) -> None:
+        if value is None:
+            self._head, self._tail = [], None
+            return
+        self._head = [e for e in value if e.get("event") in HEAD_EVENTS]
+        self._tail = deque(e for e in value if e.get("event") not in HEAD_EVENTS)
+
+    def _keep(self, event: dict) -> None:
+        """Hold one event in memory, in the head list or the tail deque.
+
+        Which list it goes in is decided by what the event *is*, once, here.
+        The version that decided by where an event sat kept the fingerprint
+        only because events happened to pop one at a time.
+        """
+        if self._tail is None:
+            return
+        if event.get("event") in HEAD_EVENTS and not any(
+                e.get("event") == event.get("event") for e in self._head):
+            self._head.append(event)
+        else:
+            self._tail.append(event)
+        self._trim()
+
+    @property
     def on(self) -> bool:
-        return self.stream is not None or self.events is not None
+        return self.stream is not None or self._tail is not None
 
     def enabled(self, level: str) -> bool:
         return self.on and LEVELS.get(level, 0) >= self.threshold
@@ -504,7 +569,7 @@ class Log:
 
     def _failed(self, level: str, code: str, failure: BaseException) -> None:
         self._broken += 1
-        if self._broken > 50 or self.stream is None and self.events is None:
+        if self._broken > 50 or self.stream is None and self._tail is None:
             return
         event = {"t": round(self._clock() - self._t0, 4), "lvl": "error",
                  "phase": self._phases[-1].name if self._phases else "run",
@@ -513,8 +578,7 @@ class Log:
                  "reason": "this event could not be written safely, so it was dropped "
                            "rather than written unredacted; the failure is the log's, "
                            "not the command's"}
-        if self.events is not None:
-            self.events.append(event)
+        self._keep(event)
         if self.stream is not None:
             line = (render_event(event) if self.fmt == "text"
                     else json.dumps(event, ensure_ascii=False))
@@ -533,9 +597,7 @@ class Log:
             event[str(key)] = self.redactor.field(str(key), value)
         self._written += 1
         self._by_level[level] = self._by_level.get(level, 0) + 1
-        if self.events is not None:
-            self.events.append(event)
-            self._trim()
+        self._keep(event)
         if self.stream is None:
             return
         line = (render_event(event) if self.fmt == "text"
@@ -551,33 +613,27 @@ class Log:
         diagnostics into events with nothing saying what they are about. And a
         drop is a thing the tool keeps quiet about in its output, so it is
         loud here the first time it happens.
+
+        **The head is a list of its own, and the rest is a deque.** The first
+        version of this rebuilt both lists on every event once the cap was
+        reached, which is O(n) per event: measured at the shipped cap of 40000,
+        0.0018 ms per event while filling and 1.67 ms after, so a page session
+        that crossed the cap looked like a hang. Nothing is rebuilt now; the
+        deque drops from its left.
         """
-        if self.events is None or len(self.events) <= self.event_cap:
+        if self._tail is None or len(self._head) + len(self._tail) <= self.event_cap:
             return
-        # The head is kept by what an event *is*, not by where it sits. The
-        # previous version sliced the first three entries and kept whichever of
-        # them happened to be a head event, which held only because events pop
-        # one at a time: a batch drop, or a warning emitted before the
-        # fingerprint, slid the fingerprint out of the window while the
-        # truncation notice still claimed it was kept.
-        head, rest, seen = [], [], set()
-        for event in self.events:
-            name = event.get("event")
-            if name in HEAD_EVENTS and name not in seen:
-                seen.add(name)
-                head.append(event)
-            else:
-                rest.append(event)
         first_drop = self.dropped == 0
-        while len(head) + len(rest) > self.event_cap and rest:
-            rest.pop(0)
+        while len(self._head) + len(self._tail) > self.event_cap and self._tail:
+            self._tail.popleft()
             self.dropped += 1
-        self.events = head + rest
         if first_drop:
             self.warn("log.truncated", cap=self.event_cap, dropped=self.dropped,
-                      reason="this session has written more events than the page keeps in "
-                             "memory, so the oldest are gone from the diagnostics file; "
-                             "the run header and the input fingerprint are kept")
+                      reason=prose(
+                          "this session has written more events than the page keeps in "
+                          "memory, so the oldest are gone from the diagnostics file; the "
+                          "contents line, the run header and the input fingerprint are "
+                          "kept whatever else goes"))
 
     def error(self, code: str, /, **fields) -> None:
         self.emit("error", code, **fields)
@@ -930,7 +986,7 @@ def render_log(lines: Iterable[str]) -> str:
 # Diagnostics: one file, ready to attach to a mail
 # ---------------------------------------------------------------------------
 
-DIAGNOSTICS_CONTENTS = (
+DIAGNOSTICS_CONTENTS = prose(
     "the run header, the input export's fingerprint, every log event and the bundle's "
     "manifest: content names, uuids and metric keys, no people and no credentials"
 )

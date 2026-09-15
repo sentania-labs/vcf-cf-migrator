@@ -39,11 +39,11 @@ Tick what you want. What it depends on comes with it, said out loud, and the
 tool will not let you drop something the rest of your selection still needs.
 Then Build the bundle, and import it on the target the way you exported.
 
-An imported dashboard finishes arriving in the background, which takes minutes
-and sometimes longer, and while it does its widgets may look empty. That is
-normal and it completes on its own; opening the dashboard once is the quickest
-way to move it along. If one stays that way, it is usually because the target
-does not have an adapter the dashboard's widgets need.
+An imported dashboard finishes arriving in the background, which can take
+minutes or hours, and while it does its widgets may look empty. That is normal
+and it completes on its own; opening the dashboard once is the quickest way to
+move it along. If one stays that way, it is usually because the target does not
+have an adapter the dashboard's widgets need.
 
 It handles dashboards, views, super metrics, groups, symptoms, alerts, reports
 and notification rules, runs on your workstation, and never talks to either

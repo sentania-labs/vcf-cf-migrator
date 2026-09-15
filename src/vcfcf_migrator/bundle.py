@@ -228,27 +228,27 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         result.notes.extend(getattr(container, "notes", []))
         for note in getattr(container, "notes", []):
             runlog.warn("container.judged", member=container.member, note=note,
-                        reason="the container had to decide about material this tool does "
+                        reason=runlog.prose("the container had to decide about material this tool does "
                                "not fully understand, and says so rather than dropping it "
-                               "quietly")
+                               "quietly"))
         runlog.detail("container.rebuilt", member=container.member,
                       container=type(container).__name__,
                       entries_kept=len(set(indexes)),
                       entries_total=len(container.entries()),
                       bytes=len(data) if data else 0,
-                      reason="containers are rebuilt around the documents kept; the "
-                             "documents themselves are copied byte for byte")
+                      reason=runlog.prose("containers are rebuilt around the documents kept; the "
+                             "documents themselves are copied byte for byte"))
         if data:
             written[container.member] = data
 
     if marker and marker in members:
         written[marker] = members[marker]
         runlog.detail("marker.copied", marker=marker, bytes=len(members[marker]),
-                      reason="copied byte for byte; its content is the source instance's "
-                             "owner uuid, which this log does not carry")
+                      reason=runlog.prose("copied byte for byte; its content is the source instance's "
+                             "owner uuid, which this log does not carry"))
     else:
         runlog.warn("marker.absent",
-                    reason="the source carried no <digits>L.v1 marker, so the bundle has none")
+                    reason=runlog.prose("the source carried no <digits>L.v1 marker, so the bundle has none"))
         result.notes.append("the source carried no <digits>L.v1 marker, so the bundle has none")
 
     owners = [o for o in by_owner if o]
@@ -257,20 +257,20 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     # the layer disclaims: it was correct only because this caller remembered.
     runlog.detail("owners.carried", owners=owners,
                   dashboards_by_owner={o: c for o, c in sorted(by_owner.items())},
-                  reason="one dashboard member per owner, and the manifest counts them "
-                         "the same way")
+                  reason=runlog.prose("one dashboard member per owner, and the manifest counts them "
+                         "the same way"))
     if owners and "usermappings.json" in members:
         narrowed = _narrow_usermappings(members["usermappings.json"], owners)
         if narrowed is not None:
             written["usermappings.json"] = narrowed
             runlog.detail("scaffolding.narrowed", member="usermappings.json",
                           bytes=len(narrowed), owners=owners,
-                          reason="narrowed to the owners whose dashboards are carried, so "
-                                 "no scaffolding points at something the bundle does not hold")
+                          reason=runlog.prose("narrowed to the owners whose dashboards are carried, so "
+                                 "no scaffolding points at something the bundle does not hold"))
         else:
             runlog.warn("scaffolding.dropped", member="usermappings.json",
-                        reason="nothing in it matched the owners carried, or it did not "
-                               "parse, so the bundle carries none of it")
+                        reason=runlog.prose("nothing in it matched the owners carried, or it did not "
+                               "parse, so the bundle carries none of it"))
     for owner in owners:
         member = f"dashboardsharings/{owner}"
         if member in members:
@@ -288,25 +288,25 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
             "dashboards import private to whoever imports them, and sharing is set on "
             "the target")
         runlog.detail("scaffolding.synthesized", member=member,
-                      reason="the source export carried no sharing member for this owner "
-                             "and the target requires one; an empty list shares with nobody")
+                      reason=runlog.prose("the source export carried no sharing member for this owner "
+                             "and the target requires one; an empty list shares with nobody"))
     for name, data in members.items():
         if not name.startswith("dashboardsharings/"):
             continue
         if name.split("/", 1)[1] not in owners:
             runlog.detail("scaffolding.skipped", member=name,
-                          reason="this owner has no dashboard in the bundle")
+                          reason=runlog.prose("this owner has no dashboard in the bundle"))
             continue
         narrowed = _narrow_sharings(data, dashboard_uuids)
         if narrowed is not None:
             written[name] = narrowed
             runlog.detail("scaffolding.narrowed", member=name, bytes=len(narrowed),
                           dashboards=len(dashboard_uuids),
-                          reason="narrowed to the dashboards the bundle carries")
+                          reason=runlog.prose("narrowed to the dashboards the bundle carries"))
         else:
             runlog.warn("scaffolding.dropped", member=name,
-                        reason="no sharing entry named a carried dashboard, or the member "
-                               "did not parse, so the bundle carries none of it")
+                        reason=runlog.prose("no sharing entry named a carried dashboard, or the member "
+                               "did not parse, so the bundle carries none of it"))
 
     counts = selection.counts(graph)
     manifest: Dict[str, object] = {"type": "CUSTOM"}
@@ -320,8 +320,8 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     runlog.detail("manifest.written", member="configuration.json",
                   manifest={k: v for k, v in manifest.items() if not isinstance(v, list)},
                   owners=len(by_owner),
-                  reason="written fresh with the counts actually carried, because the "
-                         "source's counts describe the source")
+                  reason=runlog.prose("written fresh with the counts actually carried, because the "
+                         "source's counts describe the source"))
     result.notes.append(
         "configuration.json is written fresh with the counts actually carried, and with no "
         "signature: the factory's own content-import path writes it the same way "
@@ -365,9 +365,9 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     result.directories = [n for n in ordered if n.endswith("/")]
     runlog.detail("bundle.directories", directories=result.directories,
                   from_source=[d for d in result.directories if d in (directories or ())],
-                  reason="a zip directory entry per directory the bundle writes into; "
+                  reason=runlog.prose("a zip directory entry per directory the bundle writes into; "
                          "without them VCF Operations refuses the bundle as an invalid "
-                         "file format before it reads a document")
+                         "file format before it reads a document"))
 
     out_path = Path(out_path)
     try:
@@ -416,9 +416,9 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                             "(they cannot be selected): " + ", ".join(result.skipped_members))
     for name in result.skipped_members:
         runlog.detail("member.not_carried", member=name,
-                      reason="this tool does not understand the member, so it cannot be "
+                      reason=runlog.prose("this tool does not understand the member, so it cannot be "
                              "selected and carrying it would be the tool deciding for the "
-                             "admin")
+                             "admin"))
     runlog.info("bundle.written", path=str(out_path), counts=result.counts,
                 members=len(result.members), skipped=len(result.skipped_members),
                 notes=len(result.notes))

@@ -9,9 +9,12 @@
   not; a logging call can no longer end a command, since a failure inside one
   is recorded as `log.failed` and the event that could not be redacted is
   dropped rather than written; and the person rules have no exemption at all
-  now, by key or otherwise, because the old one covered `detail=str(e)` at
+  now keyed on a field name, because the old one covered `detail=str(e)` at
   fourteen call sites and wrote an exception message carrying a name straight
-  into the log and the diagnostics file.
+  into the log and the diagnostics file. It is a value type instead,
+  `runlog.prose(...)`: a sentence this package wrote is exempt from the person
+  rules wherever it appears, and anything computed from a document, an
+  exception or a path is data and is scanned.
 
 - Logging, after review: a person's name is excluded in any case and wherever
   it starts a token; an account uuid written as 32 hex digits without hyphens

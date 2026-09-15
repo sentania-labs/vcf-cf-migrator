@@ -234,7 +234,7 @@ def _preview_each(graph: _graph.Graph, rendered: int, failures: List[str]):
         if not page.startswith("<!doctype html>"):
             runlog.error("preview.not_a_page", kind=node.kind, uuid=node.uuid or "",
                          name=node.name,
-                         reason="the rendered preview is not an HTML document")
+                         reason=runlog.prose("the rendered preview is not an HTML document"))
             failures.append(f"{node.label()}: the page is not an HTML document")
             continue
         rendered += 1
@@ -249,7 +249,7 @@ def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
     directory = Path(directory)
     if not directory.is_dir():
         runlog.error("corpus.absent", dir=str(directory), dir_from=source,
-                     reason="the corpus directory does not exist")
+                     reason=runlog.prose("the corpus directory does not exist"))
         stream.write(f"corpus directory {directory} does not exist (from {source})\n")
         return 1
     zips = sorted(p for p in directory.iterdir() if p.suffix.lower() == ".zip")

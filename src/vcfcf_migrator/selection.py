@@ -130,9 +130,9 @@ def resolve(graph: Graph, lines: Sequence[str]) -> List[str]:
                      matched=len(match_line(graph, line)))
     if unknown:
         runlog.warn("selection.refused", lines=list(unknown),
-                    reason="the selection names objects this export does not carry; "
+                    reason=runlog.prose("the selection names objects this export does not carry; "
                            "continuing would write a bundle quietly missing what was asked "
-                           "for, so no bundle is written")
+                           "for, so no bundle is written"))
         raise BadSelection(
             "the selection names " + ("objects" if len(unknown) > 1 else "an object")
             + " this export does not carry: " + ", ".join(unknown))
@@ -158,7 +158,7 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
         if node is not None:
             runlog.detail("closure.picked", kind=node.kind, uuid=node.uuid or "",
                           name=node.name, owner=node.owner or None,
-                          member=node.member, reason="named by the selection")
+                          member=node.member, reason=runlog.prose("named by the selection"))
     queue: List[str] = list(keys)
     seen: List[str] = []
     while queue:
@@ -182,8 +182,8 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
                           member=child.member,
                           required_by_kind=node.kind, required_by_uuid=node.uuid or "",
                           required_by_name=node.name,
-                          reason="the selected object depends on it, so a bundle without "
-                                 "it would point at an object it does not carry")
+                          reason=runlog.prose("the selected object depends on it, so a bundle without "
+                                 "it would point at an object it does not carry"))
             runlog.count("added_by_closure")
             queue.append(target)
         for gap in graph.missing_for(key):
@@ -203,8 +203,9 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
                       via=gap.via,
                       kind=source.kind if source else "", name=source.name if source else "",
                       uuid=(source.uuid or "") if source else "",
-                      reason=f"{missing_reason(gap)}, so it will be missing on import "
-                             "unless the target already has it")
+                      reason=runlog.prose(
+                          f"{missing_reason(gap)}, so it will be missing on import "
+                          "unless the target already has it"))
     runlog.info("selection.closed", picked=len(selection.picked),
                 carried=len(selection.keys), added=len(selection.added),
                 counts=selection.counts(graph), not_carried=len(selection.missing),

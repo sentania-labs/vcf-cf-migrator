@@ -727,8 +727,8 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                       entries=len(container.entries()))
     for name in unknown:
         runlog.detail("member.unknown", member=name,
-                      reason="this tool does not read this member's content, so nothing "
-                             "in it can be selected and none of it is carried")
+                      reason=runlog.prose("this tool does not read this member's content, so nothing "
+                             "in it can be selected and none of it is carried"))
 
     for container in found:
         for entry in container.entries():
@@ -751,16 +751,16 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
             for text in shapes:
                 runlog.warn("shape.unhandled", kind=node.kind, uuid=node.uuid or "",
                             name=node.name, note=text,
-                            reason="a field value in a shape this tool does not read; it "
-                                   "is named rather than resolved, never dropped quietly")
+                            reason=runlog.prose("a field value in a shape this tool does not read; it "
+                                   "is named rather than resolved, never dropped quietly"))
                 note = Note(node.key, f"{node.label()}: {text}")
                 if note not in graph.unhandled:
                     graph.unhandled.append(note)
             if node.key in graph.nodes:
                 runlog.detail("node.duplicate", kind=node.kind, uuid=node.uuid or "",
                               name=node.name, member=container.member,
-                              reason="the same object in a second member; the first member "
-                                     "keeps the node and the bundle still carries both copies")
+                              reason=runlog.prose("the same object in a second member; the first member "
+                                     "keeps the node and the bundle still carries both copies"))
                 # The same object in two members (a full export writes the
                 # notification templates into both notificationrules.json and
                 # payloadtemplates.json). The first member wins the node; the
@@ -795,8 +795,8 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 elif ref.optional:
                     runlog.debug("ref.optional_miss", kind=node.kind, name=node.name,
                                  wants=ref.kind, ident=ref.ident, via=ref.via,
-                                 reason="this reference is only sometimes an object in the "
-                                        "export, so not resolving it is normal")
+                                 reason=runlog.prose("this reference is only sometimes an object in the "
+                                        "export, so not resolving it is normal"))
                 continue
             # One reference, several nodes, is ambiguous only when those
             # nodes are different objects. A dashboard uuid under two owners
@@ -818,8 +818,8 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                                 spelling=_spelling(ref.ident), via=ref.via,
                                 answered_by=sorted(graph.nodes[h].uuid or graph.nodes[h].ident
                                                    for h in hits),
-                                reason="several different objects answer to this name; every "
-                                       "one is carried rather than one being guessed at")
+                                reason=runlog.prose("several different objects answer to this name; every "
+                                       "one is carried rather than one being guessed at"))
             for hit in hits:
                 if hit != node.key and hit not in targets:
                     targets.append(hit)
@@ -966,9 +966,9 @@ def missing_reason(gap: MissingEdge) -> str:
     "not in this export" would be wrong about the second.
     """
     if gap.kind == "policy":
-        return ("policies.xml is in the export but is a member this tool never "
-                "carries into a bundle")
-    return "it is not in this export"
+        return runlog.prose("policies.xml is in the export but is a member this tool "
+                            "never carries into a bundle")
+    return runlog.prose("it is not in this export")
 
 
 def _reachable(graph: Graph, starts: Sequence[Node]) -> set:

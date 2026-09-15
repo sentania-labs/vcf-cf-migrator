@@ -240,18 +240,18 @@ def check_source_version(declared: Optional[str]) -> Optional[str]:
     """
     if declared is None or not str(declared).strip():
         runlog.detail("version.not_declared", floor=VERSION_FLOOR_TEXT,
-                      reason="no export carries a product version, so the admin declares it")
+                      reason=runlog.prose("no export carries a product version, so the admin declares it"))
         return None
     parsed = parse_version(declared)
     if parsed is None:
         runlog.warn("version.refused", declared=str(declared),
-                    reason="not major.minor[.patch]")
+                    reason=runlog.prose("not major.minor[.patch]"))
         raise BadSourceVersion(
             f"source version {declared!r} is not major.minor[.patch] (for example 8.18.7)"
         )
     if parsed < VERSION_FLOOR:
         runlog.warn("version.refused", declared=str(declared).strip(),
-                    floor=VERSION_FLOOR_TEXT, reason="below the floor")
+                    floor=VERSION_FLOOR_TEXT, reason=runlog.prose("below the floor"))
         raise UnsupportedExport(
             f"refused: declared source version {str(declared).strip()} is below the floor {VERSION_FLOOR_TEXT}"
         )
@@ -447,7 +447,7 @@ def _read_export(path, source_version: Optional[str] = None) -> Export:
         raise NotAnExport(f"cannot read {path}: {e}") from e
     if not zipfile.is_zipfile(io.BytesIO(data)):
         runlog.error("input.not_a_zip", path=str(path), bytes=len(data),
-                     reason="the file does not open as a zip archive")
+                     reason=runlog.prose("the file does not open as a zip archive"))
         raise NotAnExport(f"{path} is not a zip file")
 
     export = Export(path=str(path), source_version=declared)
@@ -475,16 +475,16 @@ def _read_export(path, source_version: Optional[str] = None) -> Export:
                     **runlog.input_fingerprint(path, data, names, export.manifest))
         if export.marker is None and not export.manifest:
             runlog.error("input.not_an_export", path=str(path), members=len(names),
-                         reason="no <digits>L.v1 marker and no configuration.json")
+                         reason=runlog.prose("no <digits>L.v1 marker and no configuration.json"))
             raise NotAnExport(f"{path} is not a content export: no <digits>L.v1 marker and no configuration.json")
         if export.marker is None:
             runlog.warn("marker.absent",
-                        reason="no <digits>L.v1 marker in this export")
+                        reason=runlog.prose("no <digits>L.v1 marker in this export"))
             export.notes.append("no <digits>L.v1 marker found")
         elif export.marker_format != "v1":
             runlog.warn("marker.unknown_format", marker=export.marker,
                         marker_format=export.marker_format,
-                        reason="the only format this tool has seen is v1")
+                        reason=runlog.prose("the only format this tool has seen is v1"))
             export.notes.append(f"marker format {export.marker_format} is not the known v1")
         else:
             runlog.detail("marker.read", marker=export.marker, marker_format="v1",
@@ -603,8 +603,8 @@ def _read_export(path, source_version: Optional[str] = None) -> Export:
                      name=item.name, member=item.source)
     for name in export.carried:
         runlog.detail("member.carried_not_inspected", member=name,
-                      reason="this tool does not read this member's content, so it is "
-                             "listed and never carried into a bundle")
+                      reason=runlog.prose("this tool does not read this member's content, so it is "
+                             "listed and never carried into a bundle"))
     for note in export.notes:
         runlog.warn("input.note", note=note)
     runlog.info("input.listed", items=len(export.items), counts=counts,
@@ -658,7 +658,7 @@ def _read_members(path, source_version: Optional[str] = None) -> Members:
         raise NotAnExport(f"cannot read {path}: {e}") from e
     if not zipfile.is_zipfile(io.BytesIO(raw)):
         runlog.error("input.not_a_zip", path=str(path), bytes=len(raw),
-                     reason="the file does not open as a zip archive")
+                     reason=runlog.prose("the file does not open as a zip archive"))
         raise NotAnExport(f"{path} is not a zip file")
     members = Members(path=str(path))
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
@@ -681,18 +681,18 @@ def _read_members(path, source_version: Optional[str] = None) -> Members:
             manifest = loaded if isinstance(loaded, dict) else {}
         except ValueError:
             runlog.warn("member.unreadable", member="configuration.json",
-                        reason="configuration.json is not valid JSON")
+                        reason=runlog.prose("configuration.json is not valid JSON"))
     runlog.info("input.fingerprint",
                 **runlog.input_fingerprint(path, raw, members.order, manifest))
     for name in members.order:
         runlog.debug("member.read", member=name, bytes=len(members.data[name]))
     if members.directories:
         runlog.detail("input.directories", directories=list(members.directories),
-                      reason="zip directory entries the export carries; the importer "
-                             "refuses a bundle without the ones its content sits under")
+                      reason=runlog.prose("zip directory entries the export carries; the importer "
+                             "refuses a bundle without the ones its content sits under"))
     if members.marker is None and "configuration.json" not in members.data:
         runlog.error("input.not_an_export", path=str(path), members=len(members.order),
-                     reason="no <digits>L.v1 marker and no configuration.json")
+                     reason=runlog.prose("no <digits>L.v1 marker and no configuration.json"))
         raise NotAnExport(
             f"{path} is not a content export: no <digits>L.v1 marker and no configuration.json")
     runlog.count("members", len(members.order))
