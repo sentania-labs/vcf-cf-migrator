@@ -106,7 +106,9 @@ class Census:
 
     def add_dashboard(self, graph, node, preview) -> None:
         doc = json.loads(_preview.raw_document(graph, node))
-        widgets = [w for w in doc.get("widgets", []) if isinstance(w, dict)]
+        raw_widgets = doc.get("widgets")
+        widgets = ([w for w in raw_widgets if isinstance(w, dict)]
+                   if isinstance(raw_widgets, list) else [])
         wiring = _preview.read_wiring(doc, widgets)
         dash = node.uuid or node.ident
         # One key expression, the page's own: two that happen to agree do not
@@ -128,14 +130,16 @@ class Census:
         # Every verdict comes from the page that renders it. The census used
         # to re-derive them and had already drifted twice: once on the subject
         # rule, once on whether a selector's view is resolved at all.
+        # Set equality, not membership: the per-tab keys that caused this are
+        # a *subset* of the document-index keys, so no lookup misses and a
+        # membership check sees nothing. Duplicate keys are checked too, since
+        # two widgets sharing a key would collapse into one verdict.
+        if set(ids) != set(preview.widget_verdicts) or len(set(ids)) != len(ids):
+            raise KeyError(
+                f"dashboard {dash}: the census and the page are keying widgets "
+                f"differently ({len(set(ids))} census keys, "
+                f"{len(preview.widget_verdicts)} page keys)")
         for wid in ids:
-            if wid not in preview.widget_verdicts:
-                # Never defaulted: a missing verdict means the two sides have
-                # drifted again, and a default would count the widget as
-                # something rather than say so.
-                raise KeyError(
-                    f"no verdict for widget {wid} of dashboard {dash}: the census and the "
-                    "page are keying widgets differently")
             state, code, subject = preview.widget_verdicts[wid]
             self.widget_subject[(dash, wid)].add(subject)
             self.widget_state[(dash, wid)].add(code if state else "")
@@ -201,7 +205,9 @@ def walk(directory: Path, declared: Optional[str] = None,
 
 
 def render(report: dict) -> str:
-    lines = ["distinct content across the corpus"]
+    lines = ["distinct content across the corpus",
+             "  (the totals below count every identity, including the ones whose copies "
+             "disagree)"]
     for key in ("objects", "objects carrying nothing", "dashboards",
                 "dashboards interaction driven", "widgets", "widgets classified",
                 "widgets carrying nothing"):
@@ -218,8 +224,11 @@ def render(report: dict) -> str:
     lines.append("  how widgets come by their subject")
     for kind, count in sorted(report["widget subjects"].items()):
         lines.append(f"    {kind:34s} {count:6d}")
-    lines.append("  every total above counts only identities whose copies agree; these "
-                 "are the ones they exclude")
+    lines.append(f"  the four blocks above count only identities whose copies agree: "
+                 f"{report['divergent widgets']} widgets and "
+                 f"{report['divergent objects']} objects are left out of them, and are "
+                 "in the totals at the top")
+    lines.append("  where copies of one identity disagree")
     for key in ("objects with two names", "divergent objects", "divergent dashboards",
                 "divergent widgets", "divergent widget subjects"):
         lines.append(f"    {key:34s} {report[key]:6d}")

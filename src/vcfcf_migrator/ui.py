@@ -221,7 +221,7 @@ class PageState:
         if dropped:
             self.message += (f"; {plural(len(dropped), 'object')} it had pulled in "
                              + ("is" if len(dropped) == 1 else "are")
-                             + " no longer needed and " 
+                             + " no longer needed and "
                              + ("was" if len(dropped) == 1 else "were") + " dropped too")
         if self.preview_key == key:
             self.preview_key = ""

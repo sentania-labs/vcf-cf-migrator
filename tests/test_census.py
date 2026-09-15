@@ -226,8 +226,15 @@ def test_the_census_and_the_page_key_widgets_with_one_expression(corpus):
         # is the shape that broke.
         assert set(keys.values()) == set(preview.widget_verdicts), node.key
         idless = [w for w in widgets if not w.get("id")]
-        if idless:
-            assert any(w.get("tabId") for w in idless) or True
+        for widget in idless:
+            # The key is the widget's index in the document, which is what the
+            # census walks, and not its position within its tab.
+            assert keys[id(widget)] == f"index-{widgets.index(widget)}"
+        if node.name == "[Fixture] VM Overview":
+            # The shape that broke: id-less widgets spread across two tabs,
+            # so per-tab position and document index disagree.
+            assert len(idless) >= 3
+            assert len({w.get("tabId") for w in idless}) > 1
 
 
 def test_a_missing_verdict_raises_rather_than_counting_as_something(corpus, monkeypatch):
@@ -325,3 +332,55 @@ def test_an_object_its_copies_classify_differently_is_excluded_too(tmp_path):
     assert a_reasons.get("view-no-columns", 0) == reasons.get("view-no-columns", 0) + 1
     assert b_reasons.get("view-no-attributes", 0) == reasons.get("view-no-attributes", 0) + 1
     assert both["divergent objects"] >= 1
+
+
+def test_a_widget_whose_subject_differs_between_copies_is_excluded_too(tmp_path):
+    """The fifth tie-break. One copy wires the widget, the other does not, so
+    the same widget identity is "fed" in one and "self" in the other, and
+    neither may reach the subject counts."""
+    import io
+    import json
+    import zipfile
+
+    from make_export_fixture import WIDGET_PROVIDER
+
+    directory = tmp_path / "corpus"
+    directory.mkdir()
+    (directory / "a.zip").write_bytes(build_export_zip())
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name in src.namelist():
+            data = src.read(name)
+            if name.startswith("dashboards/"):
+                inner = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:
+                    with zipfile.ZipFile(inner, "w") as w:
+                        for member in dash_zip.namelist():
+                            body = dash_zip.read(member)
+                            if member.endswith("dashboard.json"):
+                                doc = json.loads(body)
+                                for dash in doc["dashboards"]:
+                                    dash["widgetInteractions"] = [
+                                        entry for entry in dash.get("widgetInteractions", [])
+                                        if entry.get("widgetIdProvider") != WIDGET_PROVIDER]
+                                body = json.dumps(doc).encode()
+                            w.writestr(member, body)
+                data = inner.getvalue()
+            z.writestr(name, data)
+    (directory / "b.zip").write_bytes(out.getvalue())
+
+    both = corpus_census.walk(directory, "9.0.2")
+    only_a = corpus_census.walk(directory, "9.0.2", [directory / "a.zip"])
+    only_b = corpus_census.walk(directory, "9.0.2", [directory / "b.zip"])
+    a_subjects = only_a["widget subjects"]
+    b_subjects = only_b["widget subjects"]
+    subjects = both["widget subjects"]
+    # Dropping the interaction changes two widget identities: the one that was
+    # fed is no longer fed, and the one that drove it is no longer a selector.
+    assert both["divergent widget subjects"] == 2
+    # Neither copy's answer reaches the counts: a tie-break either way would
+    # have kept one of them.
+    assert subjects["fed"] == a_subjects["fed"] - 1
+    assert subjects["selector"] == a_subjects["selector"] - 1
+    assert subjects["never-shows"] == b_subjects["never-shows"] - 2

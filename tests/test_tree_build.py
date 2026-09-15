@@ -907,7 +907,9 @@ def test_every_bundle_entry_carries_the_pinned_stamp(tmp_path, export_zip):
 
     ``create_system`` is pinned too: ZipInfo sets it to 0 on Windows and 3
     elsewhere, so without it the three shipped binaries write different bytes
-    for one selection.
+    for one selection. That pin cannot be caught by reading a bundle built
+    here, since a Linux ZipInfo already says 3; the next test builds the entry
+    as Windows would.
     """
     from vcfcf_migrator.containers import ZIP_EPOCH
 
@@ -929,3 +931,19 @@ def test_every_bundle_entry_carries_the_pinned_stamp(tmp_path, export_zip):
                     assert nested.create_system == 3, nested.filename
                     checked += 1
     assert checked > 5
+
+
+def test_the_entry_stamp_holds_on_the_platform_that_would_break_it(monkeypatch):
+    """``ZipInfo`` reads ``sys.platform`` to choose ``create_system``: 0 on
+    Windows, 3 everywhere else. CI is ubuntu only, so removing the pin is
+    invisible to every other test here; this one builds the entry as the
+    Windows binary would and holds the pin where it actually matters."""
+    import sys as _sys
+
+    from vcfcf_migrator.containers import ZIP_EPOCH, zip_entry
+
+    monkeypatch.setattr(_sys, "platform", "win32")
+    entry = zip_entry("views.zip")
+    assert entry.create_system == 3, "a bundle built on Windows must match one built here"
+    assert entry.date_time == ZIP_EPOCH
+    assert entry.compress_type == zipfile.ZIP_DEFLATED

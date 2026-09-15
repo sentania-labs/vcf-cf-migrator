@@ -921,3 +921,51 @@ def test_the_subject_rule_lives_in_one_function(built):
     assert _preview.subject_of(cfg, False, False, True) == "never-shows"
     assert _preview.subject_of(cfg, False, False, False) == "from-outside"
     assert _preview.subject_of({}, False, False, True) == "self"
+
+
+def test_a_selector_the_export_says_nothing_about_gets_neither_tail(built):
+    """The third branch, and the only one where a regression invents a claim
+    rather than repeating one: where the export declares no selfProvider, the
+    caption says the widget drives and stops. Four fixture selectors are
+    shaped this way."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    page = _preview.render_page(graph, node)
+    frame = re.search(r"<h3>\[Fixture\] Bare selector.*?(?=<div class='pv-w)", page, re.S)
+    assert frame
+    body = frame.group(0)
+    assert "drives 1 widget on this dashboard" in body
+    assert "picks its own subject" not in body
+    assert "does not choose its own subject" not in body
+    # The caption ends at the driving clause: nothing is claimed about a
+    # subject the export says nothing about.
+    caption = re.search(r"<p class='pv-drivenby'>(.*?)</p>", body, re.S)
+    assert caption and caption.group(1).endswith("on this dashboard")
+
+
+def test_every_selector_caption_matches_what_the_export_declares(built):
+    """All three branches at once, over every fixture dashboard: the tail is
+    the one the widget's own selfProvider warrants and no other."""
+    _members, graph = built
+    for node in graph.by_kind("dashboard"):
+        preview = _preview.build(graph, node)
+        doc = _preview._json_doc(_preview.raw_document(graph, node))
+        widgets = [w for w in doc.get("widgets", []) if isinstance(w, dict)]
+        wiring = _preview.read_wiring(doc, widgets)
+        keys = _preview.widget_keys(widgets)
+        for widget in widgets:
+            key = keys[id(widget)]
+            if not wiring.receivers.get(key) or wiring.providers.get(key):
+                continue
+            cfg = widget.get("config") if isinstance(widget.get("config"), dict) else {}
+            declared = _preview._self_provider(cfg)
+            title = _preview._widget_title(widget) or "(untitled widget)"
+            page = _preview.render_page(graph, node)
+            frame = re.search(rf"<h3>{re.escape(title)}.*?(?=<div class='pv-w)", page, re.S)
+            assert frame, title
+            body = frame.group(0)
+            assert ("picks its own subject" in body) is (declared is True), title
+            assert ("does not choose its own subject" in body) is (declared is False), title
+        assert preview.selectors == sum(
+            1 for w in widgets
+            if wiring.receivers.get(keys[id(w)]) and not wiring.providers.get(keys[id(w)]))
