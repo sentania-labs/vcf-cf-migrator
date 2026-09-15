@@ -298,31 +298,90 @@ jobs:
           # the zip itself is thrown away and the release still ships the
           # binary, which now carries a signature Apple has vouched for.
           /usr/bin/ditto -c -k "$BIN" "$RUNNER_TEMP/notarize.zip"
+          # 2h, not the 30m this started with. On 2026-09-15 Apple took
+          # between 68 and 96 minutes to settle this project's first two
+          # submissions, both of which came back Accepted: the binaries were
+          # fine and the 30m ceiling was the only thing that failed. Users
+          # elsewhere report notarization finishing in under a minute, so this
+          # is headroom for a bad day rather than an expectation. Waiting
+          # costs nothing when Apple is quick.
+          started=$(date +%s)
           set +e
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
             --key "$RUNNER_TEMP/notary.p8" \
             --key-id "$NOTARY_KEY_ID" \
             --issuer "$NOTARY_ISSUER_ID" \
-            --wait --timeout 30m \
-            --output-format json > "$RUNNER_TEMP/notary.json"
+            --wait --timeout 2h \
+            --output-format json > "$RUNNER_TEMP/notary.out" 2> "$RUNNER_TEMP/notary.err"
           rc=$?
           set -e
-          cat "$RUNNER_TEMP/notary.json"
-          status="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','UNKNOWN'))" "$RUNNER_TEMP/notary.json" 2>/dev/null || echo UNKNOWN)"
-          if [ "$rc" != "0" ] || [ "$status" != "Accepted" ]; then
-            echo "::error::notarization did not succeed (status=$status)"
-            sub="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('id',''))" "$RUNNER_TEMP/notary.json" 2>/dev/null || true)"
-            if [ -n "$sub" ]; then
+          elapsed=$(( $(date +%s) - started ))
+          mins=$(( elapsed / 60 ))
+          echo "--- notarytool stdout ---"; cat "$RUNNER_TEMP/notary.out" || true
+          echo "--- notarytool stderr ---"; cat "$RUNNER_TEMP/notary.err" || true
+          # Every release records how long Apple took, so the next slow day has
+          # a history to compare against instead of a guess.
+          echo "notarization round trip: ${elapsed}s (${mins} min)"
+
+          # Read the verdict from whichever stream carried it. When the v0.2.1
+          # release timed out, its payload appeared exactly once in the job
+          # log, which is equally consistent with stdout and with stderr, and
+          # nothing available could tell the two apart. Rather than bet a tag
+          # on the answer, try both and take the first that parses.
+          status=UNKNOWN
+          sub="-"
+          for f in "$RUNNER_TEMP/notary.out" "$RUNNER_TEMP/notary.err"; do
+            [ -s "$f" ] || continue
+            parsed="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print((d.get('status') or 'UNKNOWN') + '\t' + (d.get('id') or '-'))" "$f" 2>/dev/null)" || continue
+            [ -n "$parsed" ] || continue
+            status="${parsed%%$'\t'*}"
+            sub="${parsed##*$'\t'}"
+            break
+          done
+
+          # Only these three are verdicts. Anything else, including the
+          # "In Progress" that a timeout may carry and the absent status it may
+          # carry instead, means Apple has not finished. Keying on the single
+          # value UNKNOWN would call a still-processing submission a rejection,
+          # which is a worse version of the bug this branch exists to fix.
+          case "$status" in
+            Accepted)
+              if [ "$rc" != "0" ]; then
+                echo "::error::Apple reported Accepted but notarytool exited $rc; refusing to treat that as success"
+                exit 1
+              fi
+              echo "Apple notarized this binary (submission $sub, ${elapsed}s / ${mins} min)"
+              ;;
+            Invalid|Rejected)
+              echo "::error::Apple rejected this binary (status=$status, submission $sub, after ${mins} min)"
               # The submission log is the only thing that says WHY. Without it
               # a rejection is an opaque one-word status.
               xcrun notarytool log "$sub" \
                 --key "$RUNNER_TEMP/notary.p8" \
                 --key-id "$NOTARY_KEY_ID" \
                 --issuer "$NOTARY_ISSUER_ID" || true
-            fi
-            rm -f "$RUNNER_TEMP/notary.p8"
-            exit 1
-          fi
+              exit 1
+              ;;
+            *)
+              if [ "$sub" = "-" ]; then
+                # No id means notarytool never got as far as a submission: bad
+                # credentials, no network, a malformed archive. Calling that
+                # "still in flight" would repeat exactly the mistake this
+                # branch exists to fix.
+                echo "::error::notarytool failed before Apple accepted a submission (exit $rc, after ${mins} min)"
+                echo "::error::Its stdout and stderr are above. This is a client-side or credential failure, not a verdict."
+              else
+                echo "::error::Apple returned no verdict in ${mins} min, so this release stopped waiting (status=$status)."
+                echo "::error::Submission $sub is still being processed. It was NOT rejected."
+                echo "::error::Watch it with the 'Notary diagnostics' workflow in the Actions tab, passing that id."
+                echo "::error::Once Apple reports Accepted, re-run this release with:"
+                echo "::error::  gh run rerun $GITHUB_RUN_ID --failed"
+                echo "::error::That rebuilds and submits afresh rather than reusing this submission, so it"
+                echo "::error::waits again; the old verdict only tells you Apple's queue has drained."
+              fi
+              exit 1
+              ;;
+          esac
           rm -f "$RUNNER_TEMP/notary.p8"
           # The gate above this line is notarytool reporting Accepted, which is
           # Apple stating it notarized this binary. That is the authoritative

@@ -103,6 +103,20 @@ jobs:
             exit 1
           fi
 
+      # No credentials, no network, no submission: just what this runner's
+      # notarytool says it accepts. It lives here because the release workflow
+      # runs only on a tag, so without this the only way to check a flag is to
+      # spend one.
+      - name: What notarytool accepts
+        if: always()
+        run: |
+          echo "::group::notarytool version"
+          xcrun notarytool --version || true
+          echo "::endgroup::"
+          echo "::group::notarytool submit --help"
+          xcrun notarytool submit --help || true
+          echo "::endgroup::"
+
       - name: Remove the notary key
         if: always()
         run: rm -f "$RUNNER_TEMP/notary.p8" 2>/dev/null || true
