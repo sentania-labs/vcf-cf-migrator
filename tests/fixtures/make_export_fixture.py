@@ -27,8 +27,8 @@ from pathlib import Path
 # fixture has to carry something of every excluded class for the suite to
 # prove they are excluded.
 PERSON_USER_NAME = "fixture-operator"
-PERSON_DISPLAY_NAME = "Fixture Administrator"
-PERSON_DISPLAY_NAME_2 = "Fixture Operator"
+PERSON_DISPLAY_NAME = "Fixture Owner One"
+PERSON_DISPLAY_NAME_2 = "Fixture Owner Two"
 PERSON_MAIL = "fixture.admin@example.invalid"
 PERSON_SERVICE_ACCOUNT = "fixture-service-account"
 SECRET_CIPHER_TEXT = "ENC(invented-cipher-text-not-a-secret)"

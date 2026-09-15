@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- `--log FILE`: a run log, off until asked for, with `--log-level`
+  (error, warn, info, detail, debug; detail by default) and `--log-format`
+  (`jsonl`, one JSON object per line, or `text`, the same events as lines a
+  person reads). `log-render FILE` turns a captured jsonl log into that text.
+  Both flags work before or after the subcommand, and the page has a control
+  for each.
+
+  The bar is a support case: a log plus whatever VCF Operations said when an
+  import failed has to be enough to say what the tool did and why, without the
+  export. So the log carries the run header (tool, library, Python, platform,
+  the argument vector, the declared source version and where it came from, and
+  a fingerprint of the input), every decision with the object it concerns and
+  the reason for it, every refusal and every swallowed failure, per-phase
+  counts and timings, and the output fingerprint with a hash per member.
+
+  What it never carries is enforced by the logging layer rather than by each
+  call site: credentials and encrypted values, people, and metric or mock
+  values. Key rules exclude a field by its name whatever it holds; values
+  harvested from the export's own user documents are replaced everywhere they
+  appear; and a uuid that was never declared to be a content identifier is
+  excluded, so a caller cannot log an account uuid by accident. Dashboard
+  owners appear as `owner-1`, `owner-2`, stable within a run, with no table
+  written anywhere. The log says in its first line what classes of thing it
+  holds, so an admin can decide before sending it.
+
+  The page also writes one diagnostics file, holding the run header, the input
+  fingerprint, every event and the bundle's manifest, with the button naming
+  what is in it.
+
 - `preview`: an HTML page per object, so an admin can recognise it before
   deciding to carry it. A dashboard is laid out widget by widget in the
   columns the dashboard puts them in, each frame showing its title, its type

@@ -177,8 +177,15 @@ class Redactor:
         allowed to appear. Anything uuid-shaped that was never taught here is
         excluded, which is what makes an accidental user uuid impossible."""
         text = str(value or "").strip().lower()
-        if text:
-            self._allowed.add(text)
+        if not text:
+            return
+        self._allowed.add(text)
+        # An export writes several identifiers with the uuid inside a longer
+        # string ("AlertDefinition-<uuid>", "Super Metric|sm_<uuid>"). The uuid
+        # in them came out of the same content document, so it is allowed too;
+        # without this the log printed AlertDefinition-[excluded:id].
+        for token in _UUID_RE.findall(text):
+            self._allowed.add(token.lower())
 
     def content_ids(self, values: Iterable) -> None:
         for value in values:
@@ -231,6 +238,11 @@ class Redactor:
         """One event field, keyed, which is where the key rules apply."""
         name = str(key)
         if SECRET_KEY_RE.search(name):
+            # A number under such a key is a count, not a credential: an
+            # export's manifest counts its auth sources, and excluding the
+            # count says nothing about a secret and loses a fact.
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
             return EXCLUDED_CREDENTIAL
         if VALUE_KEY_RE.match(name):
             return EXCLUDED_VALUE

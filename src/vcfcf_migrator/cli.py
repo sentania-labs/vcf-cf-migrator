@@ -410,7 +410,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         # the log.
         with log.phase("command", command=args.command):
             code = command(args)
-            log.count("exit", 0)
+            log.count("exit", code)
         return code
     except Exception as e:  # noqa: BLE001 - logged, then raised as it was
         _runlog.error("run.crashed", failure=type(e).__name__, detail=str(e),

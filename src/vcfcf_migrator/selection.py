@@ -111,6 +111,12 @@ def resolve(graph: Graph, lines: Sequence[str]) -> List[str]:
     the admin asked for is worse than no bundle."""
     keys: List[str] = []
     unknown: List[str] = []
+    # A selection line is the admin naming content, the same as an identifier
+    # typed on the command line, so the identifiers in it are allowed in the
+    # log. Without this a refusal read "the selection names [excluded:id]",
+    # which is the one line where the identifier is the whole point.
+    for line in lines:
+        runlog.content_id(line)
     for line in lines:
         hits = match_line(graph, line)
         if not hits:
