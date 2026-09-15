@@ -1159,3 +1159,78 @@ def test_a_column_the_export_says_is_not_text_is_a_number(built):
     by_label = {c.label: c for c in columns}
     assert by_label["CPU Usage"].is_string is False
     assert by_label["Cluster"].is_string is True
+
+
+# ---------------------------------------------------------------------------
+# What a person reads, and what hides behind it (#13)
+# ---------------------------------------------------------------------------
+
+def test_a_display_name_wins_over_the_key(built):
+    _members, graph = built
+    text, title = _preview.metric_text(graph, "Cluster Score", f"Super Metric|sm_{SM_IDS[0]}")
+    assert text == "Cluster Score"
+    assert title == f"Super Metric|sm_{SM_IDS[0]}"
+
+
+def test_a_supermetric_key_with_no_label_resolves_to_its_name(built):
+    """A column with no display name used to print a uuid. The export knows
+    what that super metric is called, so the preview should say so."""
+    _members, graph = built
+    text, _title = _preview.metric_text(graph, "", f"Super Metric|sm_{SM_IDS[0]}")
+    assert "sm_" not in text
+    assert text == node_for(graph, f"supermetric:{SM_IDS[0]}").name
+
+
+def test_a_supermetric_the_export_does_not_carry_says_so_rather_than_showing_a_uuid(built):
+    _members, graph = built
+    text, title = _preview.metric_text(
+        graph, "", "Super Metric|sm_ffffffff-ffff-ffff-ffff-ffffffffffff")
+    assert "not in this export" in text
+    assert "ffffffff" not in text
+    assert "ffffffff" in title, "the key must still be reachable"
+
+
+def test_an_ordinary_metric_key_is_left_alone(built):
+    _members, graph = built
+    text, title = _preview.metric_text(graph, "", "cpu|demandmhz")
+    assert text == "cpu|demandmhz" == title
+
+
+def test_no_preview_shows_a_raw_super_metric_key_as_visible_text(built):
+    """The complaint that started this: the preview was cluttered with
+    ``Super Metric|sm_<uuid>`` sitting under names that were already right.
+
+    This walks every object in the export rather than one view, because the
+    same key was printed by six different renderers and fixing one of them
+    would otherwise look like fixing the problem.
+    """
+    _members, graph = built
+    checked = 0
+    for node in graph.ordered():
+        body = _preview.build(graph, node).body
+        # A super metric's own formula is shown verbatim, deliberately, under
+        # "formula, as exported". Rewriting the document to read more nicely
+        # would misrepresent what the export actually contains, which is the
+        # one thing this preview must never do. Everywhere else, the key is a
+        # label and a label should be readable.
+        body = re.sub(r"<pre class='pv-code'>.*?</pre>", "", body, flags=re.S)
+        visible = re.findall(r">([^<>]*Super Metric\|[^<>]*)<", body)
+        assert not visible, f"{node.key} still shows {visible}"
+        checked += 1
+    assert checked > 1
+
+
+def test_the_key_is_still_reachable_on_the_column_that_carries_one(built):
+    """Hiding the key is only acceptable because it is still there."""
+    _members, graph = built
+    for node in graph.ordered():
+        if node.kind != "view":
+            continue
+        body = _preview.build(graph, node).body
+        pairs = re.findall(r"<th title='([^']*)'>([^<]*)</th>", body)
+        for title, text in pairs:
+            if "Super Metric|" in title:
+                assert "sm_" not in text
+                return
+    raise AssertionError("the fixture no longer has a super metric column, "
+                         "so this test proves nothing")

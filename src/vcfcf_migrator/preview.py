@@ -160,6 +160,7 @@ PREVIEW_CSS = """
 .pv .pv-wiring ul { margin:5px 0 0; padding-left:18px }
 .pv .pv-wiring li { margin:1px 0 }
 .pv .pv-wiring .arrow { color:var(--pv-accent); font-weight:600 }
+.pv .pv-lbl { font-size:11px; color:var(--pv-ink2); margin-bottom:2px; }
 .pv .pv-key { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px; color:var(--pv-ink3);
   word-break:break-all }
 .pv table.pv-tbl { width:100%; table-layout:fixed; border-collapse:collapse; font-size:11.5px }
@@ -481,6 +482,68 @@ def view_columns(root: ET.Element) -> List[Column]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# What a person reads, and what hides behind it
+# ---------------------------------------------------------------------------
+
+# ``Super Metric|sm_6dfea6a6-e633-4b32-b438-8975e3dc06fa`` is how a view names
+# a super metric column. Across two corpus exports, 54 columns carry a key of
+# this shape under a perfectly good display name. Printing it tells a reader
+# nothing they can act on and buries the name it sits under.
+_SM_KEY = re.compile(r"(?i)^\s*super\s*metric\s*\|\s*sm[_-]?([0-9a-f][0-9a-f-]{7,})\s*$")
+
+
+def metric_text(graph: Optional[Graph], label: str, key: str) -> Tuple[str, str]:
+    """``(text, title)``: what to show, and the raw key to put in a tooltip.
+
+    VCF Operations shows an admin the display name, so a preview that claims
+    to look like the dashboard has to do the same. The key is not thrown away,
+    it moves to a tooltip, because the one reader who wants it wants it badly
+    and everyone else was reading around it.
+
+    When there is no usable label, a super metric key resolves to the metric's
+    name from this export rather than being printed as a uuid. Only when
+    nothing can be resolved does the key itself become the text, which is
+    still better than showing nothing at all.
+    """
+    label = (label or "").strip()
+    key = (key or "").strip()
+    if label and label != key:
+        return label, key
+    match = _SM_KEY.match(key)
+    if match and graph is not None:
+        node = _find_node(graph, "supermetric", match.group(1))
+        if node is not None and node.name:
+            return node.name, key
+    if match:
+        return "super metric (not in this export)", key
+    return label or key, key
+
+
+def titled(text: str, title: str = "", cls: str = "pv-lbl") -> str:
+    """A label, with its raw key reachable but not in the way."""
+    attr = f" title='{_e(title)}'" if title and title != text else ""
+    return f"<div class='{cls}'{attr}>{_e(text)}</div>"
+
+
+def _tile_label(label: str, key: str, ctx: dict) -> str:
+    """A scoreboard tile's caption.
+
+    The caption used to fall back to the metric key, so a super metric tile
+    read as "Super Metric|sm_<uuid>" where the dashboard shows its name.
+    """
+    text, title = metric_text(ctx.get("graph"), label, key)
+    attr = f" title='{_e(title)}'" if title and title != text else ""
+    return f"<div class='l'{attr}>{_e(text)}</div>"
+
+
+def _metric_code(key: str, graph: Optional[Graph]) -> str:
+    """A metric named inside a condition, as a person would recognise it."""
+    text, title = metric_text(graph, "", key)
+    attr = f" title='{_e(title)}'" if title and title != text else ""
+    return f"<code{attr}>{_e(text)}</code>"
+
+
 def _cell(column: Column, row: int) -> Tuple[str, bool]:
     """One mock cell: its text, and whether it is numeric (right aligned)."""
     if column.is_string:
@@ -488,16 +551,27 @@ def _cell(column: Column, row: int) -> Tuple[str, bool]:
     return mockdata.metric_value(column.key, column.unit, row, column.label), True
 
 
+def _column_th(column: Column, graph: Optional[Graph], show_key: bool) -> str:
+    """One header cell: the display name, with the raw key on hover.
+
+    The key used to be printed on a second line under every heading. For a
+    super metric that line is "Super Metric|sm_<uuid>", which is noise sitting
+    on top of the name a person recognises, and it is what the dashboard this
+    preview claims to imitate does not show.
+    """
+    text, key = metric_text(graph, column.label, column.key)
+    attr = f" title='{_e(key)}'" if show_key and key and key != text else ""
+    return f"<th{attr}>{_e(text)}</th>"
+
+
 def _columns_table(columns: Sequence[Column], rows: int = MOCK_ROWS,
-                   show_keys: bool = True) -> str:
+                   show_keys: bool = True, graph: Optional[Graph] = None) -> str:
     """The view's columns as a table with mock rows under them."""
     if not columns:
         return nothing_here("this view declares no columns, so it shows an empty table "
                             "wherever it is used")
     head = "".join(
-        f"<th>{_e(c.label)}"
-        + (f"<br><span class='pv-key'>{_e(c.key)}</span>" if show_keys and c.key else "")
-        + "</th>" for c in columns)
+        _column_th(c, graph, show_keys) for c in columns)
     body = []
     for row in range(rows):
         cells = []
@@ -600,8 +674,8 @@ def _tiles(metrics: Sequence[Tuple[str, str, str]], ctx: dict) -> str:
     for label, key, unit in metrics[:8]:
         value = mockdata.metric_value(key or label, unit, 0, label)
         cells.append(f"<div class='pv-tile'><div class='v'>{_e(value)}</div>"
-                     f"<div class='l'>{_e(label)}</div>"
-                     + (f"<div class='pv-key'>{_e(key)}</div>" if key else "")
+                     + _tile_label(label, key, ctx)
+                     + (titled(*metric_text(ctx.get("graph"), "", key)) if key else "")
                      + "</div>")
     return "<div class='pv-tiles'>" + "".join(cells) + "</div>"
 
@@ -646,7 +720,7 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
             "shows an empty table")
     if presentation and presentation != "list":
         return head + _non_list_view(presentation, columns)
-    return head + _columns_table(columns[:6], rows=3)
+    return head + _columns_table(columns[:6], rows=3, graph=ctx.get("graph"))
 
 
 def _non_list_view(presentation: str, columns: Sequence[Column]) -> str:  # noqa: D401
@@ -675,7 +749,7 @@ def _widget_metricchart(cfg: dict, ctx: dict) -> str:
         return _sparkline(ctx["seed"])
     parts = []
     for label, key, unit in metrics[:3]:
-        parts.append(f"<div class='pv-key'>{_e(label)}{(' | ' + _e(key)) if key else ''}</div>"
+        parts.append(titled(*metric_text(ctx.get("graph"), label, key))
                      + _sparkline(key or label, unit))
     return "".join(parts)
 
@@ -687,7 +761,7 @@ def _widget_pareto(cfg: dict, ctx: dict) -> str:
     unit = unit or _cfg_unit(cfg)
     bars = cfg.get("barsCount")
     count = bars if isinstance(bars, int) and 0 < bars <= 40 else 10
-    return (f"<div class='pv-key'>{_e(label)}{(' | ' + _e(key)) if key else ''}</div>"
+    return (titled(*metric_text(ctx.get("graph"), label, key))
             + _bars(key or label, count, unit))
 
 
@@ -769,16 +843,13 @@ def heatmap_palette(cfg: dict) -> Tuple[str, ...]:
 def _widget_heatmap(cfg: dict, ctx: dict) -> str:
     metrics = heatmap_metrics(cfg)
     label, key = metrics[0] if metrics else ("", "")
-    if key and label:
-        label = f"{label} | {key}"
-    else:
-        label = label or key
     cells = []
     palette = heatmap_palette(cfg)
     for i in range(24):
         colour = mockdata.pick(palette, "heat", ctx["seed"], i)
         cells.append(f"<i style='background:{colour}'></i>")
-    head = f"<div class='pv-key'>{_e(label)}</div>" if label else ""
+    text, title = metric_text(ctx.get("graph"), label, key)
+    head = titled(text, title) if text else ""
     return head + "<div class='pv-heat'>" + "".join(cells) + "</div>"
 
 
@@ -792,7 +863,8 @@ def _widget_propertylist(cfg: dict, ctx: dict) -> str:
     for label, key, unit in metrics[:8]:
         value = (mockdata.string_value(key or label, 0, label) if not unit
                  else mockdata.metric_value(key or label, unit, 0, label))
-        rows.append(f"<tr><td>{_e(label)}<br><span class='pv-key'>{_e(key)}</span></td>"
+        _text, _key = metric_text(ctx.get("graph"), label, key)
+        rows.append(f"<tr><td title='{_e(_key)}'>{_e(_text)}</td>"
                     f"<td>{_e(value)}</td></tr>")
     return "<table class='pv-tbl'><tbody>" + "".join(rows) + "</tbody></table>"
 
@@ -972,7 +1044,7 @@ def _widget_healthchart(cfg: dict, ctx: dict) -> str:
     label = str(cfg.get("metricName") or cfg.get("metricLabel") or "")
     key = str(cfg.get("metricKey") or "")
     unit = _cfg_unit(cfg)
-    head = (f"<div class='pv-key'>{_e(label)}{(' | ' + _e(key)) if key else ''}</div>"
+    head = (titled(*metric_text(ctx.get("graph"), label, key))
             if (label or key) else "")
     # Chart ink, not a verdict. This used to draw in the page's green, which
     # is the product's "healthy" colour, over a value this page invented: a
@@ -1717,7 +1789,7 @@ def _view_preview(graph: Graph, node: Node, preview: Preview) -> str:
         preview.notes.append(
             f"this view's presentation is {presentation}; only list views are laid out")
         return head + "<h4 class='pv-h'>attributes</h4>" + _non_list_view(presentation, columns)
-    return head + "<h4 class='pv-h'>columns, with mock rows</h4>" + _columns_table(columns)
+    return head + "<h4 class='pv-h'>columns, with mock rows</h4>" + _columns_table(columns, graph=graph)
 
 
 def _supermetric_preview(graph: Graph, node: Node, preview: Preview) -> str:
@@ -1917,7 +1989,7 @@ def _symptom_preview(graph: Graph, node: Node, preview: Preview) -> str:
     for state in root.findall("State"):
         parts.append(f"<h4 class='pv-h'>condition, severity "
                      f"{_e(state.get('severity') or 'not declared')}</h4>")
-        items = [f"<li>{_condition_words(condition)}</li>"
+        items = [f"<li>{_condition_words(condition, graph)}</li>"
                  for condition in state.findall("Condition")]
         if items:
             parts.append("<ul class='pv-logic'>" + "".join(items) + "</ul>")
@@ -1928,7 +2000,7 @@ def _symptom_preview(graph: Graph, node: Node, preview: Preview) -> str:
     return "".join(parts)
 
 
-def _condition_words(condition: ET.Element) -> str:
+def _condition_words(condition: ET.Element, graph: Optional[Graph] = None) -> str:
     """One symptom condition in words, per the shapes the corpus carries:
     a metric or property threshold, a message event, and a log query."""
     kind = (condition.get("type") or "").lower()
@@ -1943,7 +2015,7 @@ def _condition_words(condition: ET.Element) -> str:
         # as a boolean it labelled the condition instanced when the export
         # said the opposite.
         instanced = " (instanced)" if declared_flag(condition.get("instanced")) else ""
-        return (f"<code>{_e(key)}</code> <span class='op'>{_e(operator)}</span>{tail}"
+        return (f"{_metric_code(key, graph)} <span class='op'>{_e(operator)}</span>{tail}"
                 + (f" <span class='op'>({_e(threshold)} threshold)</span>" if threshold else "")
                 + instanced)
     if kind == "message_event" or condition.get("eventType"):

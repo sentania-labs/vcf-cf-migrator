@@ -364,7 +364,11 @@ def _laid_out_widgets() -> list:
                     # The shape all 41 corpus heatmaps carry: the metric is a
                     # pair of key and label, not a bare key. Reading it with
                     # str() printed the dict onto the page.
-                    "configs": [{"colorBy": {"metricKey": "cpu|usage_average",
+                    # Coloured by a super metric, because that is what the
+                    # corpus heatmaps do and it is the case that used to print
+                    # "CPU Usage % | Super Metric|sm_<uuid>" onto the page. A
+                    # plain metric key here left that path untested.
+                    "configs": [{"colorBy": {"metricKey": f"Super Metric|sm_{SM_IDS[1]}",
                                              "value": "CPU Usage %"},
                                  "sizeBy": {"metricKey": "cpu|demandmhz",
                                             "value": "CPU Demand"}}]}},
