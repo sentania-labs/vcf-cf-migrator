@@ -861,10 +861,15 @@ def test_a_selector_that_declares_it_picks_its_own_subject_is_not_told_otherwise
     assert frame
     assert "drives 1 widget on this dashboard, and picks its own subject" in frame.group(0)
     assert "chooses no subject of its own" not in frame.group(0)
-    # And the widget that does declare it takes its subject from elsewhere
-    # still says so.
+    # And the selector the export says does not choose its own subject says
+    # what the export says, which is that nothing feeds it: not that it takes
+    # its subject from the widgets it drives, which is the wiring backwards.
     fed = re.search(r"<h3>\[Fixture\] Clusters.*?(?=<div class='pv-w)", page, re.S)
-    assert fed and "chooses no subject of its own" in fed.group(0)
+    assert fed
+    assert ("the export says it does not choose its own subject and names nothing that "
+            "feeds it") in fed.group(0)
+    assert "shows whatever is picked in them" not in page
+    assert "picks its own subject" not in fed.group(0)
 
 
 @pytest.mark.parametrize("title", ["[Fixture] Driving scoreboard", "[Fixture] Driving view"])

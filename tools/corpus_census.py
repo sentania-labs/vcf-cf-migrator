@@ -13,6 +13,13 @@ It never writes into the corpus directory, and nothing it prints belongs in
 the repo: the corpus is the admin's own content (see the spec's two tiers of
 test material), so its names and uuids stay on the workstation.
 
+**Where the numbers come from.** Every per-widget verdict is the one the
+preview reached while rendering that widget, read out of
+``Preview.widget_verdicts``; this script counts, it does not classify. An
+earlier version carried its own copy of the rules and had drifted from them
+twice. Widgets are keyed with ``preview.widget_keys``, the page's own key
+expression, for the same reason.
+
 **Identity.** An object is ``(kind, uuid)``, falling back to
 ``(kind, ident)`` for the kinds an export gives no uuid (custom groups,
 outbound settings). A dashboard is its uuid alone. A widget is
@@ -102,7 +109,12 @@ class Census:
         widgets = [w for w in doc.get("widgets", []) if isinstance(w, dict)]
         wiring = _preview.read_wiring(doc, widgets)
         dash = node.uuid or node.ident
-        ids = [str(w.get("id") or f"index-{i}") for i, w in enumerate(widgets)]
+        # One key expression, the page's own: two that happen to agree do not
+        # (the page renders tab by tab, so "position" meant two different
+        # positions and id-less widgets were counted under another widget's
+        # verdict).
+        keys = _preview.widget_keys(widgets)
+        ids = [keys[id(w)] for w in widgets]
         self.dashboard_widgets[dash].update(ids)
         self.dashboard_widget_sets[dash].add(tuple(sorted(ids)))
         self.dashboard_driven[dash].add(bool(wiring.receivers))
@@ -117,7 +129,14 @@ class Census:
         # to re-derive them and had already drifted twice: once on the subject
         # rule, once on whether a selector's view is resolved at all.
         for wid in ids:
-            state, code, subject = preview.widget_verdicts.get(wid, ("", "", "self"))
+            if wid not in preview.widget_verdicts:
+                # Never defaulted: a missing verdict means the two sides have
+                # drifted again, and a default would count the widget as
+                # something rather than say so.
+                raise KeyError(
+                    f"no verdict for widget {wid} of dashboard {dash}: the census and the "
+                    "page are keying widgets differently")
+            state, code, subject = preview.widget_verdicts[wid]
             self.widget_subject[(dash, wid)].add(subject)
             self.widget_state[(dash, wid)].add(code if state else "")
         for (_title, _kind, code, _reason) in preview.elsewhere:
@@ -199,7 +218,8 @@ def render(report: dict) -> str:
     lines.append("  how widgets come by their subject")
     for kind, count in sorted(report["widget subjects"].items()):
         lines.append(f"    {kind:34s} {count:6d}")
-    lines.append("  where copies of one identity disagree")
+    lines.append("  every total above counts only identities whose copies agree; these "
+                 "are the ones they exclude")
     for key in ("objects with two names", "divergent objects", "divergent dashboards",
                 "divergent widgets", "divergent widget subjects"):
         lines.append(f"    {key:34s} {report[key]:6d}")

@@ -897,3 +897,35 @@ def test_two_widgets_naming_one_absent_object_are_one_missing_edge(graph):
         f"dashboard:{DASHBOARD_ID}@{OWNER}", f"dashboard:{DASHBOARD_ID}@{OWNER_2}"}
     text = _graph.render_tree(graph)
     assert text.count(f"view [{ABSENT_VIEW_ID}] wanted by") == 2
+
+
+def test_every_bundle_entry_carries_the_pinned_stamp(tmp_path, export_zip):
+    """Two builds seconds apart differ in bytes unless the stamp is pinned,
+    and the byte-identity tests build back to back in one process, so they
+    pass on the clock's resolution rather than on the pin. This asserts the
+    stamp itself, on the outer members and inside the rebuilt inner zips.
+
+    ``create_system`` is pinned too: ZipInfo sets it to 0 on Windows and 3
+    elsewhere, so without it the three shipped binaries write different bytes
+    for one selection.
+    """
+    from vcfcf_migrator.containers import ZIP_EPOCH
+
+    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
+    assert code == 0
+    checked = 0
+    with zipfile.ZipFile(out) as bundle:
+        for info in bundle.infolist():
+            assert info.date_time == ZIP_EPOCH, info.filename
+            assert info.create_system == 3, info.filename
+            checked += 1
+            if info.filename.lower().endswith(".zip") or "/" in info.filename:
+                try:
+                    inner = zipfile.ZipFile(io.BytesIO(bundle.read(info.filename)))
+                except zipfile.BadZipFile:
+                    continue
+                for nested in inner.infolist():
+                    assert nested.date_time == ZIP_EPOCH, nested.filename
+                    assert nested.create_system == 3, nested.filename
+                    checked += 1
+    assert checked > 5

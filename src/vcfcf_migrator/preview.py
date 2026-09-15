@@ -1162,6 +1162,7 @@ def _dashboard_preview(graph: Graph, node: Node, preview: Preview) -> str:
             f"them, so the grid is drawn {columns} columns wide rather than squashing it")
 
     wiring = read_wiring(doc, widgets)
+    keys = widget_keys(widgets)
     preview.receivers = sum(1 for w in widgets
                             if wiring.is_receiver(str(w.get("id") or "")))
     preview.providers = len(wiring.receivers)
@@ -1184,7 +1185,7 @@ def _dashboard_preview(graph: Graph, node: Node, preview: Preview) -> str:
             else:
                 label = f"id {_e(tab)}, which is all the document gives"
             parts.append(f"<h4 class='pv-h'>tab {label} ({len(members)} widgets)</h4>")
-        parts.append(_widget_grid(graph, members, columns, preview, wiring))
+        parts.append(_widget_grid(graph, members, columns, preview, wiring, keys))
     if not widgets:
         parts.append(_mark_object_empty(
             preview, "dashboard-no-widgets",
@@ -1206,6 +1207,20 @@ def _dashboard_preview(graph: Graph, node: Node, preview: Preview) -> str:
     description = str(doc.get("description") or "").strip()
     head = f"<p class='pv-sub'>{_e(description)}</p>" if description else ""
     return head + "".join(parts)
+
+
+def widget_keys(widgets: Sequence[dict]) -> Dict[int, str]:
+    """``id(widget) -> the key this widget is counted under``.
+
+    One expression, called once per document, because two that happen to
+    agree do not: the page renders widgets tab by tab and the census walks
+    them in document order, so an id-less widget keyed by "its position"
+    meant two different positions and 14 fixture widgets were counted under
+    another widget's verdict. The key is the widget's own id where it has
+    one, and its index in the document where it does not.
+    """
+    return {id(widget): str(widget.get("id") or f"index-{index}")
+            for index, widget in enumerate(widgets)}
 
 
 def _ordered_widgets(widgets: Sequence[dict]) -> List[dict]:
@@ -1233,8 +1248,12 @@ def _ordered_widgets(widgets: Sequence[dict]) -> List[dict]:
 
 
 def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
-                 preview: Preview, wiring: Optional[Wiring] = None) -> str:
+                 preview: Preview, wiring: Optional[Wiring] = None,
+                 keys: Optional[Dict[int, str]] = None) -> str:
     wiring = wiring or Wiring()
+    # The keys are computed once for the whole document, above the tab split,
+    # so a widget's key does not depend on which tab it is rendered under.
+    keys = widget_keys(widgets) if keys is None else keys
     cells: List[str] = []
     for position, widget in enumerate(_ordered_widgets(widgets)):
         widget_type = str(widget.get("type") or "")
@@ -1272,8 +1291,13 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
             subject = f"this widget drives {_plural(len(feeds), 'widget')} on this dashboard"
             chooses = _self_provider(cfg)
             if chooses is False:
-                subject = ("this widget chooses no subject of its own: " + subject
-                           + ", and shows whatever is picked in them")
+                # Not "shows whatever is picked in them": the export names
+                # this widget the provider on every edge it sits on and names
+                # no provider for it, so nothing feeds it and the earlier tail
+                # had the wiring pointing backwards. 17 of the corpus's 92
+                # selectors are shaped this way.
+                subject += ("; the export says it does not choose its own subject and "
+                            "names nothing that feeds it")
             elif chooses is True:
                 subject += ", and picks its own subject"
             preview.selectors += 1
@@ -1356,8 +1380,7 @@ def _widget_grid(graph: Graph, widgets: Sequence[dict], columns: int,
                 state, code = "elsewhere", preview.elsewhere[before_elsewhere][2]
             elif len(preview.empty_codes) > before_empty:
                 state, code = "empty", preview.empty_codes[before_empty]
-        preview.widget_verdicts[str(widget.get("id") or f"index-{position}")] = (
-            state, code, subject_kind)
+        preview.widget_verdicts[keys[id(widget)]] = (state, code, subject_kind)
         cells.append(_widget_cell(widget, widget_type, title, inner, columns, preview,
                                   driven_by=[wiring.title(pid) for pid, _k in driven_by],
                                   feeds=[wiring.title(rid) for rid, _k in feeds]))

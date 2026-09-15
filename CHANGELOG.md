@@ -63,16 +63,17 @@
   recognised and a blank box shows neither its columns nor its metrics; the
   label is what keeps that honest. `selfProvider` is read in both the nested
   and the flat spelling (every corpus widget nests it). How a widget comes by
-  its subject has four answers and the preview gives the right one, deciding
-  from the wiring before it looks at the configuration: fed by a named widget;
-  a selector, which chooses no subject of its own precisely because it drives
-  the widgets below it, whatever its own configuration looks like; driven from
-  outside the dashboard, which is how a dashboard opened in an object's
-  context works; or waiting on a selection nothing on the dashboard provides,
-  which is the only one of the four that will never show data and the only one
-  counted as state 3. Asking the configuration first is what let a widget
-  carry a badge saying how many widgets it drives directly above a box saying
-  it showed nothing.
+  its subject has five answers and the preview gives the right one, deciding
+  from the wiring before it looks at the configuration: it picks its own; it
+  is fed by a named widget; it is a selector, which the wiring decides,
+  because it drives other widgets, whatever its own configuration looks like,
+  and whether it also picks its own subject is a separate question the export
+  answers per widget; it is driven from outside the dashboard, which is how a
+  dashboard opened in an object's context works; or it waits on a selection
+  nothing on the dashboard provides, which is the only one of the five that
+  will never show data and the only one counted as state 3. Asking the
+  configuration first is what let a widget carry a badge saying how many
+  widgets it drives directly above a box saying it showed nothing.
 
   Widths and order are the dashboard's own, heights are the preview's (taken
   from the content, so nothing is clipped), and the banner on every page says

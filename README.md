@@ -208,14 +208,17 @@ though it stood alone hides the main thing about an interaction-driven
 dashboard. So the layout carries the flow: a summary above the grid naming
 which widget drives which, a badge and a coloured edge on each provider and
 receiver, and on a receiver a line saying whose selection its values stand
-for. How a widget comes by its subject has four answers, and the page gives the
-right one rather than guessing: fed by a named widget; a **selector**, which
-chooses no subject of its own precisely because it drives the widgets below
-it; driven from **outside** the dashboard, the way a dashboard opened in an
-object's context is; or waiting on a selection nothing on the dashboard
-provides, which is the only one of the four that will never show data. That
-last one is state 3, and the widget is still drawn under the sentence, since
-a blank box would show neither its columns nor its metrics.
+for. How a widget comes by its subject has five answers, and the page gives
+the right one rather than guessing: it picks its own (the commonest, and what
+`selfProvider` says when it says anything); it is **fed** by a named widget;
+it is a **selector**, which the wiring decides, because it drives other
+widgets, and whether it also picks its own subject is a separate question the
+export answers per widget; it is driven from **outside** the dashboard, the
+way a dashboard opened in an object's context is; or it waits on a selection
+nothing on the dashboard provides, which is the only one of the five that will
+never show data. That last one is state 3, and the widget is still drawn under
+the sentence, since a blank box would show neither its columns nor its
+metrics.
 
 The file reaches nothing: inline CSS, inline SVG, no script, no font, no
 image, no CDN. It opens on a workstation with no route anywhere.
