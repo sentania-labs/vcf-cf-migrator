@@ -70,7 +70,7 @@ def state(config_dir, export_zip):
 def built(tmp_path, export_zip, config_dir):
     log = tmp_path / "run.jsonl"
     out = tmp_path / "bundle.zip"
-    code, events = run(["--source-version", "9.0.2", "build", str(export_zip),
+    code, events = run(["build", str(export_zip),
                         "--select-all", "--out", str(out)], log)
     assert code == 0, events[-3:]
     return events, out
@@ -86,8 +86,7 @@ def test_the_header_says_what_the_run_was_asked_to_do(built):
     header = of(events, "run.start")[0]
     assert header["tool"] and header["core"] and header["python"] and header["platform"]
     assert "build" in header["argv"] and "--select-all" in header["argv"]
-    assert header["source_version"] == "9.0.2"
-    assert header["source_version_from"] == "command line"
+    assert "source_version" not in header
     assert header["corpus_dir"] and header["corpus_from"]
 
 
@@ -127,7 +126,7 @@ def test_closure_says_what_it_added_and_what_needed_it(tmp_path, export_zip, con
     picks = tmp_path / "picks.txt"
     picks.write_text(f"dashboard:{DASHBOARD_ID}@{OWNER}\n", encoding="utf-8")
     log = tmp_path / "closure.jsonl"
-    code, events = run(["--source-version", "9.0.2", "build", str(export_zip),
+    code, events = run(["build", str(export_zip),
                         "--select", str(picks), "--out", str(tmp_path / "subset.zip")], log)
     assert code == 0
     added = of(events, "closure.added")
@@ -163,23 +162,12 @@ def test_a_member_this_tool_does_not_understand_is_named_not_dropped_quietly(bui
 # Refusals and swallowed failures
 # ---------------------------------------------------------------------------
 
-def test_a_build_with_no_declared_source_version_says_why_it_refused(tmp_path, export_zip,
-                                                                     config_dir):
-    log = tmp_path / "refused.jsonl"
-    code, events = run(["build", str(export_zip), "--select-all",
-                        "--out", str(tmp_path / "no.zip")], log)
-    assert code == 1
-    refusal = of(events, "command.refused")[0]
-    assert "no source version declared" in refusal["reason"]
-    assert of(events, "run.end")[0]["exit"] == 1
-
-
 def test_a_selection_naming_something_absent_is_refused_in_the_log(tmp_path, export_zip,
                                                                    config_dir):
     picks = tmp_path / "picks.txt"
     picks.write_text("dashboard:11111111-2222-4333-8444-555555555555\n", encoding="utf-8")
     log = tmp_path / "bad-selection.jsonl"
-    code, events = run(["--source-version", "9.0.2", "build", str(export_zip),
+    code, events = run(["build", str(export_zip),
                         "--select", str(picks), "--out", str(tmp_path / "no.zip")], log)
     assert code == 1
     refusal = of(events, "selection.refused")[0]
@@ -194,7 +182,7 @@ def test_an_unwritable_bundle_path_is_in_the_log(tmp_path, export_zip, config_di
     log = tmp_path / "unwritable.jsonl"
     blocked = tmp_path / "a-file"
     blocked.write_text("not a directory", encoding="utf-8")
-    code, events = run(["--source-version", "9.0.2", "build", str(export_zip),
+    code, events = run(["build", str(export_zip),
                         "--select-all", "--out", str(blocked / "bundle.zip")], log)
     assert code == 1
     failure = of(events, "bundle.unwritable")[0]
@@ -247,7 +235,7 @@ def test_a_document_that_does_not_parse_is_logged_before_the_refusal(tmp_path, c
         z.writestr("configuration.json", json.dumps({"type": "CUSTOM", "superMetrics": 1}))
         z.writestr("supermetrics.json", "{not json at all")
     log = tmp_path / "broken.jsonl"
-    code, events = run(["--source-version", "9.0.2", "tree", str(broken)], log)
+    code, events = run(["tree", str(broken)], log)
     # The member is unreadable, so the tool carries it rather than reading it;
     # the log says the member was not understood rather than staying silent.
     assert code == 0
@@ -261,7 +249,7 @@ def test_a_document_that_does_not_parse_is_logged_before_the_refusal(tmp_path, c
 def test_no_excluded_value_from_the_fixture_reaches_any_event(tmp_path, export_zip,
                                                               config_dir):
     log = tmp_path / "everything.jsonl"
-    code, _events = run(["--source-version", "9.0.2", "build", str(export_zip),
+    code, _events = run(["build", str(export_zip),
                          "--select-all", "--out", str(tmp_path / "bundle.zip")], log,
                         level="debug")
     assert code == 0
@@ -325,7 +313,6 @@ def test_the_page_saves_one_diagnostics_file_that_names_its_contents(tmp_path, e
                                                                      config_dir):
     state = PageState(str(export_zip))
     state.select_all()
-    state.source_version_cli = "9.0.2"
     state.build(str(tmp_path / "bundle.zip"))
     out = tmp_path / "diagnostics.jsonl"
     state.save_diagnostics(str(out))
@@ -420,10 +407,10 @@ def test_the_header_the_page_keeps_is_the_one_the_run_is_using(tmp_path, export_
     writes the new header. The earlier version of this test handed the buffer
     two synthetic ``run.start`` events, which the page never produces, so it
     passed while the real path kept the header from before the settings change:
-    after a truncation the log stated a source version the run was not using.
+    after a truncation the log stated a setting the run was not using.
     """
     state = PageState(str(export_zip))
-    state.save_setting({"source_version": "9.0.2"})
+    state.save_setting({"corpus_dir": str(tmp_path / "corpus")})
     state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
     state.save_setting({"log_level": "debug"})       # a second open_log
     state.run_tree()
@@ -432,7 +419,6 @@ def test_the_header_the_page_keeps_is_the_one_the_run_is_using(tmp_path, export_
         state.log.detail("noise", index=index)
     headers = [e for e in state.log.events if e["event"] == "run.start"]
     assert len(headers) == 1, headers
-    assert headers[0]["source_version"] == "9.0.2", headers[0]
     kept = {e["event"] for e in state.log.events}
     for head in runlog.HEAD_EVENTS:
         assert head in kept, (head, kept)

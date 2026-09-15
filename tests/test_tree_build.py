@@ -496,9 +496,9 @@ def test_comments_and_blank_lines_are_ignored(tmp_path):
 # Build: what came out is what went in
 # ---------------------------------------------------------------------------
 
-def _build(tmp_path, export_zip, lines=None, all_of_it=False, version="9.0.2"):
+def _build(tmp_path, export_zip, lines=None, all_of_it=False):
     out = tmp_path / "bundle.zip"
-    argv = ["--source-version", version, "build", str(export_zip), "--out", str(out)]
+    argv = ["build", str(export_zip), "--out", str(out)]
     if all_of_it:
         argv.append("--select-all")
     else:
@@ -816,24 +816,9 @@ def test_a_selection_naming_a_missing_uuid_writes_no_bundle(tmp_path, export_zip
     assert "does not carry" in err and "no bundle written" in err
 
 
-def test_build_refuses_without_a_declared_source_version(tmp_path, export_zip, capsys):
-    out = tmp_path / "b.zip"
-    assert main(["build", str(export_zip), "--select-all", "--out", str(out)]) == 1
-    assert not out.exists()
-    assert "no source version declared" in capsys.readouterr().err
-
-
-def test_build_refuses_below_the_floor(tmp_path, export_zip, capsys):
-    out = tmp_path / "b.zip"
-    assert main(["--source-version", "8.6", "build", str(export_zip),
-                 "--select-all", "--out", str(out)]) == 1
-    assert not out.exists()
-    assert "below the floor" in capsys.readouterr().err
-
-
 def test_build_needs_exactly_one_of_select_and_select_all(tmp_path, export_zip, capsys):
     out = tmp_path / "b.zip"
-    assert main(["--source-version", "9.0.2", "build", str(export_zip), "--out", str(out)]) == 2
+    assert main(["build", str(export_zip), "--out", str(out)]) == 2
     assert "exactly one of" in capsys.readouterr().err
 
 
@@ -851,8 +836,7 @@ def test_an_empty_selection_file_writes_no_bundle(tmp_path, export_zip, capsys):
 def test_corpus_check_reports_one_line_per_zip(tmp_path, capsys):
     (tmp_path / "a.zip").write_bytes(build_export_zip())
     (tmp_path / "b.zip").write_bytes(b"not a zip at all")
-    (tmp_path / "versions.json").write_text(json.dumps({"a.zip": "9.0.2"}))
-    assert main(["--source-version", "9.0.2", "corpus-check", str(tmp_path)]) == 1
+    assert main(["corpus-check", str(tmp_path)]) == 1
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("corpus:")
     assert any(l.startswith("ok       a.zip") and "documents byte-identical" in l for l in out)
@@ -862,14 +846,18 @@ def test_corpus_check_reports_one_line_per_zip(tmp_path, capsys):
 def test_corpus_check_never_writes_into_the_corpus(tmp_path, capsys):
     (tmp_path / "a.zip").write_bytes(build_export_zip())
     before = sorted(p.name for p in tmp_path.iterdir())
-    assert main(["--source-version", "9.0.2", "corpus-check", str(tmp_path)]) == 0
+    assert main(["corpus-check", str(tmp_path)]) == 0
     assert sorted(p.name for p in tmp_path.iterdir()) == before
 
 
-def test_corpus_check_refuses_rather_than_guessing_a_version(tmp_path, capsys):
+def test_corpus_check_builds_every_zip_with_nothing_declared(tmp_path, capsys):
+    """No version is declared anywhere, and every zip is still built and read
+    back: the check needs nothing from the admin but the directory."""
     (tmp_path / "a.zip").write_bytes(build_export_zip())
     assert main(["corpus-check", str(tmp_path)]) == 0
-    assert "build needs a declared source version" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "ok       a.zip" in out and "documents byte-identical" in out
+    assert "version" not in out.lower()
 
 
 def test_corpus_check_on_a_missing_directory_exits_one(tmp_path, capsys):
@@ -929,8 +917,7 @@ def test_a_dashboard_only_ui_export_builds_and_round_trips(tmp_path):
     path = _one_member_export(tmp_path, "Dashboard-1757800000000.zip",
                               _ui_dashboard_archive(), "ui.zip")
     out = tmp_path / "bundle.zip"
-    assert main(["--source-version", "9.0.2", "build", str(path),
-                 "--select-all", "--out", str(out)]) == 0
+    assert main(["build", str(path), "--select-all", "--out", str(out)]) == 0
     assert read_export(out).counts() == read_export(path).counts() == {"dashboard": 1}
     names = zipfile.ZipFile(out).namelist()
     assert "Dashboard-1757800000000.zip" in names

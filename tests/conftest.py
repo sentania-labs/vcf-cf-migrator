@@ -16,7 +16,6 @@ def _isolated_settings(tmp_path, monkeypatch):
     """No test reads or writes the user's real settings file."""
     monkeypatch.setenv("VCFCF_MIGRATOR_CONFIG_DIR", str(tmp_path / "config-autouse"))
     monkeypatch.delenv("VCFCF_MIGRATOR_CORPUS", raising=False)
-    monkeypatch.delenv("VCFCF_MIGRATOR_SOURCE_VERSION", raising=False)
 
 
 @pytest.fixture
@@ -33,5 +32,4 @@ def config_dir(tmp_path, monkeypatch) -> Path:
     d = tmp_path / "config"
     monkeypatch.setenv("VCFCF_MIGRATOR_CONFIG_DIR", str(d))
     monkeypatch.delenv("VCFCF_MIGRATOR_CORPUS", raising=False)
-    monkeypatch.delenv("VCFCF_MIGRATOR_SOURCE_VERSION", raising=False)
     return d

@@ -67,7 +67,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from vcfcf_migrator import graph as _graph  # noqa: E402
 from vcfcf_migrator import preview as _preview  # noqa: E402
 from vcfcf_migrator import runlog as _runlog  # noqa: E402
-from vcfcf_migrator.corpus_check import read_versions  # noqa: E402
 from vcfcf_migrator.export_reader import read_members  # noqa: E402
 
 # Widget states that are about the admin's own content, as against the two
@@ -90,8 +89,8 @@ class Census:
 
     # -- walking -----------------------------------------------------------
 
-    def add_export(self, path: Path, declared: Optional[str]) -> None:
-        members = read_members(path, source_version=declared)
+    def add_export(self, path: Path) -> None:
+        members = read_members(path)
         graph = _graph.build_graph(members.data)
         for node in graph.ordered():
             preview = _preview.build(graph, node)
@@ -204,14 +203,12 @@ class Census:
         }
 
 
-def walk(directory: Path, declared: Optional[str] = None,
-         paths: Optional[List[Path]] = None) -> dict:
-    versions = read_versions(directory)
+def walk(directory: Path, paths: Optional[List[Path]] = None) -> dict:
     zips = paths if paths is not None else sorted(
         p for p in directory.iterdir() if p.suffix.lower() == ".zip")
     census = Census()
     for path in zips:
-        census.add_export(path, versions.get(path.name, declared))
+        census.add_export(path)
     return census.report()
 
 
@@ -274,8 +271,6 @@ def main(argv=None) -> int:
     parser.add_argument("dir", nargs="?", default=os.environ.get("VCFCF_MIGRATOR_CORPUS",
                                                                 "corpus"),
                         help="corpus directory (default: the corpus setting)")
-    parser.add_argument("--source-version", default=None,
-                        help="declared source version for zips versions.json does not name")
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument("--log", metavar="FILE", default=None,
                         help="write a run log to FILE (- for stderr)")
@@ -303,7 +298,7 @@ def main(argv=None) -> int:
     code, failed = 1, None
     try:
         with log.phase("census", dir=str(directory)):
-            report = walk(directory, args.source_version)
+            report = walk(directory)
             _runlog.info("census.counted",
                          objects=report["objects"], dashboards=report["dashboards"],
                          widgets=report["widgets"])
