@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+- **No version handling at all.** `--source-version`, the
+  `VCFCF_MIGRATOR_SOURCE_VERSION` environment variable, the saved
+  `source_version` setting and its control on the page are gone, along with
+  the 8.10 floor, the refusal, the malformed-declaration usage error and
+  every line of version language in `inspect`, `tree`, `build`, `preview`,
+  `corpus-check` and the run header. `corpus-check` no longer reads a
+  `versions.json` beside the corpus: every zip in the directory is checked
+  the same way. The first command is now `vcfcf-migrator ui my-export.zip`.
+
+  Scott, 2026-09-15: "But those could be settings from the export and not
+  necessarily be version artifacts. Until we have proof drop all version
+  stuff." Every cross-version difference the matched pairs showed was
+  provenance, an instance-local counter, a rename or an author's setting, and
+  a bundle built from an 8.18.7 export imported into a 9.0.2 instance and came
+  back fully bound with no translation. The one real difference, an 8.x export
+  carrying no sharing member, is container scaffolding the bundle writer
+  already synthesizes silently, and that is the model for the class: best
+  effort, invisible, recorded in the log. The gate was friction in the first
+  command a user runs, and it could refuse an export that would have worked.
+
+  What the tool read is still on the record: the input fingerprint (size,
+  member list, manifest counts) is the version-free statement of what the
+  export was. No member of any of the five corpus exports names a product
+  version, so there is nothing else to observe.
+
 ## v0.1.0 (2026-09-15)
 
 - Three from the external review, each on a guarantee this release makes.

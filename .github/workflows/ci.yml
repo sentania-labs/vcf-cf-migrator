@@ -59,35 +59,27 @@ jobs:
           vermin --target="$floor-" --violations --no-tips src tools tests
 
       - name: Drive the installed console script over a generated fixture
-        # This step owns no content number and no version number. The counts
-        # come from the fixture module's own expectations and the floor from
-        # the code that enforces it, both via tests/fixtures/ci_checks.py, so
-        # a fixture that grows cannot leave a hand-copied number behind here
+        # This step owns no content number. The counts come from the fixture
+        # module's own expectations via tests/fixtures/ci_checks.py, so a
+        # fixture that grows cannot leave a hand-copied number behind here
         # while the suite stays green.
         run: |
           checks="$PWD/tests/fixtures/ci_checks.py"
-          ok="$(python "$checks" floor)"
-          bad="$(python "$checks" below-floor)"
           python tests/fixtures/make_export_fixture.py "$RUNNER_TEMP/fixture.zip"
           cd "$RUNNER_TEMP"
           vcfcf-migrator version
           vcfcf-migrator inspect fixture.zip
-          vcfcf-migrator --source-version "$ok" inspect fixture.zip
-          if vcfcf-migrator --source-version "$bad" inspect fixture.zip; then
-            echo "::error::$bad is below the $ok floor and must be refused"
-            exit 1
-          fi
           vcfcf-migrator inspect --json fixture.zip > inspect.json
           python "$checks" listing inspect.json
-          vcfcf-migrator --source-version "$ok" tree fixture.zip
+          vcfcf-migrator tree fixture.zip
           # Every command past here writes to one log at the loudest level, so
           # the installed binary exercises the logging too. A redactor defect
           # once made the tool work without --log and die with it, which this
           # pass could not have seen: it never passed the flag.
-          vcfcf-migrator --source-version "$ok" --log run.jsonl --log-level debug \
+          vcfcf-migrator --log run.jsonl --log-level debug \
             preview fixture.zip "$(python "$checks" preview-object)" --out preview.html
           python "$checks" preview preview.html
-          vcfcf-migrator --source-version "$ok" --log run.jsonl --log-level debug \
+          vcfcf-migrator --log run.jsonl --log-level debug \
             build fixture.zip --select-all --out bundle.zip
           vcfcf-migrator log-render run.jsonl > run.txt
           python "$checks" log run.jsonl

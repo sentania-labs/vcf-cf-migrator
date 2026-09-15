@@ -122,7 +122,6 @@ jobs:
         # come from the fixture module, never from a number typed here.
         run: |
           checks="$PWD/tests/fixtures/ci_checks.py"
-          ok="$(python "$checks" floor)"
           python tests/fixtures/make_export_fixture.py "$RUNNER_TEMP/fixture.zip"
           mkdir -p "$RUNNER_TEMP/smoke"
           cp "dist/vcfcf-migrator-${{ matrix.name }}${{ matrix.ext }}" "$RUNNER_TEMP/smoke/"
@@ -132,8 +131,8 @@ jobs:
           "$bin" inspect "$RUNNER_TEMP/fixture.zip"
           "$bin" inspect --json "$RUNNER_TEMP/fixture.zip" > inspect.json
           python "$checks" listing inspect.json
-          "$bin" --source-version "$ok" tree "$RUNNER_TEMP/fixture.zip"
-          "$bin" --source-version "$ok" build "$RUNNER_TEMP/fixture.zip" --select-all --out bundle.zip
+          "$bin" tree "$RUNNER_TEMP/fixture.zip"
+          "$bin" build "$RUNNER_TEMP/fixture.zip" --select-all --out bundle.zip
           "$bin" inspect --json bundle.zip > bundle.json
           python "$checks" listing bundle.json --bundle
           mkdir -p empty-corpus
