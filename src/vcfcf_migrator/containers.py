@@ -70,8 +70,14 @@ def zip_directory_entry(name: str) -> zipfile.ZipInfo:
     document. The factory's own packager writes them for the same reason
     (``vcfcf_core/dashboards/packager.py``: "Explicit directory entries mirror
     the real export shape", above a docstring recording an earlier version
-    rejected with that code). Stored rather than deflated, which is the shape
-    that packager writes and which imports.
+    rejected with that code).
+
+    Stored, with the directory bit set. That is not what an export writes: a
+    real export's entries are deflated with external_attr 0, because Java wrote
+    them. It is what the packager writes, and what a bundle this tool built was
+    imported with, so it is the shape with evidence behind it rather than the
+    shape that matches the export byte for byte. What matters to the importer
+    is that the entry exists.
     """
     info = zipfile.ZipInfo(name if name.endswith("/") else name + "/",
                            date_time=ZIP_EPOCH)

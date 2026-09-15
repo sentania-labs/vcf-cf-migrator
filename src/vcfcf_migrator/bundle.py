@@ -252,8 +252,11 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         result.notes.append("the source carried no <digits>L.v1 marker, so the bundle has none")
 
     owners = [o for o in by_owner if o]
+    # The keys go through the layer like everything else. This line used to
+    # call runlog.owner() itself, which is the "a rule a caller can forget"
+    # the layer disclaims: it was correct only because this caller remembered.
     runlog.detail("owners.carried", owners=owners,
-                  dashboards_by_owner={runlog.owner(o): c for o, c in sorted(by_owner.items())},
+                  dashboards_by_owner={o: c for o, c in sorted(by_owner.items())},
                   reason="one dashboard member per owner, and the manifest counts them "
                          "the same way")
     if owners and "usermappings.json" in members:

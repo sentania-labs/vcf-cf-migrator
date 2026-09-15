@@ -39,10 +39,11 @@ Tick what you want. What it depends on comes with it, said out loud, and the
 tool will not let you drop something the rest of your selection still needs.
 Then Build the bundle, and import it on the target the way you exported.
 
-An imported dashboard can take a few minutes to finish arriving, and while it
-does its widgets may look empty. That is normal and it completes on its own.
-If one stays that way for a long time, it is usually because the target does
-not have an adapter the dashboard's widgets need.
+An imported dashboard finishes arriving in the background, which takes minutes
+and sometimes longer, and while it does its widgets may look empty. That is
+normal and it completes on its own; opening the dashboard once is the quickest
+way to move it along. If one stays that way, it is usually because the target
+does not have an adapter the dashboard's widgets need.
 
 It handles dashboards, views, super metrics, groups, symptoms, alerts, reports
 and notification rules, runs on your workstation, and never talks to either
@@ -73,6 +74,8 @@ detail.
 `--log run.log` records what it did and why, in enough detail to diagnose a
 failure without the export. Logs carry content names and ids, and the file
 paths you gave the tool, which on your machine may carry your own user name.
-They never carry credentials, the export password, encrypted values, or
-anything about the people in the export: a dashboard's owner appears as
-`owner-1`.
+They never carry credentials, the export password or encrypted values, and a
+dashboard's owner appears as `owner-1`. People are excluded with two stated
+limits: a name of three characters or fewer, and a name that is also an
+ordinary word such as `operator` or `support`, are left as they are, because
+replacing those would rewrite your own content.

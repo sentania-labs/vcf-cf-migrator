@@ -413,7 +413,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if command is None:
         parser.print_help()
         return 2
-    code = 2
+    code, failed = 2, None
     try:
         # The phase is called "command" rather than the command's own name:
         # "build" would otherwise name both this phase and the bundle writer's,
@@ -424,11 +424,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             log.count("exit", code)
         return code
     except Exception as e:  # noqa: BLE001 - logged, then raised as it was
+        failed = e
         _runlog.error("run.crashed", failure=type(e).__name__, detail=str(e),
                       command=args.command)
         raise
     finally:
-        log.finish(code, what=args.command)
+        log.finish(code, what=args.command, failed=failed)
         log.close()
         _runlog.set_current(None)
 

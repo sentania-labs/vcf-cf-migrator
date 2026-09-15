@@ -132,6 +132,22 @@ _UUID_RE = re.compile(
     r"|\b[0-9a-fA-F]{32}\b")
 
 
+def _spellings(value: str) -> List[str]:
+    """The spellings of one person value that need their own alternative.
+
+    ``re.I`` folds most case differences, but not the ones that change length:
+    Turkish dotted capital I casefolds to two codepoints, and a document can
+    carry either spelling. Each variant is its own alternative in the one
+    pattern rather than a second lookup table, so there is still nothing for a
+    second definition of case to disagree with.
+    """
+    out = [value]
+    for variant in (value.casefold(), value.lower(), value.upper()):
+        if variant and variant not in out:
+            out.append(variant)
+    return out
+
+
 def _normal_id(value: str) -> str:
     """One spelling for the allow-list: lowercased, hyphens dropped, so the
     same identifier written either way is the same key."""
@@ -176,12 +192,16 @@ PATH_FIELDS = frozenset({"path", "cwd", "argv", "out", "zip", "dir", "file",
 # header and in every later event.
 VERBATIM_FIELDS = PATH_FIELDS - {"argv"}
 
-# Fields whose value is a sentence this module wrote. They are scanned for
-# uuids and mail addresses like everything else, but never for person values:
-# substituting into the tool's own English produced "the tool deciding for the
-# [excluded:person]", which is nonsense and hides nothing, since a literal in
-# this file cannot carry anyone's name.
-PROSE_FIELDS = frozenset({"reason", "says", "detail"})
+# There is no exemption from person redaction, by key or otherwise. There was
+# one: ``reason``, ``says`` and ``detail`` were treated as sentences this module
+# wrote and skipped. Fourteen call sites pass ``detail=str(e)`` or
+# ``reason=str(e)``, so the exemption covered arbitrary exception text, and an
+# exception whose message was a person's name was written verbatim into the log
+# and into the diagnostics file a customer is told to mail. An exemption keyed
+# on a name any caller can reuse is not a property of the value, so the
+# exemption is gone: every value a call site passes is scanned. What stopped
+# the tool's own English being mangled is COMMON_WORDS and the left boundary,
+# which are properties of the value and hold wherever it appears.
 
 
 # ---------------------------------------------------------------------------
@@ -284,18 +304,31 @@ class Redactor:
         identifier the export wrote ("Condition_<uuid>").
         """
         if self._pattern is None:
+            # **The pattern names its own replacement.** The previous version
+            # matched with ``re.I`` and then looked the replacement up in a
+            # dict keyed by ``str.lower()``, which are two different
+            # definitions of case: they agree on ASCII and disagree on 77 pairs
+            # of characters, so a widget title containing Turkish dotted I, or
+            # a long s, raised KeyError inside a logging call and took the
+            # command down. Two pieces of code agreeing by coincidence rather
+            # than by sharing one definition is the shape this codebase keeps
+            # producing, so there is now one expression: each alternative is a
+            # named group, and the group that matched says what to write.
             self._replacements = {}
+            values = []
             for value, pseudonym in self._owners.items():
-                self._replacements[value.lower()] = pseudonym
+                values.extend((spelling, pseudonym) for spelling in _spellings(value))
             for value in self._people:
-                self._replacements[value.lower()] = EXCLUDED_PERSON
-            if self._replacements:
+                values.extend((spelling, EXCLUDED_PERSON) for spelling in _spellings(value))
+            if values:
                 # Longest first, so a value that contains another is replaced
                 # whole rather than half.
-                parts = sorted(self._replacements, key=len, reverse=True)
+                values.sort(key=lambda pair: len(pair[0]), reverse=True)
                 pieces = []
-                for part in parts:
-                    escaped = re.escape(part)
+                for index, (part, replacement) in enumerate(values):
+                    group = f"p{index}"
+                    self._replacements[group] = replacement
+                    escaped = f"(?P<{group}>{re.escape(part)})"
                     # The boundary is on the left only. A person value that
                     # *starts* a longer token is still that person: a corpus
                     # export carries the display name "Brock" and the login
@@ -310,21 +343,21 @@ class Redactor:
                 self._pattern = re.compile(r"(?!x)x")  # matches nothing
         return self._pattern
 
-    def text(self, value: str, people: bool = True) -> str:
-        """One string, with everything excluded taken out of it.
-
-        *people* is false for a sentence this module wrote: a literal in this
-        file carries nobody's name, and substituting into it only destroyed the
-        sentence.
-        """
-        out = value
-        if people:
-            out = self._compiled().sub(
-                lambda m: self._replacements[m.group(0).lower()], out)
+    def text(self, value: str) -> str:
+        """One string, with everything excluded taken out of it."""
+        out = self._compiled().sub(self._replacement_for, value)
         out = _MAIL_RE.sub(EXCLUDED_MAIL, out)
         return _UUID_RE.sub(
             lambda m: m.group(0) if _normal_id(m.group(0)) in self._allowed
             else EXCLUDED_ID, out)
+
+    def _replacement_for(self, match) -> str:
+        """What the group that matched says to write. No second lookup, so
+        there is nothing for a second definition of case to disagree with."""
+        for group, replacement in self._replacements.items():
+            if match.group(group) is not None:
+                return replacement
+        return EXCLUDED_PERSON
 
     def field(self, key: str, value):
         """One event field, keyed, which is where the key rules apply."""
@@ -334,8 +367,6 @@ class Redactor:
             if isinstance(value, (list, tuple)):
                 return [str(v) for v in value]
             return value if isinstance(value, (int, float, bool)) else str(value)
-        if name in PROSE_FIELDS:
-            return self.value(value, people=False)
         if SECRET_KEY_RE.search(name):
             # A number under such a key is a count, not a credential: an
             # export's manifest counts its auth sources, and excluding the
@@ -357,7 +388,11 @@ class Redactor:
         if isinstance(value, (list, tuple)):
             return [self._owner_field(v) for v in value]
         if isinstance(value, dict):
-            return {str(k): self._owner_field(v) for k, v in value.items()}
+            # The *keys* are the owners here: ``{owner uuid: dashboard count}``
+            # is how a caller says what each owner carried, and leaving keys
+            # alone wrote the uuid the field exists to hide.
+            return {self.owner(k) if isinstance(k, str) and not str(k).isdigit()
+                    else str(k): self.value(v) for k, v in value.items()}
         return value  # a count of owners is a number, and a number is not a person
 
     def _person_field(self, value):
@@ -369,18 +404,24 @@ class Redactor:
             return {str(k): self._person_field(v) for k, v in value.items()}
         return value
 
-    def value(self, value, people: bool = True):
+    def value(self, value):
         """Any value, scanned rather than keyed: strings inside lists and
-        dicts get the same treatment as a string at the top."""
+        dicts get the same treatment as a string at the top.
+
+        A dict's *keys* are scanned too. They were not, and one caller was
+        writing an owner uuid as a key until it hand-wrote the pseudonym
+        itself, which is exactly the "a rule a caller can forget is not a rule"
+        this layer exists to avoid.
+        """
         if isinstance(value, str):
-            return self.text(value, people=people)
+            return self.text(value)
         if isinstance(value, (list, tuple)):
-            return [self.value(v, people=people) for v in value]
+            return [self.value(v) for v in value]
         if isinstance(value, dict):
-            return {str(k): self.field(str(k), v) for k, v in value.items()}
+            return {self.text(str(k)): self.field(str(k), v) for k, v in value.items()}
         if isinstance(value, (int, float, bool)) or value is None:
             return value
-        return self.text(str(value), people=people)
+        return self.text(str(value))
 
     def owners_seen(self) -> int:
         return len(self._owners)
@@ -423,6 +464,7 @@ class Log:
         self.events: Optional[List[dict]] = None
         self.event_cap = 40000
         self.dropped = 0
+        self._broken = 0
 
     # -- state -------------------------------------------------------------
 
@@ -447,6 +489,38 @@ class Log:
         # parameters. A logging call that raises is worse than a missing line.
         if not self.enabled(level):
             return
+        try:
+            self._emit(level, code, **fields)
+        except Exception as failure:  # noqa: BLE001 - see below
+            # The invariant, enforced rather than asserted: nothing about
+            # logging may end a command. A redactor defect took a preview down
+            # with a traceback at the default level, so the tool worked without
+            # --log and crashed with it, which is the release's headline
+            # feature breaking the tool. A failure here is recorded as an
+            # event of its own, with no value from the failed event in it: the
+            # event that could not be redacted is exactly the one that must not
+            # be written.
+            self._failed(level, code, failure)
+
+    def _failed(self, level: str, code: str, failure: BaseException) -> None:
+        self._broken += 1
+        if self._broken > 50 or self.stream is None and self.events is None:
+            return
+        event = {"t": round(self._clock() - self._t0, 4), "lvl": "error",
+                 "phase": self._phases[-1].name if self._phases else "run",
+                 "event": "log.failed", "for_event": str(code), "for_level": level,
+                 "failure": type(failure).__name__,
+                 "reason": "this event could not be written safely, so it was dropped "
+                           "rather than written unredacted; the failure is the log's, "
+                           "not the command's"}
+        if self.events is not None:
+            self.events.append(event)
+        if self.stream is not None:
+            line = (render_event(event) if self.fmt == "text"
+                    else json.dumps(event, ensure_ascii=False))
+            self.stream.write(line + "\n")
+
+    def _emit(self, level: str, code: str, /, **fields) -> None:
         event = {
             "t": round(self._clock() - self._t0, 4),
             "lvl": level,
@@ -480,9 +554,20 @@ class Log:
         """
         if self.events is None or len(self.events) <= self.event_cap:
             return
-        head = [e for e in self.events[:len(HEAD_EVENTS)]
-                if e.get("event") in HEAD_EVENTS]
-        rest = self.events[len(head):]
+        # The head is kept by what an event *is*, not by where it sits. The
+        # previous version sliced the first three entries and kept whichever of
+        # them happened to be a head event, which held only because events pop
+        # one at a time: a batch drop, or a warning emitted before the
+        # fingerprint, slid the fingerprint out of the window while the
+        # truncation notice still claimed it was kept.
+        head, rest, seen = [], [], set()
+        for event in self.events:
+            name = event.get("event")
+            if name in HEAD_EVENTS and name not in seen:
+                seen.add(name)
+                head.append(event)
+            else:
+                rest.append(event)
         first_drop = self.dropped == 0
         while len(head) + len(rest) > self.event_cap and rest:
             rest.pop(0)
@@ -570,9 +655,24 @@ class Log:
                   corpus_dir=str(corpus_dir) if corpus_dir else None,
                   corpus_from=corpus_from or None)
 
-    def finish(self, code: int, what: str = "") -> None:
-        self.info("run.end", exit=code, what=what or None,
+    def finish(self, code: Optional[int] = None, what: str = "",
+               failed: Optional[BaseException] = None) -> None:
+        """The end of the run, with the code the process will actually exit
+        with.
+
+        The code comes from here rather than from each caller's own variable.
+        Three separate defects in this family have been fixed one at a time: a
+        hardcoded 0 in the CLI, the same hardcoded 0 in the census, and a
+        crash path reporting the initialised 2 while Python exits 1. An
+        uncaught exception exits 1, so that is what this reports, whatever the
+        caller was holding.
+        """
+        if failed is not None:
+            code = 1
+        self.info("run.end", exit=0 if code is None else int(code),
+                  what=what or None, failed=(type(failed).__name__ if failed else None),
                   events=self._written, by_level=self.counts_by_level(),
+                  dropped=self.dropped or None, broken=self._broken or None,
                   owners_seen=self.redactor.owners_seen())
 
     def close(self) -> None:
@@ -778,12 +878,16 @@ def input_fingerprint(path, data: bytes, member_names: Sequence[str],
 def output_fingerprint(written: Dict[str, bytes], order: Sequence[str]) -> dict:
     """What the build actually wrote: every member, its size and its hash, so
     "what did it put in the bundle" is answerable from the log alone."""
+    # Directory entries are members of the zip and are named here: they are
+    # the reason a bundle is accepted at all, so "what did it write" has to
+    # include them.
     return {
         "members": len(order),
-        "bytes": sum(len(written[name]) for name in order if name in written),
+        "bytes": sum(len(written.get(name, b"")) for name in order),
         "files": [{"member": name, "bytes": len(written[name]),
                    "sha256": sha256(written[name])}
                   for name in order if name in written],
+        "directory_entries": [name for name in order if name.endswith("/")],
     }
 
 

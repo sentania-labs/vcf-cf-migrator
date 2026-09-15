@@ -191,12 +191,64 @@ def test_a_word_that_is_also_a_person_is_never_taught(log):
     assert event["reason"].endswith("deciding for the admin")
 
 
-def test_the_modules_own_sentences_are_never_person_substituted(log):
+def test_no_field_name_exempts_a_value_from_the_person_rules(log):
+    """There was an exemption for reason, says and detail, on the premise that
+    they carry sentences this module wrote. Fourteen call sites pass
+    ``detail=str(e)``, so it covered arbitrary exception text, and an exception
+    whose message was a person's name went into the log and into the
+    diagnostics file verbatim."""
     runlog.person("Thornbury")
-    runlog.info("careless", reason="Thornbury asked for it", name="Thornbury dashboard")
+    runlog.info("careless", reason="Thornbury asked for it",
+                detail="KeyError: 'thornbury'", says="Thornbury", name="Thornbury")
     event = events(log)[0]
-    assert event["reason"] == "Thornbury asked for it"
-    assert runlog.EXCLUDED_PERSON in event["name"]
+    for key in ("reason", "detail", "says", "name"):
+        assert "hornbury" not in event[key], (key, event[key])
+        assert runlog.EXCLUDED_PERSON in event[key]
+
+
+def test_the_tools_own_sentences_survive_because_common_words_are_never_taught(log):
+    """What keeps the tool's English intact is a property of the value, not of
+    the key it arrived under."""
+    runlog.person("admin")
+    runlog.info("careless", reason="carrying it would be the tool deciding for the admin")
+    assert events(log)[0]["reason"].endswith("deciding for the admin")
+
+
+def test_an_exception_message_carrying_a_person_is_redacted(log):
+    runlog.person("Marguerite Thornbury")
+    try:
+        raise KeyError("Marguerite Thornbury")
+    except KeyError as e:
+        runlog.error("run.crashed", failure=type(e).__name__, detail=str(e))
+    assert "Marguerite" not in text_of(log) and "Thornbury" not in text_of(log)
+
+
+def test_a_logging_failure_never_takes_the_command_down(log, monkeypatch):
+    """The invariant this layer states and now enforces. A redactor defect used
+    to raise inside a logging call, so a preview died with a traceback at the
+    default level: the tool worked without --log and crashed with it."""
+    def explode(_self, _value):
+        raise RuntimeError("the redactor gave up")
+
+    monkeypatch.setattr(runlog.Redactor, "text", explode)
+    runlog.info("thing.happened", name="anything")  # must not raise
+    failures = [e for e in events(log) if e["event"] == "log.failed"]
+    assert failures and failures[0]["for_event"] == "thing.happened"
+    assert "anything" not in text_of(log)
+
+
+def test_a_person_in_a_case_pair_python_and_the_regex_disagree_about(log):
+    """re.I and str.lower() are two definitions of case: they agree on ASCII
+    and disagree on 77 pairs, and the disagreement raised KeyError inside a
+    logging call. The pattern now names its own replacement."""
+    runlog.person("Ilkay Yilmaz")
+    runlog.person("Sabine Strauss")
+    for title in ("dashboard by \u0130LKAY YILMAZ", "dashboard by ilkay yilmaz",
+                  "report by \u017fabine \u017ftrauss", "report by SABINE STRAUSS"):
+        runlog.info("widget.classified", title=title)
+    for event in events(log):
+        assert runlog.EXCLUDED_PERSON in event["title"], event["title"]
+    assert not [e for e in events(log) if e["event"] == "log.failed"]
 
 
 def test_a_file_path_is_logged_as_the_admin_typed_it(log):

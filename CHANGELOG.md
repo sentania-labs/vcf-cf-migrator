@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Logging, after the whole-branch review: the person pattern names its own
+  replacement through named groups, so the match and the replacement come from
+  one expression rather than from `re.I` and `str.lower()` agreeing by
+  coincidence on ASCII and raising `KeyError` on the 77 pairs where they do
+  not; a logging call can no longer end a command, since a failure inside one
+  is recorded as `log.failed` and the event that could not be redacted is
+  dropped rather than written; and the person rules have no exemption at all
+  now, by key or otherwise, because the old one covered `detail=str(e)` at
+  fourteen call sites and wrote an exception message carrying a name straight
+  into the log and the diagnostics file.
+
 - Logging, after review: a person's name is excluded in any case and wherever
   it starts a token; an account uuid written as 32 hex digits without hyphens
   is excluded like a hyphenated one; a person value that is also an ordinary

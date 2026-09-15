@@ -80,10 +80,17 @@ jobs:
           vcfcf-migrator inspect --json fixture.zip > inspect.json
           python "$checks" listing inspect.json
           vcfcf-migrator --source-version "$ok" tree fixture.zip
-          vcfcf-migrator --source-version "$ok" preview fixture.zip \
-            "$(python "$checks" preview-object)" --out preview.html
+          # Every command past here writes to one log at the loudest level, so
+          # the installed binary exercises the logging too. A redactor defect
+          # once made the tool work without --log and die with it, which this
+          # pass could not have seen: it never passed the flag.
+          vcfcf-migrator --source-version "$ok" --log run.jsonl --log-level debug \
+            preview fixture.zip "$(python "$checks" preview-object)" --out preview.html
           python "$checks" preview preview.html
-          vcfcf-migrator --source-version "$ok" build fixture.zip --select-all --out bundle.zip
+          vcfcf-migrator --source-version "$ok" --log run.jsonl --log-level debug \
+            build fixture.zip --select-all --out bundle.zip
+          vcfcf-migrator log-render run.jsonl > run.txt
+          python "$checks" log run.jsonl
           vcfcf-migrator inspect --json bundle.zip > bundle.json
           python "$checks" listing bundle.json --bundle
           mkdir -p empty-corpus
