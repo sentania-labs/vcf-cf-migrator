@@ -32,14 +32,18 @@ silently merged:
 * a dashboard uuid whose copies carry different widget ids contributes the
   union of those ids, and the dashboard is counted once in ``divergent
   dashboards``;
-* a widget whose copies classify differently (one copy empty, another not)
-  is counted in ``divergent widgets`` and, for the per-reason breakdown,
-  takes the classification that sorts first, so the number is stable;
+* a widget or an object whose copies classify differently is **excluded from
+  every per-reason total** and counted in ``divergent widgets`` or
+  ``divergent objects``. An earlier version broke the tie by sorting, which
+  quietly picked "clean" for widgets and "empty" for objects and hid 14
+  classified widgets from the headline. A tie-break in either direction is a
+  claim about content the exports disagree about, and there is nothing here
+  to base it on;
 * an object identity carrying two different names is counted once and
   reported in ``objects with two names``.
 
-The corpus has one of the first and one of the third today, which is exactly
-why they are printed rather than assumed away.
+Every per-reason total is therefore "where the copies agree", and the
+divergent counts say how much is not in them.
 """
 from __future__ import annotations
 
@@ -93,32 +97,12 @@ class Census:
                 continue
             self.add_dashboard(graph, node, preview)
 
-    def view_verdict(self, graph, cfg: dict) -> Tuple[str, str]:
-        """A View widget's verdict depends on a second document, so it is
-        resolved here the way the renderer resolves it: the view the widget
-        names, and whether that view declares any column."""
-        view_id = str(cfg.get("viewDefinitionId") or "")
-        if not view_id:
-            return ("empty", "widget-no-view")
-        target = _preview._find_node(graph, "view", view_id)
-        if target is None:
-            return ("elsewhere", "widget-view-not-carried")
-        try:
-            root = _preview._xml_doc(_preview.raw_document(graph, target))
-        except _preview.PreviewError:
-            return ("", "")
-        if not _preview.view_columns(root):
-            return ("empty", "widget-view-no-columns")
-        return ("", "")
-
     def add_dashboard(self, graph, node, preview) -> None:
         doc = json.loads(_preview.raw_document(graph, node))
         widgets = [w for w in doc.get("widgets", []) if isinstance(w, dict)]
         wiring = _preview.read_wiring(doc, widgets)
         dash = node.uuid or node.ident
-        ids = []
-        for index, widget in enumerate(widgets):
-            ids.append(str(widget.get("id") or f"index-{index}"))
+        ids = [str(w.get("id") or f"index-{i}") for i, w in enumerate(widgets)]
         self.dashboard_widgets[dash].update(ids)
         self.dashboard_widget_sets[dash].add(tuple(sorted(ids)))
         self.dashboard_driven[dash].add(bool(wiring.receivers))
@@ -129,27 +113,13 @@ class Census:
         for kind, count in preview.subjects.items():
             self.occurrences[f"subject {kind}"] += count
 
-        # The preview reports per widget; re-derive the same verdicts here by
-        # identity rather than by title, since two widgets can share a title.
-        for index, widget in enumerate(widgets):
-            wid = str(widget.get("id") or f"index-{index}")
-            key = (dash, wid)
-            cfg = widget.get("config") if isinstance(widget.get("config"), dict) else {}
-            feeds = bool(wiring.receivers.get(wid))
-            driven = bool(wiring.providers.get(wid))
-            widget_type = str(widget.get("type") or "")
-            verdict, code, _sentence = _preview._widget_verdict(
-                widget_type, cfg, widget, feeds=feeds)
-            if not verdict and widget_type == "View" and not feeds:
-                verdict, code = self.view_verdict(graph, cfg)
-            subject = ("selector" if feeds and not driven else
-                       "fed" if driven else
-                       ("never-shows" if wiring.receivers else "from-outside")
-                       if _preview._self_provider(cfg) is False else "self")
-            if subject == "never-shows" and verdict != "elsewhere":
-                verdict, code = "empty", "widget-never-shows"
-            self.widget_subject[key].add(subject)
-            self.widget_state[key].add(code if verdict else "")
+        # Every verdict comes from the page that renders it. The census used
+        # to re-derive them and had already drifted twice: once on the subject
+        # rule, once on whether a selector's view is resolved at all.
+        for wid in ids:
+            state, code, subject = preview.widget_verdicts.get(wid, ("", "", "self"))
+            self.widget_subject[(dash, wid)].add(subject)
+            self.widget_state[(dash, wid)].add(code if state else "")
         for (_title, _kind, code, _reason) in preview.elsewhere:
             if code == "widget-view-not-carried":
                 self.occurrences["widgets showing a view the export does not carry"] += 1
@@ -159,16 +129,22 @@ class Census:
     def report(self) -> dict:
         widgets = {k: sorted(v) for k, v in self.widget_state.items()}
         divergent_widgets = sum(1 for v in widgets.values() if len(v) > 1)
-        empty = {k: v[0] for k, v in widgets.items() if v[0]}
+        # Agreed copies only: see the module docstring on divergence.
+        agreed = {k: v[0] for k, v in widgets.items() if len(v) == 1}
+        empty = {k: c for k, c in agreed.items() if c}
         by_code = Counter(empty.values())
-        subjects = Counter(sorted(v)[0] for v in self.widget_subject.values())
+        subjects = Counter(next(iter(v)) for v in self.widget_subject.values()
+                           if len(v) == 1)
         divergent_subjects = sum(1 for v in self.widget_subject.values() if len(v) > 1)
-        object_empty = {k: sorted(v)[-1] for k, v in self.object_empty.items()}
+        object_empty = {k: next(iter(v)) for k, v in self.object_empty.items()
+                        if len(v) == 1}
+        divergent_objects = sum(1 for v in self.object_empty.values() if len(v) > 1)
         unfinished = {k: c for k, c in empty.items() if c in UNFINISHED_CODES}
         return {
             "objects": len(self.object_names),
             "objects with two names": sum(1 for v in self.object_names.values() if len(v) > 1),
             "objects carrying nothing": sum(1 for v in object_empty.values() if v),
+            "divergent objects": divergent_objects,
             "objects carrying nothing by reason": dict(
                 Counter(v for v in object_empty.values() if v)),
             "dashboards": len(self.dashboard_widgets),
@@ -176,7 +152,11 @@ class Census:
                                                  if True in v),
             "divergent dashboards": sum(1 for v in self.dashboard_widget_sets.values()
                                         if len(v) > 1),
-            "widgets": len(self.widget_state),
+            # Both sides of the union rule: the widget ids seen for each
+            # dashboard, and the per-widget classifications. They are built
+            # from the same walk and a mutation to either shows up here.
+            "widgets": sum(len(v) for v in self.dashboard_widgets.values()),
+            "widgets classified": len(self.widget_state),
             "divergent widgets": divergent_widgets,
             "widgets carrying nothing": len(unfinished),
             "widgets carrying nothing by reason": dict(
@@ -204,7 +184,8 @@ def walk(directory: Path, declared: Optional[str] = None,
 def render(report: dict) -> str:
     lines = ["distinct content across the corpus"]
     for key in ("objects", "objects carrying nothing", "dashboards",
-                "dashboards interaction driven", "widgets", "widgets carrying nothing"):
+                "dashboards interaction driven", "widgets", "widgets classified",
+                "widgets carrying nothing"):
         lines.append(f"  {key:34s} {report[key]:6d}")
     lines.append("  widgets carrying nothing, by reason")
     for code, count in sorted(report["widgets carrying nothing by reason"].items()):
@@ -219,8 +200,8 @@ def render(report: dict) -> str:
     for kind, count in sorted(report["widget subjects"].items()):
         lines.append(f"    {kind:34s} {count:6d}")
     lines.append("  where copies of one identity disagree")
-    for key in ("objects with two names", "divergent dashboards", "divergent widgets",
-                "divergent widget subjects"):
+    for key in ("objects with two names", "divergent objects", "divergent dashboards",
+                "divergent widgets", "divergent widget subjects"):
         lines.append(f"    {key:34s} {report[key]:6d}")
     lines.append("occurrences (the same content counted once per export it appears in)")
     for key, count in sorted(report["occurrences"].items()):

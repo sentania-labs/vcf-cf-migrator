@@ -28,6 +28,7 @@ from vcfcf_migrator import settings as _settings
 from vcfcf_migrator.cli import version_lines
 from vcfcf_migrator.export_reader import VERSION_FLOOR_TEXT
 from vcfcf_migrator.graph import KIND_ORDER, Graph, Node
+from vcfcf_migrator.wording import plural
 
 MAX_DEPTH = 6
 
@@ -230,9 +231,10 @@ def _selection_panel(state) -> str:
         lines.append(f"<p class='note'>{added} pulled in as dependencies of what you "
                      "picked.</p>")
     if missing:
-        lines.append(f"<p class='note'>{missing} referenced object(s) are not in this "
-                     "export; they are listed with each object below and in the build "
-                     "report.</p>")
+        lines.append(f"<p class='note'>{plural(missing, 'referenced object')} "
+                     + ("is" if missing == 1 else "are")
+                     + " not in this export; they are listed with each object below and "
+                       "in the build report.</p>")
     lines += [
         "<div class='stack'>",
         "<form method='post' action='/select-all'>" + _button("Select everything") + "</form>",
@@ -288,7 +290,7 @@ def _tree_panel(state) -> str:
     ]
     if state.filter_text:
         matches = _matches(graph, state.filter_text)
-        parts.append(f"<p class='note'>{len(matches)} object(s) match "
+        parts.append(f"<p class='note'>{plural(len(matches), 'object')} match "
                      f"{e(state.filter_text)!s}.</p>")
         parts.append("<ul class='tree'>"
                      + "".join(_node_row(state, node, depth=0, with_children=False)
@@ -313,7 +315,8 @@ def _tree_panel(state) -> str:
     # 125 views that went missing.
     total = len(graph.nodes)
     parts.append(
-        f"<p class='note'>{total} object(s): {len(roots)} that nothing else points at, "
+        f"<p class='note'>{plural(total, 'object')}: {len(roots)} that nothing else "
+        "points at, "
         f"listed first, and {len(others)} reached only as a dependency of one of them, "
         "listed under their own heading below. Both halves are here, and a build carries "
         "either.</p>")

@@ -98,7 +98,7 @@ def test_the_tree_says_which_half_of_the_split_a_count_belongs_to(state):
     graph = state.graph
     roots = len(graph.roots())
     others = len(graph.nodes) - roots
-    assert f"{len(graph.nodes)} object(s): {roots} that nothing else points at" in page
+    assert f"{len(graph.nodes)} objects: {roots} that nothing else points at" in page
     assert f"{others} reached only as a dependency" in page
     assert "Nothing else points at these" in page
     assert "Reached only as a dependency of something above" in page
@@ -325,7 +325,7 @@ def test_endpoints_drive_the_same_actions(server, export_zip, tmp_path):
     _, body = _post(server, "/preview", {"key": DASH})
     assert "class='pv-grid'" in body
     _, body = _post(server, "/filter", {"filter": "cluster overview"})
-    assert "object(s) match" in body
+    assert "objects match" in body
     _, body = _post(server, "/tree", {})
     assert "items: " in body
     _, body = _post(server, "/select-all", {})

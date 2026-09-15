@@ -48,6 +48,7 @@ from vcfcf_migrator.export_reader import (
     read_members,
 )
 from vcfcf_migrator.rawdoc import RawDocError
+from vcfcf_migrator.wording import plural
 
 VERSIONS_FILE = "versions.json"
 
@@ -87,11 +88,12 @@ def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
     if preview_errors:
         first = preview_errors[0]
         return (f"error    {path.name}: preview failed on {len(preview_errors)} of "
-                f"{len(graph.nodes)} object(s), first: {first}")
+                f"{plural(len(graph.nodes), 'object')}, first: {first}")
 
     if declared is None:
         return (f"refused  {path.name}: inspect and tree ok ({_fmt(tree_counts)}), "
-                f"{rendered} object(s) previewed, build needs a declared source version "
+                f"{plural(rendered, 'object')} previewed, build needs a declared source "
+                "version "
                 "(versions.json or --source-version)")
 
     try:
@@ -108,7 +110,7 @@ def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
     bundle_docs = _containers.documents(bundle_members)
     changed = [k for k, v in source_docs.items() if bundle_docs.get(k) != v]
     if changed or len(bundle_docs) != len(source_docs):
-        return (f"error    {path.name}: {len(changed)} document(s) did not survive the copy "
+        return (f"error    {path.name}: {plural(len(changed), 'document')} did not survive the copy "
                 f"byte for byte, {len(bundle_docs)} carried against {len(source_docs)}")
 
     # Documents are copied; containers are rebuilt, so the container is the
@@ -120,20 +122,22 @@ def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
     reshaped = sorted(k for k, v in source_shapes.items()
                       if k in bundle_shapes and bundle_shapes[k] != v)
     if reshaped:
-        return (f"error    {path.name}: select-all reshaped {len(reshaped)} container(s): "
+        return (f"error    {path.name}: select-all reshaped {plural(len(reshaped), 'container')}: "
                 + ", ".join(reshaped))
     unexplained = sorted(k for k in source_shapes
                          if k not in bundle_shapes and k not in graph.unknown_members)
     if unexplained:
-        return (f"error    {path.name}: select-all dropped {len(unexplained)} member(s) that "
+        return (f"error    {path.name}: select-all dropped {plural(len(unexplained), 'member')} that "
                 "are not in the unreadable list: " + ", ".join(unexplained))
 
     if rebuilt.counts() != inspect_counts:
         return (f"error    {path.name}: the bundle does not carry what the export did: "
                 f"{_fmt(rebuilt.counts())} against {_fmt(inspect_counts)}")
     missing = len(graph.missing)
-    tail = f", {missing} edge(s) to objects a bundle cannot carry" if missing else ""
-    return (f"ok       {path.name}: {_fmt(inspect_counts)}; {rendered} object(s) previewed; "
+    tail = (f", {plural(missing, 'edge')} to objects a bundle cannot carry"
+            if missing else "")
+    return (f"ok       {path.name}: {_fmt(inspect_counts)}; "
+            f"{plural(rendered, 'object')} previewed; "
             f"select-all bundle round trips, {len(result.members)} members, "
             f"{len(source_docs)} documents byte-identical, "
             f"{len(bundle_shapes)} containers unchanged{tail}")
@@ -168,7 +172,7 @@ def run(directory, source: str, declared: Optional[str], stream: TextIO) -> int:
         stream.write(f"corpus directory {directory} does not exist (from {source})\n")
         return 1
     zips = sorted(p for p in directory.iterdir() if p.suffix.lower() == ".zip")
-    stream.write(f"corpus: {directory} (from {source}), {len(zips)} zip(s)\n")
+    stream.write(f"corpus: {directory} (from {source}), {plural(len(zips), 'zip')}\n")
     if not zips:
         return 0
     versions = read_versions(directory)

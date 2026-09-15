@@ -107,3 +107,81 @@ def test_the_census_renders_without_naming_a_single_object(corpus):
     text = corpus_census.render(corpus_census.walk(corpus, "9.0.2"))
     assert "[Fixture]" not in text
     assert "distinct content across the corpus" in text
+
+
+def _two_copies_classifying_differently(tmp_path):
+    """Two exports of one dashboard uuid where one copy's widget carries a
+    metric and the other's does not, so the two copies classify the same
+    widget identity differently."""
+    import io
+    import json
+    import zipfile
+
+    directory = tmp_path / "corpus"
+    directory.mkdir()
+    (directory / "a.zip").write_bytes(build_export_zip())
+    src = zipfile.ZipFile(io.BytesIO(build_export_zip()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name in src.namelist():
+            data = src.read(name)
+            if name.startswith("dashboards/"):
+                inner = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:
+                    with zipfile.ZipFile(inner, "w") as w:
+                        for member in dash_zip.namelist():
+                            body = dash_zip.read(member)
+                            if member.endswith("dashboard.json"):
+                                doc = json.loads(body)
+                                for widget in doc["dashboards"][0]["widgets"]:
+                                    if widget.get("title") == "[Fixture] CPU over time":
+                                        # Same widget id, no metric in this copy.
+                                        widget["config"]["metric"] = {
+                                            "mode": "resourceKind",
+                                            "resourceKindMetrics": [],
+                                            "resourceMetrics": []}
+                                body = json.dumps(doc).encode()
+                            w.writestr(member, body)
+                data = inner.getvalue()
+            z.writestr(name, data)
+    (directory / "b.zip").write_bytes(out.getvalue())
+    return directory
+
+
+def test_a_widget_its_copies_classify_differently_is_reported_not_picked(tmp_path):
+    """No tie-break: an earlier version sorted, which silently picked clean
+    for widgets and empty for objects. A classification the exports disagree
+    about is reported and left out of the per-reason totals."""
+    directory = _two_copies_classifying_differently(tmp_path)
+    report = corpus_census.walk(directory, "9.0.2")
+    assert report["divergent widgets"] >= 1
+    clean = corpus_census.walk(directory, "9.0.2", [directory / "a.zip"])
+    # The disagreed widget is counted in neither per-reason total, so the
+    # divergence cannot inflate or deflate the headline.
+    assert (sum(report["widgets carrying nothing by reason"].values())
+            < sum(clean["widgets carrying nothing by reason"].values())
+            + report["divergent widgets"])
+
+
+def test_order_independence_covers_the_classification_not_only_the_membership(tmp_path):
+    """The order gate used to compare only which widgets exist, so a
+    last-copy-wins mutation, which is exactly the defect of an earlier round,
+    passed it."""
+    directory = _two_copies_classifying_differently(tmp_path)
+    paths = sorted(directory.iterdir())
+    forward = corpus_census.walk(directory, "9.0.2", paths)
+    backward = corpus_census.walk(directory, "9.0.2", list(reversed(paths)))
+    forward.pop("occurrences"), backward.pop("occurrences")
+    assert forward == backward
+    assert forward["widgets carrying nothing by reason"] == \
+        backward["widgets carrying nothing by reason"]
+    assert forward["widget subjects"] == backward["widget subjects"]
+
+
+def test_the_two_sides_of_the_union_rule_agree(tmp_path):
+    """The widget total comes from the per-dashboard union and the
+    classification map is built in the same walk; a mutation to either shows
+    up as a disagreement here."""
+    directory = _two_copies_classifying_differently(tmp_path)
+    report = corpus_census.walk(directory, "9.0.2")
+    assert report["widgets"] == report["widgets classified"]

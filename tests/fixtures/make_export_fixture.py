@@ -53,6 +53,17 @@ WIDGET_SELECTOR_FED = "4a5b6c7d-5555-4555-8555-0a1b2c3d4e5f"
 # A widget with no config and a saved-state blob: configured, in a place this
 # preview does not decode.
 WIDGET_STATE_ONLY = "4a5b6c7d-6666-4666-8666-0a1b2c3d4e5f"
+# Two selectors whose own renderer finds nothing to draw: a scoreboard with
+# an empty metric block, and a view widget naming a view that declares no
+# columns. Both drive another widget, so neither may be told it shows
+# nothing: they are the dashboard's controls.
+WIDGET_DRIVING_SCOREBOARD = "4a5b6c7d-7777-4777-8777-0a1b2c3d4e5f"
+WIDGET_DRIVING_VIEW = "4a5b6c7d-8888-4888-8888-0a1b2c3d4e5f"
+WIDGET_HEATMAP = "4a5b6c7d-9999-4999-8999-0a1b2c3d4e5f"
+WIDGET_HEALTH = "4a5b6c7d-aaaa-4aaa-8aaa-0a1b2c3d4e5f"
+# A widget whose whole state value is the empty-object marker: an ExtJS
+# object with no fields, which is not a layout.
+WIDGET_EMPTY_STATE = "4a5b6c7d-bbbb-4bbb-8bbb-0a1b2c3d4e5f"
 # A dashboard with no widgets at all, a second alert whose state names no
 # symptom, two more symptoms (one with no state, one with a state and no
 # condition), a recommendation with no text, a report with no sections and a
@@ -332,7 +343,7 @@ def _laid_out_widgets() -> list:
                                "name": "Memory|Consumed"},
                     "metricName": "Memory consumed",
                     "metricUnit": {"metricUnitId": "gb", "metricUnitName": "GB"}}},
-        {"type": "Heatmap", "title": "[Fixture] Cluster heat",
+        {"type": "Heatmap", "title": "[Fixture] Cluster heat", "id": WIDGET_HEATMAP,
          "gridsterCoords": {"x": 5, "y": 13, "w": 4, "h": 6},
          "config": {"title": "[Fixture] Cluster heat", "mode": "all",
                     "configs": [{"colorBy": "cpu|usage_average",
@@ -373,6 +384,27 @@ def _laid_out_widgets() -> list:
          "gridsterCoords": {"x": 7, "y": 57, "w": 6, "h": 4},
          "config": {"title": "[Fixture] Second widget on the absent view",
                     "viewDefinitionId": ABSENT_VIEW_ID}},
+        # A selector that declares selfProvider true: it drives other widgets
+        # and picks its own subject, which is what 72 of the corpus's 92
+        # selectors do and what the caption used to deny.
+        {"type": "Scoreboard", "title": "[Fixture] Driving scoreboard",
+         "id": WIDGET_DRIVING_SCOREBOARD,
+         "gridsterCoords": {"x": 1, "y": 61, "w": 6, "h": 4},
+         "config": {"title": "[Fixture] Driving scoreboard",
+                    "selfProvider": {"selfProvider": True},
+                    "metric": {"mode": "resourceKind", "resourceKindMetrics": [],
+                               "resourceMetrics": []}}},
+        {"type": "View", "title": "[Fixture] Driving view",
+         "id": WIDGET_DRIVING_VIEW,
+         "gridsterCoords": {"x": 7, "y": 61, "w": 6, "h": 4},
+         "config": {"title": "[Fixture] Driving view",
+                    "viewDefinitionId": EMPTY_VIEW_ID}},
+        # The whole state value is the empty-object marker, so this widget is
+        # not configured anywhere: it carries nothing.
+        {"type": "Heatmap", "title": "[Fixture] Empty state blob",
+         "id": WIDGET_EMPTY_STATE,
+         "gridsterCoords": {"x": 1, "y": 65, "w": 6, "h": 4}, "config": {},
+         "states": [{"key": "permHeat_widget_empty", "value": "o%3A"}]},
         {"type": "PropertyList", "title": "[Fixture] Cluster properties",
          "gridsterCoords": {"x": 9, "y": 13, "w": 4, "h": 6},
          "config": {"title": "[Fixture] Cluster properties",
@@ -440,7 +472,7 @@ def _laid_out_widgets() -> list:
         {"type": "Section", "title": "",
          "gridsterCoords": {"x": 9, "y": 45, "w": 4, "h": 1},
          "config": {"visualTheme": "dark"}},
-        {"type": "HealthChart", "title": "[Fixture] Health",
+        {"type": "HealthChart", "title": "[Fixture] Health", "id": WIDGET_HEALTH,
          "gridsterCoords": {"x": 1, "y": 25, "w": 6, "h": 5},
          "config": {"title": "[Fixture] Health", "mode": "all",
                     "metricName": "Badge|Health", "metricKey": "badge|health",
@@ -483,6 +515,10 @@ def _cluster_overview() -> dict:
              "widgetIdReceiver": WIDGET_RECEIVER},
             {"widgetIdProvider": WIDGET_BARE_SELECTOR, "type": "resourceId",
              "widgetIdReceiver": WIDGET_SELECTOR_FED},
+            {"widgetIdProvider": WIDGET_DRIVING_SCOREBOARD, "type": "resourceId",
+             "widgetIdReceiver": WIDGET_HEATMAP},
+            {"widgetIdProvider": WIDGET_DRIVING_VIEW, "type": "resourceId",
+             "widgetIdReceiver": WIDGET_HEALTH},
         ],
     }
 

@@ -172,20 +172,34 @@ says so above the layout. A widget the dashboard places outside its own
 declared columns widens the grid rather than being squashed into a sliver.
 
 **No box ever says nothing.** Every widget, and every object, resolves to one
-of three statements, and the three look different at a glance:
+of four statements, and they look different at a glance:
 
 1. here is the thing, drawn;
 2. the export carries this, but the preview does not lay out that type, named;
-3. the export carries nothing here, with what is missing said plainly.
+3. the export carries nothing here, with what is missing said plainly;
+4. the content is real and lives somewhere this page cannot follow.
 
-State 3 wins. An empty widget of a type the preview does not draw is empty
-first: "carries no configuration at all" is a fact about your content, which
-shows nothing on the real dashboard either and is usually an unfinished
+State 3 beats state 2. An empty widget of a type the preview does not draw is
+empty first: "carries no configuration at all" is a fact about your content,
+which shows nothing on the real dashboard either and is usually an unfinished
 leftover, while "this preview does not lay out Skittles" is a fact about the
 tool. The same rule covers a view with no columns, a super metric with an
 empty formula, an alert with no symptom sets, a group with no membership
 rules and a dashboard with no widgets. The notes count the empties, so a
 fourteen-widget dashboard does not have to be read box by box.
+
+State 4 is what keeps the tool honest about what it cannot see, and it covers
+more widgets than state 3 does. A widget whose column layout lives in the
+saved state VCF Operations writes rather than in its configuration is
+configured, in a form this page does not decode (a state whose whole value is
+the empty-object marker is not a layout, and does count as empty). A widget
+naming a view the export does not carry is pointing at content an export
+cannot hold, since an export carries custom content only and a view shipping
+with a management pack or with the product is never in one: it shows whatever
+the target already has, and an export gives the tool no way to tell that apart
+from a view that is genuinely gone. And a widget that drives other widgets is
+the dashboard's control, so it is never told it shows nothing, whatever its
+own configuration looks like.
 
 **The preview shows the dashboard's wiring.** Most widgets on a real
 dashboard do not choose their own subject: they show whatever object is

@@ -58,6 +58,7 @@ from vcfcf_migrator.export_reader import (
     render_text,
 )
 from vcfcf_migrator.rawdoc import RawDocError
+from vcfcf_migrator.wording import plural
 
 # The commands whose exact command line the page can hand back, so an admin
 # can script what they just did by hand.
@@ -194,8 +195,10 @@ class PageState:
                                  + (f" and {len(pulled) - 6} more" if len(pulled) > 6 else ""))
             gaps = self.graph.missing_for(key)
             if gaps:
-                self.message += (f". {len(gaps)} object(s) it references are not in this "
-                                 "export; the target instance needs them already")
+                self.message += (f". {plural(len(gaps), 'object')} it references "
+                                 + ("is" if len(gaps) == 1 else "are")
+                                 + " not in this export; the target instance needs them "
+                                   "already")
             return
 
         needed_by = self.required_by(key)
@@ -216,8 +219,10 @@ class PageState:
         dropped = [k for k in before if k not in self.selection_keys() and k != key]
         self.message = f"removed {node.label()}"
         if dropped:
-            self.message += (f"; {len(dropped)} object(s) it had pulled in are no longer "
-                             "needed and were dropped too")
+            self.message += (f"; {plural(len(dropped), 'object')} it had pulled in "
+                             + ("is" if len(dropped) == 1 else "are")
+                             + " no longer needed and " 
+                             + ("was" if len(dropped) == 1 else "were") + " dropped too")
         if self.preview_key == key:
             self.preview_key = ""
 
@@ -264,7 +269,7 @@ class PageState:
             return
         self.picked = keys
         self._reclose()
-        self.message = (f"applied {len(lines)} line(s): {len(self.picked)} picked, "
+        self.message = (f"applied {plural(len(lines), 'line')}: {len(self.picked)} picked, "
                         f"{len(self.selection.keys)} after closure")
 
     def selection_lines(self) -> str:

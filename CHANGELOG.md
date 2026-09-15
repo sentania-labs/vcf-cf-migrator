@@ -36,16 +36,20 @@
   exercises all of them, so a new one fails until something does. The notes
   count every box the page shows, grouped by reason rather than by sentence.
 
-  Two things are deliberately *not* emptiness, because in both the widget
-  works and the gap is elsewhere. A widget whose column layout lives in the
-  saved state VCF Operations writes (`states[].value`, a nested encoded blob
-  this page does not decode) is configured, and calling it unconfigured was
-  false. A widget naming a view the export does not carry is pointing at
-  content an export cannot hold: an export declares `type=CUSTOM` and carries
-  custom content only, so a view that ships in a management pack is never in
-  one, and nothing in an export tells that apart from a view that is
-  genuinely gone. Both get their own state, their own count, and the wording
-  `inspect` already uses for navigation links.
+  A fourth state covers content that is real and lives where this page cannot
+  follow, and it carries more widgets than the third. A widget whose column
+  layout lives in the saved state VCF Operations writes (`states[].value`,
+  the ExtJS grammar the factory captured in
+  `knowledge/context/api-surface/resourcelist_column_state_wire_format.md`)
+  is configured, and calling it unconfigured was false; a state whose whole
+  value is `o:`, an object with no fields, is not a layout and stays empty. A
+  widget naming a view the export does not carry is pointing at content an
+  export cannot hold, since an export declares `type=CUSTOM`, so a view that
+  ships in a management pack is never in one and nothing in an export tells
+  that apart from a view that is genuinely gone. And a widget that drives
+  others is the dashboard's control: the renderers themselves refuse to say
+  it shows nothing, which is what makes that structural rather than a habit
+  of one caller.
 
   Corpus figures come from `tools/corpus_census.py`, which states the identity
   rule it implements, is order independent, and reports where two copies of

@@ -597,9 +597,10 @@ def test_a_receiver_nothing_feeds_will_never_show_data(built):
 def test_the_notes_count_the_widgets_driven_by_a_selection(built):
     _members, graph = built
     preview = _preview.build(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}"))
-    # Two wired pairs: the cluster list driving the chart, and the bare
-    # selector driving the property list.
-    assert preview.receivers == 2 and preview.providers == 2
+    # Four wired pairs: the cluster list driving the chart, the bare selector
+    # driving the property list, and the two selectors whose own renderers
+    # find nothing to draw driving the heatmap and the health chart.
+    assert preview.receivers == 4 and preview.providers == 4
     assert any("driven by the object picked in another widget" in n for n in preview.notes)
 
 
@@ -711,9 +712,10 @@ def test_a_selector_is_not_called_broken(built):
     page = _preview.render_page(graph, node)
     titles = {title for title, _kind, _reason in preview.empty_widgets}
     assert "[Fixture] Clusters" not in titles, "the selector must not be state 3"
-    # Two selectors: the cluster list, and the one whose own config is empty.
-    assert preview.selectors == 2
-    assert "it is the selector that drives 1 widget" in page
+    # Four selectors: the cluster list, the one whose own config is empty,
+    # and the two whose renderers find nothing of their own to draw.
+    assert preview.selectors == 4
+    assert "this widget drives 1 widget on this dashboard" in page
     # And the one genuinely unfed receiver is still called out.
     assert "[Fixture] Orphaned trend" in titles
     assert preview.orphan_receivers == 1
@@ -779,7 +781,7 @@ def test_a_selector_with_an_empty_config_is_still_a_selector(built):
     frame = re.search(r"<h3>\[Fixture\] Bare selector.*?(?=<div class='pv-w)", page, re.S)
     assert frame and "drives 1 widget" in frame.group(0)
     assert "nothing to show" not in frame.group(0)
-    assert "it is the selector that drives 1 widget" in frame.group(0)
+    assert "this widget drives 1 widget on this dashboard" in frame.group(0)
 
 
 def test_no_frame_claims_nothing_to_show_while_claiming_to_drive_widgets(built):
@@ -844,6 +846,73 @@ def test_a_wiring_line_names_as_many_widgets_as_the_badge_counts(built):
             assert named >= 1
         for badge in re.findall(r"drives (\d+) widget", page):
             assert int(badge) >= 1
-    # The fixture's two providers each drive exactly one widget.
+    # The fixture's providers each drive exactly one widget.
     preview = _preview.build(graph, node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}"))
-    assert preview.providers == 2
+    assert preview.providers == 4
+
+
+def test_a_selector_that_declares_it_picks_its_own_subject_is_not_told_otherwise(built):
+    """72 of the corpus's 92 selectors declare selfProvider true: they drive
+    other widgets and choose their own subject. The caption used to say
+    "chooses no subject of its own" about all 92."""
+    _members, graph = built
+    page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    frame = re.search(r"<h3>\[Fixture\] Driving scoreboard.*?(?=<div class='pv-w)", page, re.S)
+    assert frame
+    assert "drives 1 widget on this dashboard, and picks its own subject" in frame.group(0)
+    assert "chooses no subject of its own" not in frame.group(0)
+    # And the widget that does declare it takes its subject from elsewhere
+    # still says so.
+    fed = re.search(r"<h3>\[Fixture\] Clusters.*?(?=<div class='pv-w)", page, re.S)
+    assert fed and "chooses no subject of its own" in fed.group(0)
+
+
+@pytest.mark.parametrize("title", ["[Fixture] Driving scoreboard", "[Fixture] Driving view"])
+def test_a_driving_widget_is_never_told_it_shows_nothing(built, title):
+    """The renderers hold this, not the caller: a scoreboard with an empty
+    metric block and a view widget naming a columnless view both find nothing
+    to draw, and both drive another widget, so neither may say it shows
+    nothing under a badge counting what it drives."""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    assert title not in {t for t, _k, _r in preview.empty_widgets}
+    codes = {code for t, _k, code, _r in preview.elsewhere if t == title}
+    assert codes == {"widget-drives-only"}
+    page = _preview.render_page(graph, node)
+    frame = re.search(rf"<h3>{re.escape(title)}.*?(?=<div class='pv-w)", page, re.S)
+    assert frame and "drives" in frame.group(0)
+    assert "nothing to show" not in frame.group(0)
+    assert "carries no content of its own to draw here" in frame.group(0)
+
+
+def test_a_state_holding_only_the_empty_object_marker_is_not_configuration(built):
+    """Three corpus widgets carry a state whose whole value is ``o%3A``,
+    which unquotes to ``o:``: an ExtJS object with no fields. Telling their
+    admin they were configured was as wrong as telling the others they were
+    not. The grammar is in the factory's own wire-format note."""
+    from make_export_fixture import WIDGET_EMPTY_STATE
+
+    assert _preview.widget_state_blob({"states": [{"value": "o%3A"}]}) == ""
+    assert _preview.widget_state_blob({"states": [{"value": "o%3Acolumns%3Da%253A"}]}) != ""
+    _members, graph = built
+    node = node_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
+    preview = _preview.build(graph, node)
+    empty = {title: reason for title, _kind, reason in preview.empty_widgets}
+    assert "[Fixture] Empty state blob" in empty
+    assert "no stored state either" in empty["[Fixture] Empty state blob"]
+    doc = _preview._json_doc(_preview.raw_document(graph, node))
+    assert any(w.get("id") == WIDGET_EMPTY_STATE for w in doc["widgets"])
+
+
+def test_the_subject_rule_lives_in_one_function(built):
+    """The census used to carry its own copy and had already drifted from
+    this one."""
+    assert _preview.subject_of({}, feeds=True, driven=False,
+                               dashboard_has_wiring=True) == "selector"
+    assert _preview.subject_of({}, feeds=True, driven=True,
+                               dashboard_has_wiring=True) == "fed"
+    cfg = {"selfProvider": {"selfProvider": False}}
+    assert _preview.subject_of(cfg, False, False, True) == "never-shows"
+    assert _preview.subject_of(cfg, False, False, False) == "from-outside"
+    assert _preview.subject_of({}, False, False, True) == "self"
