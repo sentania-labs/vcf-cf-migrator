@@ -3,12 +3,18 @@
 Two tiers of test material (spec, "Repo"): committed fixtures that CI runs
 on, and a corpus of the admin's own export zips that never enters the repo.
 This is the second tier. It walks every zip in a directory, runs inspect,
-tree and a select-all build on each, then reads the bundle back and checks
-both halves of the pass-through contract: every document byte-identical to
-the source's, and every rebuilt container structurally identical, since a
-select-all drops nothing. One line per zip: ok with counts, refused with the
-reason, or error. Its output goes in a PR body; CI
-cannot run it and does not try.
+tree, a preview of every object and a select-all build on each, then reads
+the bundle back and checks both halves of the pass-through contract: every
+document byte-identical to the source's, and every rebuilt container
+structurally identical, since a select-all drops nothing. One line per zip:
+ok with counts, refused with the reason, or error. Its output goes in a PR
+body; CI cannot run it and does not try.
+
+The preview pass renders every object rather than sampling: a renderer that
+throws does so on one document shape, and a sample is exactly how that shape
+gets missed. It is the command this tool's admin looks at most, so leaving it
+out of the regression run meant the only proof it survives a real export was
+a script somebody wrote once and threw away.
 
 Two things it never does. It never writes into the corpus directory: bundles
 go to a scratch directory that is removed afterwards, because the corpus is
@@ -28,11 +34,12 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, TextIO
+from typing import Dict, List, Optional, TextIO, Tuple
 
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator import graph as _graph
+from vcfcf_migrator import preview as _preview
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator.export_reader import (
     NotAnExport,
@@ -76,9 +83,16 @@ def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
         return (f"error    {path.name}: inspect and tree disagree: "
                 f"{inspect_counts} against {tree_counts}")
 
+    rendered, preview_errors = _preview_all(graph)
+    if preview_errors:
+        first = preview_errors[0]
+        return (f"error    {path.name}: preview failed on {len(preview_errors)} of "
+                f"{len(graph.nodes)} object(s), first: {first}")
+
     if declared is None:
         return (f"refused  {path.name}: inspect and tree ok ({_fmt(tree_counts)}), "
-                "build needs a declared source version (versions.json or --source-version)")
+                f"{rendered} object(s) previewed, build needs a declared source version "
+                "(versions.json or --source-version)")
 
     try:
         picked = _selection.select_all(graph)
@@ -119,9 +133,29 @@ def check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
                 f"{_fmt(rebuilt.counts())} against {_fmt(inspect_counts)}")
     missing = len(graph.missing)
     tail = f", {missing} edge(s) to objects a bundle cannot carry" if missing else ""
-    return (f"ok       {path.name}: {_fmt(inspect_counts)}; select-all bundle round trips, "
-            f"{len(result.members)} members, {len(source_docs)} documents byte-identical, "
+    return (f"ok       {path.name}: {_fmt(inspect_counts)}; {rendered} object(s) previewed; "
+            f"select-all bundle round trips, {len(result.members)} members, "
+            f"{len(source_docs)} documents byte-identical, "
             f"{len(bundle_shapes)} containers unchanged{tail}")
+
+
+def _preview_all(graph: _graph.Graph) -> Tuple[int, List[str]]:
+    """Render every object's preview. Returns how many rendered, and a line
+    per failure naming the object and what went wrong."""
+    rendered = 0
+    failures: List[str] = []
+    for node in graph.ordered():
+        try:
+            page = _preview.render_page(graph, node)
+        except (_preview.PreviewError, ValueError, KeyError, TypeError,
+                AttributeError, IndexError) as e:
+            failures.append(f"{node.label()}: {type(e).__name__}: {e}")
+            continue
+        if not page.startswith("<!doctype html>"):
+            failures.append(f"{node.label()}: the page is not an HTML document")
+            continue
+        rendered += 1
+    return rendered, failures
 
 
 def _fmt(counts: Dict[str, int]) -> str:

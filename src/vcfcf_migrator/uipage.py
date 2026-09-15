@@ -3,10 +3,15 @@
 Split out of ``ui.py`` so the server is handlers and the page is rendering.
 Two rules shaped what is here.
 
-**No script, no external anything.** Every control is a form that posts and
-gets a page back, so the page works with JavaScript off, works with the
-keyboard alone, and needs no asset from anywhere. That costs a round trip per
-click, which on a loopback socket is not a cost an admin can feel.
+**No script file, no external anything, and one inline handler.** Every
+control is a form that posts and gets a page back, so the page works with
+JavaScript off, works with the keyboard alone, and needs no asset from
+anywhere. The single exception is an ``onchange`` on each tree checkbox that
+submits its own form, so a click on the box acts at once; every one of those
+forms also carries an add/remove button that does the same thing, which is
+what makes the handler an accelerator rather than a requirement. That costs a
+round trip per click, which on a loopback socket is not a cost an admin can
+feel.
 
 **The tree has to stay readable at 430 objects.** Sixty-six dashboards is the
 real corpus shape, so the tree groups by kind, collapses each group, and each
@@ -302,13 +307,25 @@ def _tree_panel(state) -> str:
     for node in others:
         by_kind_other.setdefault(node.kind, []).append(node)
 
+    # The list is in two halves, and a per-kind count in the first half is a
+    # count of that half, not of the export. Saying so where the numbers are
+    # is the difference between "56 views" reading as a split and reading as
+    # 125 views that went missing.
+    total = len(graph.nodes)
+    parts.append(
+        f"<p class='note'>{total} object(s): {len(roots)} that nothing else points at, "
+        f"listed first, and {len(others)} reached only as a dependency of one of them, "
+        "listed under their own heading below. Both halves are here, and a build carries "
+        "either.</p>")
+    parts.append("<h3 style='margin-top:10px'>Nothing else points at these</h3>")
     for kind in KIND_ORDER + sorted(set(shown) - set(KIND_ORDER)):
         nodes = shown.get(kind)
         if not nodes:
             continue
         parts.append(_kind_group(state, kind, nodes, open_default=len(roots) <= 40))
     if by_kind_other:
-        parts.append("<h2 style='margin-top:16px'>Reached only as a dependency</h2>")
+        parts.append("<h3 style='margin-top:16px'>Reached only as a dependency of "
+                     "something above</h3>")
         for kind in KIND_ORDER + sorted(set(by_kind_other) - set(KIND_ORDER)):
             nodes = by_kind_other.get(kind)
             if not nodes:
@@ -322,7 +339,13 @@ def _tree_panel(state) -> str:
 def _kind_group(state, kind: str, nodes: Sequence[Node], open_default: bool,
                 with_children: bool = True) -> str:
     picked = sum(1 for n in nodes if n.key in state.selected_keys())
-    tail = f"{picked} of {len(nodes)} selected" if picked else f"{len(nodes)}"
+    here = len(nodes)
+    total = sum(1 for n in state.graph.by_kind(kind)) if state.graph else here
+    # "12 of 66 here" rather than a bare 66 when the kind is split across the
+    # two halves, so a number smaller than the export's count reads as the
+    # split it is.
+    count = f"{here}" if here == total else f"{here} of {total} here"
+    tail = f"{picked} of {count} selected" if picked else count
     return ("<details class='kindgroup'" + (" open" if open_default else "") + ">"
             f"<summary>{e(kind)}<span class='n'>{e(tail)}</span></summary>"
             "<ul class='tree'>"
@@ -359,7 +382,7 @@ def _node_row(state, node: Node, depth: int, with_children: bool = True,
                f"{e(first.name if first else required_by[0])}{e(more)}</span>")
 
     row = "".join([
-        f"<div class='{classes}' id='node-{e(_anchor(node.key))}'>",
+        f"<div class='{classes}' id='node-{e(anchor(node.key))}'>",
         "<form method='post' action='/select'>",
         f"<input type='hidden' name='key' value='{e(node.key)}'>",
         f"<input type='hidden' name='on' value='{'0' if selected else '1'}'>",
@@ -393,7 +416,7 @@ def _node_row(state, node: Node, depth: int, with_children: bool = True,
     return f"<li class='node'>{row}{children_html}</li>"
 
 
-def _anchor(key: str) -> str:
+def anchor(key: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in key)
 
 
@@ -507,7 +530,11 @@ def _settings_panel(state) -> str:
         "flag override the saved value.</small></p>",
         _button("Save source version"),
         "</form>",
-        "<p class='note'><small>This page listens on 127.0.0.1 only and accepts a post from "
-        "itself only. Stop it with Ctrl-C in the terminal that started it.</small></p>",
+        "<p class='note'><small>This page listens on 127.0.0.1 only, and a same-origin "
+        "check stops another web page in your browser from driving it. That is a CSRF "
+        "control, not an access control: any process on this machine can reach the port "
+        "while it is running, and the page reads and writes the paths you give it with "
+        "your own rights. Stop it with Ctrl-C in the terminal that started it."
+        "</small></p>",
         "</div>",
     ])

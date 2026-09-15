@@ -9,6 +9,7 @@ Fixture only. Nothing here reads the corpus.
 """
 from __future__ import annotations
 
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -26,7 +27,7 @@ from make_export_fixture import (
     VIEW_IDS,
 )
 from vcfcf_migrator.cli import main
-from vcfcf_migrator.ui import PageState, make_server
+from vcfcf_migrator.ui import ACTIONS, POST_PATHS, PageState, make_server
 
 DASH = f"dashboard:{DASHBOARD_ID}@{OWNER}"
 DASH_2 = f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"
@@ -87,6 +88,27 @@ def test_the_tree_shows_what_each_object_depends_on(state):
     # The dashboard's view, and the view's super metric, are reachable in the
     # nested disclosure under the dashboard.
     assert f"value='{VIEW}'" in page and f"value='{SM_1}'" in page
+
+
+def test_the_tree_says_which_half_of_the_split_a_count_belongs_to(state):
+    """The list is in two halves, and a per-kind count in the first half
+    counts that half. Without saying so, "56 of 181 views" reads as 125 views
+    that went missing."""
+    page = state.render()
+    graph = state.graph
+    roots = len(graph.roots())
+    others = len(graph.nodes) - roots
+    assert f"{len(graph.nodes)} object(s): {roots} that nothing else points at" in page
+    assert f"{others} reached only as a dependency" in page
+    assert "Nothing else points at these" in page
+    assert "Reached only as a dependency of something above" in page
+    # A kind split across both halves says so where its number is.
+    split = [k for k in {n.kind for n in graph.nodes.values()}
+             if 0 < sum(1 for n in graph.roots() if n.kind == k) < len(graph.by_kind(k))]
+    assert split, "the fixture should have at least one kind in both halves"
+    for kind in split:
+        here = sum(1 for n in graph.roots() if n.kind == kind)
+        assert f"{here} of {len(graph.by_kind(kind))} here" in page
 
 
 def test_an_object_the_export_does_not_carry_is_shown_as_missing(state):
@@ -203,6 +225,27 @@ def test_the_page_carries_no_external_resource(state):
     assert "<script" not in page.lower()
     assert "<img" not in page.lower()
     assert "@import" not in page
+    assert not re.search(r"\bsrc\s*=", page)
+
+
+def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
+    """The page claims no script file and one inline handler. Asserting only
+    that ``<script`` is absent would pass over any inline handler at all, so
+    this checks every ``on...=`` attribute on the page against the one that is
+    allowed, and checks the no-JS path is really there: every tree checkbox
+    sits in a form that also carries a submit button.
+    """
+    state.toggle(DASH, on=True)
+    state.set_preview(DASH)
+    page = state.render()
+    handlers = re.findall(r"\son([a-z]+)\s*=\s*'([^']*)'", page)
+    assert {(name, value) for name, value in handlers} == {
+        ("change", "this.form.submit()")}, handlers
+    # One handler per tree checkbox, and each of those forms has a button.
+    checkboxes = page.count("type='checkbox' class='tick'")
+    assert len(handlers) == checkboxes
+    assert page.count("<form method='post' action='/select'>") == checkboxes
+    assert page.count(">add</button>") + page.count(">remove</button>") == checkboxes
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +347,7 @@ def test_opening_an_export_that_is_not_one_says_so(server, tmp_path):
     assert "is not a zip file" in body or "cannot read" in body
 
 
-@pytest.mark.parametrize("path,form", [
+ENDPOINT_FORMS = [
     ("/open", {"zip": "/tmp/whatever.zip"}),
     ("/select", {"key": DASH, "on": "1"}),
     ("/select-all", {}),
@@ -318,7 +361,17 @@ def test_opening_an_export_that_is_not_one_says_so(server, tmp_path):
     ("/inspect", {"zip": "/tmp/whatever.zip"}),
     ("/settings", {"corpus_dir": "/pwned"}),
     ("/run", {"cmd": "tree"}),
-])
+]
+
+
+def test_the_cross_origin_test_covers_every_endpoint_the_server_has():
+    """The list above is derived, not remembered. A fourteenth entry in
+    ``ui.ACTIONS`` fails here until it is covered, which is the same
+    derive-do-not-hand-copy rule ``tests/fixtures/ci_checks.py`` exists for."""
+    assert {path for path, _form in ENDPOINT_FORMS} == set(POST_PATHS) == set(ACTIONS)
+
+
+@pytest.mark.parametrize("path,form", ENDPOINT_FORMS)
 def test_every_endpoint_refuses_a_cross_origin_post(server, path, form):
     """A page on another origin must not be able to drive this one. The new
     endpoints write files and read paths, so the rule matters more here than

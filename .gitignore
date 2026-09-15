@@ -7,3 +7,5 @@ build/
 *.spec
 corpus/
 .pytest_cache/
+.coverage
+htmlcov/

@@ -21,6 +21,14 @@ http://127.0.0.1:<port> or http://localhost:<port> (admins type localhost):
 any other web page the admin has open could otherwise post to the loopback
 port and rewrite settings, read a local path, or write a file. Such a request
 gets 403.
+
+**That check is a CSRF control, not an access control.** It stops another web
+page in the admin's browser from driving this port. It cannot stop a process
+on the same machine, which can set any header it likes, and the page reads
+and writes whatever paths the admin gives it (`/open`, `/build`, `/settings`,
+`/corpus-check`) with the admin's own rights. On the single-user workstation
+this tool ships for, that is the model: the page is the admin, for as long as
+the process runs.
 """
 from __future__ import annotations
 
@@ -400,6 +408,103 @@ class PageState:
         return uipage.render(self)
 
 
+# ---------------------------------------------------------------------------
+# What a POST can ask for: one table, read by the handler and by the test that
+# proves every one of these refuses a cross-origin post. A fourteenth entry
+# added here is guarded by that test the moment it exists, which a
+# hand-maintained list in the test could not promise.
+# ---------------------------------------------------------------------------
+
+def _act_settings(state: "PageState", form: dict) -> str:
+    state.save_setting(form)
+    return ""
+
+
+def _act_open(state: "PageState", form: dict) -> str:
+    state.open_export(form.get("zip", "").strip())
+    return ""
+
+
+def _act_inspect(state: "PageState", form: dict) -> str:
+    state.run_inspect(form.get("zip", "").strip(), as_json=form.get("json") == "1")
+    return ""
+
+
+def _act_tree(state: "PageState", form: dict) -> str:
+    state.run_tree(as_json=form.get("json") == "1")
+    return ""
+
+
+def _act_select(state: "PageState", form: dict) -> str:
+    key = form.get("key", "")
+    state.toggle(key, on=form.get("on", "1") == "1")
+    # The page comes back anchored at the row that was just toggled, so a
+    # tree scrolled halfway down does not jump to the top on every click.
+    return uipage.anchor(key)
+
+
+def _act_select_all(state: "PageState", _form: dict) -> str:
+    state.select_all()
+    return ""
+
+
+def _act_clear(state: "PageState", _form: dict) -> str:
+    state.clear()
+    return ""
+
+
+def _act_apply_lines(state: "PageState", form: dict) -> str:
+    state.apply_lines(form.get("lines", ""))
+    return ""
+
+
+def _act_preview(state: "PageState", form: dict) -> str:
+    state.set_preview(form.get("key", ""))
+    return ""
+
+
+def _act_filter(state: "PageState", form: dict) -> str:
+    state.set_filter(form.get("filter", ""))
+    return ""
+
+
+def _act_build(state: "PageState", form: dict) -> str:
+    state.build(form.get("out", ""))
+    return ""
+
+
+def _act_corpus_check(state: "PageState", form: dict) -> str:
+    state.run_corpus_check(form.get("dir", "").strip())
+    return ""
+
+
+def _act_run(state: "PageState", form: dict) -> str:
+    cmd = form.get("cmd", "")
+    if cmd in COMMANDS:
+        state.message = state.command_line(cmd)
+    else:
+        state.error = f"unknown command {cmd}"
+    return ""
+
+
+ACTIONS = {
+    "/settings": _act_settings,
+    "/open": _act_open,
+    "/inspect": _act_inspect,
+    "/tree": _act_tree,
+    "/select": _act_select,
+    "/select-all": _act_select_all,
+    "/clear": _act_clear,
+    "/apply-lines": _act_apply_lines,
+    "/preview": _act_preview,
+    "/filter": _act_filter,
+    "/build": _act_build,
+    "/corpus-check": _act_corpus_check,
+    "/run": _act_run,
+}
+POST_PATHS = tuple(sorted(ACTIONS))
+
+
 def _handler_for(state: PageState):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # keep the terminal quiet
@@ -450,47 +555,15 @@ def _handler_for(state: PageState):
                 self.wfile.write(body)
                 return
             path = urllib.parse.urlsplit(self.path).path
-            form = self._form()
-            state.message, state.error = "", ""
-            anchor = ""
-            if path == "/settings":
-                state.save_setting(form)
-            elif path == "/open":
-                state.open_export(form.get("zip", "").strip())
-            elif path == "/inspect":
-                state.run_inspect(form.get("zip", "").strip(), as_json=form.get("json") == "1")
-            elif path == "/tree":
-                state.run_tree(as_json=form.get("json") == "1")
-            elif path == "/select":
-                key = form.get("key", "")
-                state.toggle(key, on=form.get("on", "1") == "1")
-                anchor = uipage._anchor(key)
-            elif path == "/select-all":
-                state.select_all()
-            elif path == "/clear":
-                state.clear()
-            elif path == "/apply-lines":
-                state.apply_lines(form.get("lines", ""))
-            elif path == "/preview":
-                state.set_preview(form.get("key", ""))
-            elif path == "/filter":
-                state.set_filter(form.get("filter", ""))
-            elif path == "/build":
-                state.build(form.get("out", ""))
-            elif path == "/corpus-check":
-                state.run_corpus_check(form.get("dir", "").strip())
-            elif path == "/run":
-                cmd = form.get("cmd", "")
-                if cmd in COMMANDS:
-                    state.message = state.command_line(cmd)
-                else:
-                    state.error = f"unknown command {cmd}"
-            else:
+            action = ACTIONS.get(path)
+            if action is None:
                 self.send_response(404)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            self._redirect_home(anchor)
+            form = self._form()
+            state.message, state.error = "", ""
+            self._redirect_home(action(state, form) or "")
 
     return Handler
 

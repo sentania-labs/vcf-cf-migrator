@@ -39,7 +39,7 @@ First run of a downloaded binary:
 | `vcfcf-migrator inspect <export.zip> [--json]` | List every content item in the export by type, uuid and name; anything unrecognised is listed as carried, not inspected. |
 | `vcfcf-migrator tree <export.zip> [--json]` | The dependency tree over the export's own documents. An edge pointing at something the export does not carry is shown as missing, named and counted; that is information, not an error. |
 | `vcfcf-migrator build <export.zip> (--select <file> \| --select-all) --out <bundle.zip> [--json]` | Write an import bundle carrying only the closed selection. Needs a declared source version. |
-| `vcfcf-migrator corpus-check [DIR]` | Run inspect, tree and a select-all build over every zip in the corpus directory, then read the bundle back and check both halves of the contract: every document byte-identical, every rebuilt container unchanged. One line per zip. Never writes into that directory. |
+| `vcfcf-migrator corpus-check [DIR]` | Run inspect, tree, a preview of every object and a select-all build over every zip in the corpus directory, then read the bundle back and check both halves of the contract: every document byte-identical, every rebuilt container unchanged. One line per zip. Never writes into that directory. |
 | `vcfcf-migrator preview <export.zip> <object> [--out FILE] [--print]` | Write an HTML preview of one object so you can recognise it before carrying it: a dashboard laid out widget by widget, a view's columns with mock rows, a super metric's formula with its references named, an alert's symptom sets in words. One self-contained file, no network. |
 | `vcfcf-migrator ui [export.zip]` | Serve the selection page on 127.0.0.1 and open the browser: the dependency tree with a checkbox per object, dependencies pulled in and labelled with what needs them, previews in place, and a Build button. Every setting and every command has a control on it; launch options (`--port`, `--no-browser`) are command line only. Ctrl-C stops it. |
 
@@ -166,6 +166,11 @@ from the export. A widget type the preview does not lay out is named rather
 than drawn, and the page counts how many it met, because a Geo widget drawn
 as a bar chart would be worse than one drawn as nothing.
 
+Widget widths and order are the dashboard's own; widget heights are the
+preview's, taken from the content so a table is never clipped, and every page
+says so above the layout. A widget the dashboard places outside its own
+declared columns widens the grid rather than being squashed into a sliver.
+
 The file reaches nothing: inline CSS, inline SVG, no script, no font, no
 image, no CDN. It opens on a workstation with no route anywhere.
 
@@ -189,7 +194,15 @@ command line:
   it, and a button that hands back the equivalent command line for what the
   page is set to.
 
-It listens on 127.0.0.1 only, accepts a post from itself only, loads no
-external resource of any kind, and works with the keyboard alone.
+It listens on 127.0.0.1 only and loads no external resource of any kind: no
+script file, no font, no image, no CDN, and one inline handler that submits a
+checkbox's own form, so the page works with JavaScript off and with the
+keyboard alone.
+
+A same-origin check on every POST stops another web page in your browser from
+driving the port. That is a CSRF control, not an access control: any process
+on the machine can reach the port while the page is running, and the page
+reads and writes the paths you give it with your own rights. On the
+single-user workstation this tool is for, that is the model.
 
 Spec: `knowledge/designs/content-migrator-v1.md` in the factory repo.

@@ -13,14 +13,21 @@
   symptom sets in words with its recommendations in priority order. Every
   other kind states the facts its document carries.
 
-  Widget types laid out on purpose: View, Scoreboard, MetricChart,
-  SparklineChart, ParetoAnalysis, Heatmap, PropertyList, AlertList,
-  ProblemAlertsList, ResourceList, TextDisplay, HealthChart, Section. Every
-  other type is named rather than drawn, and the page counts how many it met:
-  drawing a Geo widget as a bar chart would be worse than drawing nothing,
-  because the admin would believe it. The same applies to a view whose
-  presentation is not a list: its type is stated, its attributes listed, and
-  no donut is drawn over buckets this tool does not read.
+  Thirteen widget types are laid out on purpose; the list lives in
+  `preview.WIDGET_RENDERERS` and nowhere else, and the fixture carries one
+  widget of every one of them, so a new renderer fails the suite until
+  something exercises it. Every other type is named rather than drawn, and the
+  page counts how many it met: drawing a Geo widget as a bar chart would be
+  worse than drawing nothing, because the admin would believe it. The same
+  applies to a view whose presentation is not a list: its type is stated, its
+  attributes listed, and no donut is drawn over buckets this tool does not
+  read.
+
+  Widths and order are the dashboard's own, heights are the preview's (taken
+  from the content, so nothing is clipped), and the banner on every page says
+  so. A widget the dashboard places outside its own declared columns widens
+  the grid rather than being squashed into a sliver; if anything still has to
+  be clamped, the notes name the widget and what happened to it.
 
   Values are made up and derived by hash from the keys and names the export
   already carries, never from the clock or a random source, so the same
@@ -52,10 +59,17 @@
   with the keyboard alone and at a narrow window.
 
 - Bundles are reproducible. Every zip entry the tool writes carries a fixed
-  timestamp rather than the clock: the stored time is not content and no
-  import reads it, but leaving it as "now" meant two builds of one selection
-  differed in bytes, which cost the one comparison that proves the page and
-  the command line agree.
+  timestamp rather than the clock, and a fixed `create_system`: neither is
+  content and no import reads either, but leaving the time as "now" meant two
+  builds of one selection differed in bytes, which cost the one comparison
+  that proves the page and the command line agree, and leaving
+  `create_system` to the platform meant the Windows binary and the Linux
+  binary disagreed on the same selection.
+
+- `corpus-check` now previews every object in every zip as well as running
+  inspect, tree and the select-all build, and its ok line says how many. The
+  preview is the command an admin looks at most, and the only proof it
+  survived a real export used to be a one-off script.
 
 - `tree`: the dependency tree over the export's own documents, readable by
   default and `--json` for machines. Every reference is read from the parsed
