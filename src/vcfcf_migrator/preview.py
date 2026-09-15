@@ -490,7 +490,10 @@ def view_columns(root: ET.Element) -> List[Column]:
 # a super metric column. Across two corpus exports, 54 columns carry a key of
 # this shape under a perfectly good display name. Printing it tells a reader
 # nothing they can act on and buries the name it sits under.
-_SM_KEY = re.compile(r"(?i)^\s*super\s*metric\s*\|\s*sm[_-]?([0-9a-f][0-9a-f-]{7,})\s*$")
+# The trailing group is an instanced metric: ``sm_<uuid>:vmhba1``. Anchoring
+# the pattern at the uuid let those through untouched, printing the uuid.
+_SM_KEY = re.compile(
+    r"(?i)^\s*super\s*metric\s*\|\s*sm[_-]?([0-9a-f][0-9a-f-]{7,})(?::(.+))?\s*$")
 
 
 def metric_text(graph: Optional[Graph], label: str, key: str) -> Tuple[str, str]:
@@ -506,17 +509,18 @@ def metric_text(graph: Optional[Graph], label: str, key: str) -> Tuple[str, str]
     nothing can be resolved does the key itself become the text, which is
     still better than showing nothing at all.
     """
-    label = (label or "").strip()
-    key = (key or "").strip()
+    label = str(label or "").strip()
+    key = str(key or "").strip()
     if label and label != key:
         return label, key
     match = _SM_KEY.match(key)
+    instance = f" ({match.group(2)})" if match and match.group(2) else ""
     if match and graph is not None:
         node = _find_node(graph, "supermetric", match.group(1))
         if node is not None and node.name:
-            return node.name, key
+            return node.name + instance, key
     if match:
-        return "super metric (not in this export)", key
+        return "super metric (not in this export)" + instance, key
     return label or key, key
 
 
@@ -551,27 +555,41 @@ def _cell(column: Column, row: int) -> Tuple[str, bool]:
     return mockdata.metric_value(column.key, column.unit, row, column.label), True
 
 
-def _column_th(column: Column, graph: Optional[Graph], show_key: bool) -> str:
+def _column_th(column: Column, graph: Optional[Graph], collides: bool) -> str:
     """One header cell: the display name, with the raw key on hover.
 
     The key used to be printed on a second line under every heading. For a
     super metric that line is "Super Metric|sm_<uuid>", which is noise sitting
     on top of the name a person recognises, and it is what the dashboard this
     preview claims to imitate does not show.
+
+    Except when two columns in the same table carry the same display name, and
+    12 views across the corpus do. VCF Operations renders those identically
+    too, but this is a tool for deciding what to carry across, and a reviewer
+    looking at two columns called "Service Name" needs to see that one is
+    Credential Manager and the other is SQL Server. Where the name alone
+    cannot tell them apart, the key comes back for those columns only.
     """
     text, key = metric_text(graph, column.label, column.key)
-    attr = f" title='{_e(key)}'" if show_key and key and key != text else ""
-    return f"<th{attr}>{_e(text)}</th>"
+    attr = f" title='{_e(key)}'" if key and key != text else ""
+    tail = (f"<br><span class='pv-key'>{_e(key)}</span>"
+            if collides and key and key != text else "")
+    return f"<th{attr}>{_e(text)}{tail}</th>"
 
 
 def _columns_table(columns: Sequence[Column], rows: int = MOCK_ROWS,
-                   show_keys: bool = True, graph: Optional[Graph] = None) -> str:
+                   graph: Optional[Graph] = None) -> str:
     """The view's columns as a table with mock rows under them."""
     if not columns:
         return nothing_here("this view declares no columns, so it shows an empty table "
                             "wherever it is used")
+    texts = [metric_text(graph, c.label, c.key)[0] for c in columns]
+    seen = {}
+    for one in texts:
+        seen[one] = seen.get(one, 0) + 1
     head = "".join(
-        _column_th(c, graph, show_keys) for c in columns)
+        _column_th(c, graph, seen.get(text, 0) > 1)
+        for c, text in zip(columns, texts))
     body = []
     for row in range(rows):
         cells = []
@@ -673,9 +691,12 @@ def _tiles(metrics: Sequence[Tuple[str, str, str]], ctx: dict) -> str:
     cells = []
     for label, key, unit in metrics[:8]:
         value = mockdata.metric_value(key or label, unit, 0, label)
+        # One caption, as the dashboard shows it. This used to carry a
+        # second line with the raw key; routing that line through the same
+        # resolver made it print the metric's name a second time, larger than
+        # the caption above it, on 61 tiles across the corpus.
         cells.append(f"<div class='pv-tile'><div class='v'>{_e(value)}</div>"
                      + _tile_label(label, key, ctx)
-                     + (titled(*metric_text(ctx.get("graph"), "", key)) if key else "")
                      + "</div>")
     return "<div class='pv-tiles'>" + "".join(cells) + "</div>"
 
@@ -719,11 +740,12 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
             f"the view this widget shows, {node.name}, declares no columns, so the widget "
             "shows an empty table")
     if presentation and presentation != "list":
-        return head + _non_list_view(presentation, columns)
+        return head + _non_list_view(presentation, columns, ctx.get("graph"))
     return head + _columns_table(columns[:6], rows=3, graph=ctx.get("graph"))
 
 
-def _non_list_view(presentation: str, columns: Sequence[Column]) -> str:  # noqa: D401
+def _non_list_view(presentation: str, columns: Sequence[Column],
+                   graph: Optional[Graph] = None) -> str:  # noqa: D401
     """A view whose presentation is not a list says what it is.
 
     Drawing a donut for a distribution view would be drawing buckets the
@@ -733,7 +755,10 @@ def _non_list_view(presentation: str, columns: Sequence[Column]) -> str:  # noqa
     if not columns:
         return nothing_here(f"this {presentation} view declares no attributes, so it has "
                             "nothing to chart wherever it is used")
-    attrs = ", ".join(_e(c.label) for c in columns[:6])
+    # A column with no display name falls back to its key here too, so this
+    # states attribute names as uuids unless it resolves them like everywhere
+    # else. The fixture had no unlabelled column, so nothing caught it.
+    attrs = ", ".join(_e(metric_text(graph, c.label, c.key)[0]) for c in columns[:6])
     return (f"<div class='pv-placeholder'>a <b>{_e(presentation)}</b> view. This preview "
             f"lays out list views only, so its shape is stated rather than drawn.<br>"
             f"attributes: {attrs}</div>")
@@ -1788,7 +1813,7 @@ def _view_preview(graph: Graph, node: Node, preview: Preview) -> str:
     if presentation and presentation != "list":
         preview.notes.append(
             f"this view's presentation is {presentation}; only list views are laid out")
-        return head + "<h4 class='pv-h'>attributes</h4>" + _non_list_view(presentation, columns)
+        return head + "<h4 class='pv-h'>attributes</h4>" + _non_list_view(presentation, columns, graph)
     return head + "<h4 class='pv-h'>columns, with mock rows</h4>" + _columns_table(columns, graph=graph)
 
 

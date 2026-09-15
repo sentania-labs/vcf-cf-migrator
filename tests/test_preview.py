@@ -92,12 +92,12 @@ def test_every_widget_type_the_preview_claims_is_exercised(built):
 @pytest.mark.parametrize("title,expected", [
     ("[Fixture] CPU over time", "cpu|usage_average"),          # MetricChart
     ("[Fixture] Latency sparkline", "Virtual Disk|Read Latency"),  # SparklineChart
-    ("[Fixture] Top consumers", "mem|consumed_average"),       # ParetoAnalysis
+    ("[Fixture] Top consumers", "Memory|Consumed"),             # ParetoAnalysis
     ("[Fixture] Cluster heat", "cpu|usage_average"),           # Heatmap
     ("[Fixture] Cluster properties", "Cluster Configuration|DPM Enabled"),  # PropertyList
     ("[Fixture] Open alerts", "[Fixture] Cluster CPU alert"),  # AlertList, by name
     ("[Fixture] Clusters", "Memory|Usage"),                    # ResourceList
-    ("[Fixture] Health", "badge|health"),                      # HealthChart
+    ("[Fixture] Health", "Badge|Health"),                      # HealthChart
     ("[Fixture] Second half", "[Fixture] Second half"),        # Section, see below
 ])
 def test_each_laid_out_widget_draws_what_the_export_named(built, title, expected):
@@ -1234,3 +1234,30 @@ def test_the_key_is_still_reachable_on_the_column_that_carries_one(built):
                 return
     raise AssertionError("the fixture no longer has a super metric column, "
                          "so this test proves nothing")
+
+
+def test_an_unlabelled_super_metric_column_resolves_through_both_view_paths(built):
+    """The graph argument is what turns a uuid into a name, and it is passed
+    at two call sites: the view's own page, and a dashboard widget showing
+    that view. Dropping it at either one produces "not in this export", which
+    is wrong but carries no uuid, so the visible-key gate cannot see it.
+    This is what holds those two arguments in place.
+    """
+    _members, graph = built
+    sm_name = node_for(graph, f"supermetric:{SM_IDS[0]}").name
+    assert sm_name
+
+    # The view's own page.
+    view_body = _preview.build(graph, node_for(graph, "view:")).body
+    assert sm_name in view_body, "the view page did not resolve its column"
+
+    # And a dashboard widget drawing that same view. The fixture also carries
+    # a super metric the export deliberately does not include, so "not in this
+    # export" appearing somewhere is correct; what must not happen is this
+    # resolvable one failing to resolve.
+    drawn = [_preview.build(graph, n).body for n in graph.ordered()
+             if n.kind == "dashboard"]
+    assert any(sm_name in body for body in drawn), (
+        "no dashboard resolved the column of the view it draws; the graph is "
+        "not reaching the widget"
+    )
