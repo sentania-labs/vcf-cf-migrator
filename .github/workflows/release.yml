@@ -59,6 +59,34 @@ jobs:
             exit 1
           fi
 
+      # Before anything is built. A missing signing secret is fatal to the
+      # release either way, and finding that out here costs seconds, where
+      # finding it out in the notarize step costs the whole matrix first.
+      - name: Refuse to start without every signing secret
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          missing=""
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD MACOS_TEAM_ID \
+                      NOTARY_ISSUER_ID NOTARY_KEY_ID NOTARY_KEY_P8; do
+            # Indirect expansion, so the value is tested without ever being
+            # printed; only the NAME reaches the log.
+            if [ -z "${!name:-}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::the macOS signing secrets are not set on this repository:$missing"
+            echo "::error::a release without them would ship a macOS binary nobody can run; refusing"
+            exit 1
+          fi
+          echo "all six signing secrets are present"
+
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
