@@ -1,0 +1,19 @@
+# Strings that come from the corpus and are fine to have in this repo.
+# One per line, lower case, # for a comment. Each needs a reason.
+#
+# A gate with no way to record a decision gets switched off the first time it
+# is wrong. This is how to say "looked at it, it is fine" without weakening
+# the check for everything else.
+
+# Content the VCF Content Factory itself authored and publishes openly. These
+# names are in the corpus because the lab has the factory's content installed,
+# not because they say anything about the lab.
+[vcf content factory] cluster storage paths inconsistent
+[vcf content factory] storage path inconsistency in cluster
+[vcf content factory] vm cpu usage critical
+[vcf content factory] vm cpu usage immediate
+[vcf content factory] vm cpu usage warning
+
+# A VCF Operations built-in symptom name, not lab content. It appears in a
+# review record quoting a log line about redaction.
+password changed

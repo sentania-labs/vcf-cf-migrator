@@ -36,11 +36,26 @@ evidence that this arrangement costs little.
 
 ## Checking that nothing here came from the corpus
 
-    python3 tools/corpus_leak_scan.py docs README.md
+    python3 tools/corpus_leak_scan.py              # the whole repo
+    python3 tools/corpus_leak_scan.py --history .  # every blob in every revision
 
-It harvests every uuid from every member of every corpus zip, nested zips
-included, and fails if one of them appears in the files given. Run it before
-committing anything that quotes an export.
+It harvests every uuid, and every display name long enough to be evidence,
+from every member of every corpus zip, nested zips included, and fails if one
+of them turns up. Run it before opening a PR that quotes an export.
+
+Scan the whole repo, not a corner of it. The first version of this document
+suggested `docs README.md`, and the leak the scan found on the day it was
+written was in `src/`: a comment naming a corpus super metric by uuid. A
+command that would have missed the thing it just caught is not a check.
+
+`--history` matters for the same reason. A value committed and later deleted
+is still publicly reachable, so a clean working tree proves nothing about what
+is already out there.
+
+`tools/corpus_leak_allow.txt` records strings that come from the corpus and
+are fine to keep, each with a reason: content the factory itself publishes,
+mostly. A gate with no way to record a decision gets switched off the first
+time it is wrong.
 
 Four of the documents in `reviews/` and `design/` discuss values that were
 copied out of the corpus while describing a leak. Those are redacted here as
