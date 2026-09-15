@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from vcfcf_migrator import rawdoc
-from vcfcf_migrator.containers import Container
+from vcfcf_migrator.containers import Container, zip_entry
 from vcfcf_migrator.graph import Graph
 from vcfcf_migrator.selection import Selection
 
@@ -234,7 +234,7 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name in ordered:
-            z.writestr(name, written[name])
+            z.writestr(zip_entry(name), written[name])
     out_path.write_bytes(buf.getvalue())
 
     result.counts = counts

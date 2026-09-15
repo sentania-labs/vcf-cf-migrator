@@ -39,8 +39,9 @@ First run of a downloaded binary:
 | `vcfcf-migrator inspect <export.zip> [--json]` | List every content item in the export by type, uuid and name; anything unrecognised is listed as carried, not inspected. |
 | `vcfcf-migrator tree <export.zip> [--json]` | The dependency tree over the export's own documents. An edge pointing at something the export does not carry is shown as missing, named and counted; that is information, not an error. |
 | `vcfcf-migrator build <export.zip> (--select <file> \| --select-all) --out <bundle.zip> [--json]` | Write an import bundle carrying only the closed selection. Needs a declared source version. |
-| `vcfcf-migrator corpus-check [DIR]` | Run inspect, tree and a select-all build over every zip in the corpus directory, then read the bundle back and check both halves of the contract: every document byte-identical, every rebuilt container unchanged. One line per zip. Never writes into that directory. |
-| `vcfcf-migrator ui [export.zip]` | Serve one local page on 127.0.0.1, open the browser. Every setting has a control on it; launch options (`--port`, `--no-browser`) are command line only. Ctrl-C stops it. |
+| `vcfcf-migrator corpus-check [DIR]` | Run inspect, tree, a preview of every object and a select-all build over every zip in the corpus directory, then read the bundle back and check both halves of the contract: every document byte-identical, every rebuilt container unchanged. One line per zip. Never writes into that directory. |
+| `vcfcf-migrator preview <export.zip> <object> [--out FILE] [--print]` | Write an HTML preview of one object so you can recognise it before carrying it: a dashboard laid out widget by widget, a view's columns with mock rows, a super metric's formula with its references named, an alert's symptom sets in words. One self-contained file, no network. |
+| `vcfcf-migrator ui [export.zip]` | Serve the selection page on 127.0.0.1 and open the browser: the dependency tree with a checkbox per object, dependencies pulled in and labelled with what needs them, previews in place, and a Build button. Every setting and every command has a control on it; launch options (`--port`, `--no-browser`) are command line only. Ctrl-C stops it. |
 
 ## A worked example
 
@@ -138,5 +139,119 @@ settings file the `ui` page writes into your user config directory
 - **Corpus directory** (`--corpus DIR`, `VCFCF_MIGRATOR_CORPUS`, default
   `./corpus`): where real export zips live on your workstation, never in
   this repo.
+
+## The preview
+
+An export gives you a name and a uuid per object, which is not enough to
+decide whether to carry a dashboard. `preview` writes one HTML file that
+shows the object:
+
+- **a dashboard** laid out widget by widget, in the columns the dashboard
+  puts them in, each frame showing its title, its type and content
+  appropriate to that type: an embedded view shows that view's own columns,
+  a scoreboard shows its tiles, a chart shows a chart, a text widget shows
+  its text;
+- **a view** as the column headers it defines, with a few rows under them;
+- **a super metric** as its formula, and the same formula again with every
+  reference replaced by the name of the object it points at;
+- **an alert** as its symptom sets stated in words, with its recommendations
+  in priority order;
+- every other kind as the facts its document carries.
+
+The values are made up. They are derived by hash from the keys and names the
+export already carries, so the same export previews identically on every run
+and on every workstation, and two admins looking at the same object see the
+same page. Names, titles, columns and keys are never invented: those come
+from the export. A widget type the preview does not lay out is named rather
+than drawn, and the page counts how many it met, because a Geo widget drawn
+as a bar chart would be worse than one drawn as nothing.
+
+Widget widths and order are the dashboard's own; widget heights are the
+preview's, taken from the content so a table is never clipped, and every page
+says so above the layout. A widget the dashboard places outside its own
+declared columns widens the grid rather than being squashed into a sliver.
+
+**No box ever says nothing.** Every widget, and every object, resolves to one
+of four statements, and they look different at a glance:
+
+1. here is the thing, drawn;
+2. the export carries this, but the preview does not lay out that type, named;
+3. the export carries nothing here, with what is missing said plainly;
+4. the content is real and lives somewhere this page cannot follow.
+
+State 3 beats state 2. An empty widget of a type the preview does not draw is
+empty first: "carries no configuration at all" is a fact about your content,
+which shows nothing on the real dashboard either and is usually an unfinished
+leftover, while "this preview does not lay out Skittles" is a fact about the
+tool. The same rule covers a view with no columns, a super metric with an
+empty formula, an alert with no symptom sets, a group with no membership
+rules and a dashboard with no widgets. The notes count the empties, so a
+fourteen-widget dashboard does not have to be read box by box.
+
+State 4 is what keeps the tool honest about what it cannot see, and it covers
+more widgets than state 3 does. A widget whose column layout lives in the
+saved state VCF Operations writes rather than in its configuration is
+configured, in a form this page does not decode (a state whose whole value is
+the empty-object marker is not a layout, and does count as empty). A widget
+naming a view the export does not carry is pointing at content an export
+cannot hold, since an export carries custom content only and a view shipping
+with a management pack or with the product is never in one: it shows whatever
+the target already has, and an export gives the tool no way to tell that apart
+from a view that is genuinely gone. And a widget that drives other widgets is
+the dashboard's control, so it is never told it shows nothing, whatever its
+own configuration looks like.
+
+**The preview shows the dashboard's wiring.** Most widgets on a real
+dashboard do not choose their own subject: they show whatever object is
+picked in the widget that feeds them, and a preview that draws each one as
+though it stood alone hides the main thing about an interaction-driven
+dashboard. So the layout carries the flow: a summary above the grid naming
+which widget drives which, a badge and a coloured edge on each provider and
+receiver, and on a receiver a line saying whose selection its values stand
+for. How a widget comes by its subject has five answers, and the page gives
+the right one rather than guessing: it picks its own subject; it is **fed** by
+a named widget, which is the commonest answer on a real dashboard;
+it is a **selector**, which the wiring decides, because it drives other
+widgets, and whether it also picks its own subject is a separate question the
+export answers per widget; it is driven from **outside** the dashboard, the
+way a dashboard opened in an object's context is; or it waits on a selection
+nothing on the dashboard provides, which is the only one of the five that will
+never show data. That last one is state 3, and the widget is still drawn under
+the sentence, since a blank box would show neither its columns nor its
+metrics.
+
+The file reaches nothing: inline CSS, inline SVG, no script, no font, no
+image, no CDN. It opens on a workstation with no route anywhere.
+
+## The selection page
+
+`vcfcf-migrator ui <export.zip>` is the way through the whole job without a
+command line:
+
+- the dependency tree, grouped by kind, with a checkbox per object and each
+  object's dependencies in a nested disclosure;
+- checking something pulls in what it needs and says what it pulled in;
+  anything pulled in is labelled with what requires it;
+- unchecking something another selection still needs is refused, naming what
+  needs it, because a bundle whose documents point at objects it does not
+  carry is the one failure subsetting can introduce by itself;
+- the preview of any object, in place on the page;
+- the counts of what a build would carry, and a Build button that writes the
+  bundle and says where it went;
+- a control for every command (`inspect`, `tree`, `preview`, `build`,
+  `corpus-check`), a text box for a selection the way `build --select` takes
+  it, and a button that hands back the equivalent command line for what the
+  page is set to.
+
+It listens on 127.0.0.1 only and loads no external resource of any kind: no
+script file, no font, no image, no CDN, and one inline handler that submits a
+checkbox's own form, so the page works with JavaScript off and with the
+keyboard alone.
+
+A same-origin check on every POST stops another web page in your browser from
+driving the port. That is a CSRF control, not an access control: any process
+on the machine can reach the port while the page is running, and the page
+reads and writes the paths you give it with your own rights. On the
+single-user workstation this tool is for, that is the model.
 
 Spec: `knowledge/designs/content-migrator-v1.md` in the factory repo.

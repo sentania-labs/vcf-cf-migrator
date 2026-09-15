@@ -53,6 +53,31 @@ ALERT_CONTENT_TAGS = (
 )
 
 
+# Every zip entry this tool writes carries this timestamp instead of the clock.
+# A zip entry's stored time is not content and no import reads it, but leaving
+# it as "now" means two builds of the same selection differ in bytes, which
+# costs the one comparison that proves the page and the command line write the
+# same bundle. 1980-01-01 is the earliest a zip can express.
+ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def zip_entry(name: str) -> zipfile.ZipInfo:
+    """A deflated entry at a fixed timestamp, so a bundle is reproducible.
+
+    ``create_system`` is pinned too. ``ZipInfo`` sets it to 0 on Windows and 3
+    everywhere else, so without this the Windows binary and the Linux binary
+    write bundles that differ in bytes for the same selection, and an admin
+    comparing hashes across the three shipped binaries would be chasing a
+    field no importer reads. 3 is Unix, which is what every bundle written so
+    far carries.
+    """
+    info = zipfile.ZipInfo(name, date_time=ZIP_EPOCH)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o600 << 16
+    info.create_system = 3
+    return info
+
+
 @dataclass
 class Entry:
     """One object inside a container, with its document as exported."""
@@ -145,9 +170,9 @@ class XmlElementContainer(Container):
             return xml
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr(self.inner, xml)
+            z.writestr(zip_entry(self.inner), xml)
             for name, data in self.siblings.items():
-                z.writestr(name, data)
+                z.writestr(zip_entry(name), data)
         return buf.getvalue()
 
 
@@ -404,9 +429,9 @@ class DashboardsContainer(JsonContainer):
             return inner
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr(self.INNER, inner)
+            z.writestr(zip_entry(self.INNER), inner)
             for name, data in self.extra.items():
-                z.writestr(name, data)
+                z.writestr(zip_entry(name), data)
         return buf.getvalue()
 
 

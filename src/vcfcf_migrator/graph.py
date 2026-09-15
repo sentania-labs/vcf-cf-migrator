@@ -202,10 +202,17 @@ class Note:
     text: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class MissingEdge:
-    """An edge whose target is not in the export. Information, not an error:
-    the target instance may well already have the object."""
+    """An edge whose target is not in the export.
+
+    Information, not an error, and the wording matters: an export carries
+    custom content only, so an edge to anything that ships with the product
+    or inside a management pack lands here by construction and the target
+    instance is expected to have it already. Nothing in an export tells that
+    apart from an object that is genuinely gone, so this says what is not in
+    the export and leaves the judgement to the admin.
+    """
     source_key: str
     kind: str
     ident: str
@@ -732,13 +739,21 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
     _add_rule_template_refs(found, graph)
 
     index = _resolve_index(graph.nodes)
+    seen_gaps: set = set()
     for node in graph.nodes.values():
         targets: List[str] = []
         for ref in node.refs:
             hits = index.get((ref.kind, ref.ident))
             if not hits:
-                if not ref.optional:
-                    graph.missing.append(MissingEdge(node.key, ref.kind, ref.ident, ref.via))
+                # Two widgets on one dashboard can name the same absent
+                # object, which is one thing to tell the admin about, not
+                # two. Membership is checked against a set rather than by
+                # scanning the list, which on a 430-object export with 201
+                # such edges is the difference between linear and quadratic.
+                gap = MissingEdge(node.key, ref.kind, ref.ident, ref.via)
+                if not ref.optional and gap not in seen_gaps:
+                    seen_gaps.add(gap)
+                    graph.missing.append(gap)
                 continue
             # One reference, several nodes, is ambiguous only when those
             # nodes are different objects. A dashboard uuid under two owners

@@ -102,6 +102,8 @@ class Export:
     items: List[Item] = field(default_factory=list)
     carried: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    # Dashboard navigation links whose target is not in this export.
+    navigation_gaps: int = 0
 
     def sorted_items(self) -> List[Item]:
         def key(it: Item):
@@ -126,6 +128,7 @@ class Export:
             "counts": self.counts(),
             "items": [it.as_dict() for it in self.sorted_items()],
             "carried": list(self.carried),
+            "navigation_gaps": self.navigation_gaps,
             "notes": list(self.notes),
         }
 
@@ -295,6 +298,33 @@ def _dashboard_items(dashes: List[dict], source: str) -> List[Item]:
     return [Item("dashboard", str(d.get("name") or "(unnamed)"), str(d.get("id") or ""), source) for d in dashes]
 
 
+def navigation_gaps(dashes: List[dict]) -> int:
+    """How many dashboard navigation targets are not a widget of the document
+    that names them.
+
+    A navigation is a link: click a row here, land on a dashboard there. Every
+    target in the corpus resolves to nothing in any of the five exports, which
+    means those links point at dashboards that live on the source instance and
+    were not exported, and after an import they will not land. That is worth
+    saying in the listing and not only in a preview, since it is the listing
+    an admin reads before deciding what to carry. Whether a target is a
+    dependency the bundle should chase is M5's question (migrator issue #3):
+    nothing in the corpus resolves, so nothing here can name what it would be.
+    """
+    gaps = 0
+    for dash in dashes:
+        navigations = dash.get("dashboardNavigations")
+        if not isinstance(navigations, dict):
+            continue
+        widget_ids = {str(w.get("id") or "") for w in dash.get("widgets") or []
+                      if isinstance(w, dict)}
+        for targets in navigations.values():
+            for target in targets if isinstance(targets, list) else []:
+                if isinstance(target, dict) and str(target.get("id") or "") not in widget_ids:
+                    gaps += 1
+    return gaps
+
+
 # ---------------------------------------------------------------------------
 # The walk
 # ---------------------------------------------------------------------------
@@ -353,7 +383,9 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
         for name in names:
             if name.startswith("dashboards/") and not name.endswith("/"):
                 try:
-                    export.items.extend(_dashboard_items(_dashboards_from_inner_zip(zf.read(name)), name))
+                    dashes = _dashboards_from_inner_zip(zf.read(name))
+                    export.items.extend(_dashboard_items(dashes, name))
+                    export.navigation_gaps += navigation_gaps(dashes)
                 except ValueError:
                     export.carried.append(name)
         if "supermetrics.json" in names:
@@ -369,7 +401,9 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
             member = zf.read(name)
 
             if name == "dashboard/dashboard.json":
-                export.items.extend(_dashboard_items(_dashboards_from_inner_zip(_wrap_dashboard_json(member)), name))
+                dashes = _dashboards_from_inner_zip(_wrap_dashboard_json(member))
+                export.items.extend(_dashboard_items(dashes, name))
+                export.navigation_gaps += navigation_gaps(dashes)
                 continue
 
             if lower.endswith(".zip"):
@@ -385,6 +419,7 @@ def read_export(path, source_version: Optional[str] = None) -> Export:
                     dashes = []
                 if dashes:
                     export.items.extend(_dashboard_items(dashes, name))
+                    export.navigation_gaps += navigation_gaps(dashes)
                     continue
                 export.carried.append(name)
                 continue
@@ -518,6 +553,10 @@ def render_text(export: Export) -> str:
     lines.append(f"items: {len(export.items)}" + (" (" + ", ".join(f"{k}={counts[k]}" for k in KIND_ORDER if k in counts) + ")" if counts else ""))
     for it in export.sorted_items():
         lines.append(f"  {it.kind:<21} {it.uuid or '(no uuid)':<40} {it.name}")
+    if export.navigation_gaps:
+        lines.append(f"dashboard navigation links pointing outside this export: "
+                     f"{export.navigation_gaps} (they will not land on the target unless it "
+                     "already has what they point at)")
     if export.carried:
         lines.append(f"carried, not inspected: {len(export.carried)}")
         for name in export.carried:

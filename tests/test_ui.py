@@ -54,9 +54,9 @@ def test_page_shows_versions_settings_and_listing(server):
     assert "id='source_version'" in body and "current value from: not declared" in body
     assert "[Fixture] Cluster Overview" in body
     assert "[Fixture] SM 2" in body
-    for cmd in ("tree", "build", "corpus-check"):
+    for cmd in ("tree", "preview", "build", "corpus-check"):
         assert f"value='{cmd}'" in body
-        assert f"Show the {cmd} command" in body
+        assert f"show the {cmd} command" in body
     assert "id='zip'" in body
 
 
@@ -75,7 +75,8 @@ def test_saving_corpus_dir_persists_to_the_settings_file(server, config_dir):
     assert settings.corpus_dir()[0].as_posix() == "/data/exports"
 
 
-def test_saving_source_version_persists_and_rechecks_the_listing(server, config_dir):
+def test_saving_source_version_persists_and_rechecks_the_listing(server, config_dir, export_zip):
+    _post(server, "/inspect", {"zip": str(export_zip)})
     status, body = _post(server, "/settings", {"source_version": "8.18.7"})
     assert status == 200
     assert "source version 8.18.7 saved to" in body
@@ -135,15 +136,15 @@ def test_inspect_form_and_json_toggle(server, export_zip):
     assert "is not a zip file" in body or "cannot read" in body
 
 
-def test_pending_buttons_hand_back_the_command_to_run(server, export_zip):
-    """tree, build and corpus-check run on the CLI today; their page controls
-    land in the next PR. Until then the buttons do the one useful thing they
-    can: hand back the exact command line for what the page is set to."""
+def test_the_buttons_hand_back_the_equivalent_command_line(server, export_zip):
+    """The page does these itself now; the command line is for the admin who
+    wants to script what they just did by hand."""
     _, body = _post(server, "/inspect", {"zip": str(export_zip)})
     _, body = _post(server, "/run", {"cmd": "tree"})
     assert f"vcfcf-migrator tree {export_zip}" in html.unescape(body)
     _, body = _post(server, "/run", {"cmd": "build"})
-    assert "--select &lt;picks.txt&gt; --out &lt;bundle.zip&gt;" in body
+    assert "--select &lt;picks.txt&gt; --out" in body
+    assert "-bundle.zip" in body
     assert "refuses without a declared source version" in body
     _, body = _post(server, "/run", {"cmd": "corpus-check"})
     assert "vcfcf-migrator corpus-check" in body
@@ -157,25 +158,32 @@ def test_unknown_path_is_404(server):
 
 @pytest.mark.parametrize("path,expected", [
     ("/tmp/plain.zip", "vcfcf-migrator tree /tmp/plain.zip"),
-    ("/tmp/My Export.zip", 'vcfcf-migrator tree "/tmp/My Export.zip"'),
-    (r"C:\Users\a b\export.zip", 'vcfcf-migrator tree "C:\\Users\\a b\\export.zip"'),
+    ("/tmp/My Export.zip", "vcfcf-migrator tree '/tmp/My Export.zip'"),
+    (r"C:\Users\a b\export.zip", "vcfcf-migrator tree 'C:\\Users\\a b\\export.zip'"),
 ])
-def test_the_command_the_page_hands_back_is_one_argument(path, expected):
+def test_the_command_the_page_hands_back_is_one_argument(path, expected, monkeypatch):
     """A path with a space in it is ordinary on every OS this ships for, and
     unquoted it is two arguments, so the command the button offers does not
-    run. Double quotes rather than shlex, which emits single quotes that
-    Windows takes literally."""
+    run. The quoting follows the platform the page runs on, since that is the
+    shell the line will be pasted into: this asserts the POSIX form, and
+    ``tests/test_ui_selection.py`` asserts the Windows one.
+    """
+    import os
+
     from vcfcf_migrator.ui import PageState
 
+    monkeypatch.setattr(os, "name", "posix")
     state = PageState(path, corpus_cli=None, source_version_cli=None)
     assert state.command_line("tree") == expected
 
 
-def test_a_quoted_command_survives_a_shell_split():
+def test_a_quoted_command_survives_a_shell_split(monkeypatch):
+    import os
     import shlex
 
     from vcfcf_migrator.ui import PageState
 
+    monkeypatch.setattr(os, "name", "posix")
     state = PageState("/tmp/My Export.zip", corpus_cli=None, source_version_cli="9.0.2")
     parts = shlex.split(state.command_line("build"))
     assert "/tmp/My Export.zip" in parts

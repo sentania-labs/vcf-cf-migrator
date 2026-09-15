@@ -18,6 +18,9 @@ from make_export_fixture import (
     ABSENT_GROUP_NAME,
     ABSENT_SM_ID,
     ABSENT_SM_NAME,
+    ABSENT_VIEW_ID,
+    EMPTY_VIEW_ID,
+    EXPECTED_DASHBOARD_LISTINGS,
     GROUP_NAME,
     GROUP_NAME_2,
     GROUP_NAME_3,
@@ -59,7 +62,9 @@ def _edge_idents(graph, key, kind):
 
 def test_dashboard_reaches_its_view_and_its_super_metric(graph):
     key = f"dashboard:{DASHBOARD_ID}@{OWNER}"
-    assert _edge_idents(graph, key, "view") == {VIEW_IDS[0]}
+    # Three View widgets name a view this export carries: the cluster list,
+    # and the two that exercise the empty cases.
+    assert _edge_idents(graph, key, "view") == {VIEW_IDS[0], EMPTY_VIEW_ID}
     # A widget can address a super metric without going through a view.
     assert _edge_idents(graph, key, "supermetric") == {SM_IDS[1]}
 
@@ -392,7 +397,15 @@ def test_an_edge_out_of_the_export_is_named_and_counted_not_an_error(graph):
     assert f"MISSING supermetric [{ABSENT_SM_ID}]" in text
     assert ("supermetric", ABSENT_SM_NAME) in idents
     assert f'MISSING supermetric [{ABSENT_SM_NAME}]' in text
-    assert "edges to objects a bundle cannot carry: 5" in text
+    # One more than the five M4a exercised: a View widget naming a view this
+    # export does not carry.
+    assert ("view", ABSENT_VIEW_ID) in idents
+    assert f"edges to objects a bundle cannot carry: {len(graph.missing)}" in text
+    # Seven: the five M4a exercised, plus the absent view named by a widget,
+    # once for each owner's copy of the dashboard that names it. Two widgets
+    # on one copy naming the same absent view is one line, not two.
+    assert len(graph.missing) == 7
+    assert sum(1 for m in graph.missing if m.ident == ABSENT_VIEW_ID) == 2
     # A policy is in the export; it is the bundle that will not hold it, and
     # the line has to say which of the two is true.
     assert "policies.xml is in the export but is a member this tool never carries" in text
@@ -408,7 +421,7 @@ def test_tree_counts_match_inspect(export_zip, graph):
 def test_tree_json_carries_nodes_edges_and_missing(export_zip, capsys):
     assert main(["tree", "--json", str(export_zip)]) == 0
     doc = json.loads(capsys.readouterr().out)
-    assert doc["counts"]["dashboard"] == 3
+    assert doc["counts"]["dashboard"] == EXPECTED_DASHBOARD_LISTINGS
     assert doc["missing"] and doc["nodes"] and doc["edges"]
     assert "policies.xml" in doc["unknown_members"]
     # The marker is scaffolding the builder copies, not an unreadable member.
@@ -423,6 +436,9 @@ def test_selecting_a_dashboard_pulls_in_its_view_and_super_metrics(graph):
     picked = _selection.close(graph, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     assert set(picked.keys) == {
         f"dashboard:{DASHBOARD_ID}@{OWNER}", f"view:{VIEW_IDS[0]}",
+        # A widget names the columnless view, so the closure carries it: the
+        # bundle has to hold what the dashboard points at, empty or not.
+        f"view:{EMPTY_VIEW_ID}",
         f"supermetric:{SM_IDS[0]}", f"supermetric:{SM_IDS[1]}", f"supermetric:{SM_IDS[2]}",
         # Reached by the list-shaped resource scope, which in turn reaches the
         # group its own RelationshipRule names.
@@ -629,7 +645,7 @@ def test_the_same_uuid_under_two_owners_can_both_be_carried(tmp_path, export_zip
 def test_a_subset_bundle_carries_the_closure_and_nothing_more(tmp_path, export_zip):
     out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     assert code == 0
-    assert read_export(out).counts() == {"dashboard": 1, "view": 1, "supermetric": 3,
+    assert read_export(out).counts() == {"dashboard": 1, "view": 2, "supermetric": 3,
                                         "customgroup": 2}
     names = zipfile.ZipFile(out).namelist()
     assert "reports.zip" not in names and "alertdefs.xml" not in names
@@ -639,7 +655,7 @@ def test_the_manifest_counts_what_was_carried(tmp_path, export_zip):
     out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     assert code == 0
     manifest = json.loads(zipfile.ZipFile(out).read("configuration.json"))
-    assert manifest["dashboards"] == 1 and manifest["views"] == 1 and manifest["superMetrics"] == 3
+    assert manifest["dashboards"] == 1 and manifest["views"] == 2 and manifest["superMetrics"] == 3
     assert manifest["type"] == "CUSTOM"
     assert "signature" not in manifest
 
@@ -868,3 +884,66 @@ def test_two_templates_sharing_a_name_are_both_carried(tmp_path):
     assert {graph.nodes[k].ident for k in picked.keys if
             graph.nodes[k].kind == "notificationtemplate"} == {TEMPLATE_ID, twin}
     assert picked.ambiguous
+
+
+def test_two_widgets_naming_one_absent_object_are_one_missing_edge(graph):
+    """The dedupe has a fixture behind it: two View widgets on the Cluster
+    Overview name the same view the export does not carry, which is one thing
+    to tell the admin about, not two. It is still one row per owner's copy of
+    the dashboard, because those are two documents."""
+    rows = [m for m in graph.missing if m.ident == ABSENT_VIEW_ID]
+    assert len(rows) == 2
+    assert {m.source_key for m in rows} == {
+        f"dashboard:{DASHBOARD_ID}@{OWNER}", f"dashboard:{DASHBOARD_ID}@{OWNER_2}"}
+    text = _graph.render_tree(graph)
+    assert text.count(f"view [{ABSENT_VIEW_ID}] wanted by") == 2
+
+
+def test_every_bundle_entry_carries_the_pinned_stamp(tmp_path, export_zip):
+    """Two builds seconds apart differ in bytes unless the stamp is pinned,
+    and the byte-identity tests build back to back in one process, so they
+    pass on the clock's resolution rather than on the pin. This asserts the
+    stamp itself, on the outer members and inside the rebuilt inner zips.
+
+    ``create_system`` is pinned too: ZipInfo sets it to 0 on Windows and 3
+    elsewhere, so without it the three shipped binaries write different bytes
+    for one selection. That pin cannot be caught by reading a bundle built
+    here, since a Linux ZipInfo already says 3; the next test builds the entry
+    as Windows would.
+    """
+    from vcfcf_migrator.containers import ZIP_EPOCH
+
+    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
+    assert code == 0
+    checked = 0
+    with zipfile.ZipFile(out) as bundle:
+        for info in bundle.infolist():
+            assert info.date_time == ZIP_EPOCH, info.filename
+            assert info.create_system == 3, info.filename
+            checked += 1
+            if info.filename.lower().endswith(".zip") or "/" in info.filename:
+                try:
+                    inner = zipfile.ZipFile(io.BytesIO(bundle.read(info.filename)))
+                except zipfile.BadZipFile:
+                    continue
+                for nested in inner.infolist():
+                    assert nested.date_time == ZIP_EPOCH, nested.filename
+                    assert nested.create_system == 3, nested.filename
+                    checked += 1
+    assert checked > 5
+
+
+def test_the_entry_stamp_holds_on_the_platform_that_would_break_it(monkeypatch):
+    """``ZipInfo`` reads ``sys.platform`` to choose ``create_system``: 0 on
+    Windows, 3 everywhere else. CI is ubuntu only, so removing the pin is
+    invisible to every other test here; this one builds the entry as the
+    Windows binary would and holds the pin where it actually matters."""
+    import sys as _sys
+
+    from vcfcf_migrator.containers import ZIP_EPOCH, zip_entry
+
+    monkeypatch.setattr(_sys, "platform", "win32")
+    entry = zip_entry("views.zip")
+    assert entry.create_system == 3, "a bundle built on Windows must match one built here"
+    assert entry.date_time == ZIP_EPOCH
+    assert entry.compress_type == zipfile.ZIP_DEFLATED

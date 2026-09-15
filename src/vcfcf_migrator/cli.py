@@ -1,7 +1,7 @@
 """``vcfcf-migrator`` command line.
 
-Commands: ``version``, ``inspect``, ``tree``, ``build``, ``corpus-check``,
-``ui``. Every option here has a control on the ``ui`` page (house rule:
+Commands: ``version``, ``inspect``, ``tree``, ``preview``, ``build``,
+``corpus-check``, ``ui``. Every option here has a control on the ``ui`` page (house rule:
 every setting has a GUI option).
 
 Exit codes: 0 ok, 1 refused or unreadable input, 2 usage.
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import List, Optional
 
 import vcfcf_core
@@ -63,6 +64,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("tree", help="show the dependency tree over the export's own documents")
     sp.add_argument("zip", help="path to the content export zip")
     sp.add_argument("--json", action="store_true", help="emit the tree as JSON")
+
+    sp = sub.add_parser("preview", help="write an HTML preview of one object so it can be "
+                                        "recognised before it is carried")
+    sp.add_argument("zip", help="path to the content export zip")
+    sp.add_argument("object", metavar="OBJECT",
+                    help="the object: a uuid, kind:uuid, kind:name, or dashboard:uuid@owner")
+    sp.add_argument("--out", metavar="FILE",
+                    help="where to write the HTML (default: preview-<kind>-<id>.html here)")
+    sp.add_argument("--print", dest="to_stdout", action="store_true",
+                    help="write the HTML to stdout instead of to a file")
 
     sp = sub.add_parser("build", help="write an import bundle carrying only the closed selection")
     sp.add_argument("zip", help="path to the content export zip")
@@ -129,6 +140,65 @@ def cmd_tree(args) -> int:
     return 0
 
 
+def preview_filename(node) -> str:
+    """The default file name for a preview: the kind, and an identifier a file
+    system will take. Names go through the same reduction, because a display
+    name can carry a slash, a colon or a script that no file system agrees on."""
+    stem = node.uuid or node.ident or node.name
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in str(stem)).strip("-")
+    tail = f"-{node.owner[:8]}" if node.kind == "dashboard" and node.owner else ""
+    return f"preview-{node.kind}-{safe or 'object'}{tail}.html"
+
+
+def cmd_preview(args) -> int:
+    from vcfcf_migrator import preview as _preview
+
+    declared, _source = _settings.source_version(args.source_version)
+    try:
+        _members, graph = _load_graph(args.zip, declared)
+    except BadSourceVersion as e:
+        print(f"vcfcf-migrator preview: {e}", file=sys.stderr)
+        return 2
+    except (NotAnExport, UnsupportedExport, RawDocError) as e:
+        print(f"vcfcf-migrator preview: {e}", file=sys.stderr)
+        return 1
+
+    keys = _selection.match_line(graph, args.object)
+    if not keys:
+        print(f"vcfcf-migrator preview: this export carries no object named "
+              f"{args.object!r}", file=sys.stderr)
+        return 1
+    if len(keys) > 1:
+        # One uuid under two owners, or one name two objects answer to. Picking
+        # one would preview an object the admin did not ask for, so it says
+        # which spellings name exactly one.
+        print(f"vcfcf-migrator preview: {args.object!r} names {len(keys)} objects; "
+              "say which with one of: " + ", ".join(keys), file=sys.stderr)
+        return 1
+    node = graph.nodes[keys[0]]
+    try:
+        html_text = _preview.render_page(graph, node)
+    except _preview.PreviewError as e:
+        print(f"vcfcf-migrator preview: {e}", file=sys.stderr)
+        return 1
+
+    if args.to_stdout:
+        sys.stdout.write(html_text)
+        return 0
+    out = Path(args.out) if args.out else Path(preview_filename(node))
+    try:
+        if out.parent and str(out.parent):
+            out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html_text, encoding="utf-8")
+    except OSError as e:
+        # Every other refusal in this CLI is a message and an exit code; an
+        # unwritable path should not be the one that gives a traceback.
+        print(f"vcfcf-migrator preview: cannot write {out}: {e}", file=sys.stderr)
+        return 1
+    print(str(out))
+    return 0
+
+
 def cmd_build(args) -> int:
     declared, _source = _settings.source_version(args.source_version)
     if bool(args.select) == bool(args.select_all):
@@ -163,8 +233,12 @@ def cmd_build(args) -> int:
         print("vcfcf-migrator build: the selection is empty, no bundle written", file=sys.stderr)
         return 1
 
-    result = _bundle.build_bundle(members.data, members.order, graph, picked,
-                                  args.out, marker=members.marker)
+    try:
+        result = _bundle.build_bundle(members.data, members.order, graph, picked,
+                                      args.out, marker=members.marker)
+    except OSError as e:
+        print(f"vcfcf-migrator build: cannot write {args.out}: {e}", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps({"selection": _selection.as_dict(graph, picked),
                           "build": result.as_dict()}, indent=2))
@@ -201,6 +275,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_inspect(args)
     if args.command == "tree":
         return cmd_tree(args)
+    if args.command == "preview":
+        return cmd_preview(args)
     if args.command == "build":
         return cmd_build(args)
     if args.command == "corpus-check":
