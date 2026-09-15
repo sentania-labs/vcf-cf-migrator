@@ -309,7 +309,9 @@ def cmd_build(args) -> int:
 
     try:
         result = _bundle.build_bundle(members.data, members.order, graph, picked,
-                                      args.out, marker=members.marker)
+                                      args.out, marker=members.marker,
+                                      directories=members.directories,
+                                      directory_order=members.directory_order)
     except OSError as e:
         print(f"vcfcf-migrator build: cannot write {args.out}: {e}", file=sys.stderr)
         return 1

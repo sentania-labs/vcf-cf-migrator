@@ -321,6 +321,11 @@ def test_an_unhandled_shape_reaches_both_reports(tmp_path, export_zip):
     with zipfile.ZipFile(out, "w") as z:
         for name in src.namelist():
             data = src.read(name)
+            if name.endswith("/"):
+                # A zip directory entry, which every real export carries and
+                # which is not a nested zip: copied across untouched.
+                z.writestr(name, data)
+                continue
             if name.startswith("dashboards/"):
                 inner = zipfile.ZipFile(io.BytesIO(data))
                 doc = json.loads(inner.read("dashboard/dashboard.json"))
@@ -599,6 +604,68 @@ def test_each_container_is_rebuilt_with_only_what_was_picked(tmp_path, export_zi
     assert member in zipfile.ZipFile(out).namelist()
     assert _containers.documents(read_members(out).data)[(member, kind, node.ident, node.owner)] \
         == _containers.documents(read_members(export_zip).data)[(member, kind, node.ident, node.owner)]
+
+
+def test_a_select_all_bundle_has_the_export_s_zip_entries(tmp_path, export_zip):
+    """Including the directory entries, and read with zipfile rather than with
+    the reader.
+
+    This is the check that was missing. Every comparison this tool made went
+    through ``read_members``, which dropped zip directory entries on both
+    sides, so the tool agreed with itself about a thing neither side could see,
+    and VCF Operations refused every bundle it had ever built with
+    INVALID_FILE_FORMAT before reading a document, because ``dashboards/`` and
+    ``dashboardsharings/`` were not in it.
+    """
+    out, code = _build(tmp_path, export_zip, all_of_it=True)
+    assert code == 0
+    source = zipfile.ZipFile(export_zip).namelist()
+    bundle = zipfile.ZipFile(out).namelist()
+    unknown = set(_graph.build_graph(read_members(export_zip).data).unknown_members)
+    assert [n for n in source if n not in bundle and n not in unknown] == []
+    assert [n for n in bundle if n not in source] == []
+    assert "dashboards/" in bundle and "dashboardsharings/" in bundle
+
+
+def test_a_subset_bundle_carries_a_directory_entry_for_what_it_writes(tmp_path, export_zip):
+    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
+    assert code == 0
+    names = zipfile.ZipFile(out).namelist()
+    for name in names:
+        if name.endswith("/"):
+            continue
+        if "/" in name:
+            assert name.rsplit("/", 1)[0] + "/" in names, name
+    # And never a directory entry with nothing under it.
+    for name in names:
+        if name.endswith("/"):
+            assert any(o != name and o.startswith(name) for o in names), name
+
+
+def test_a_directory_entry_is_a_stored_empty_entry(tmp_path, export_zip):
+    """The shape the factory's own packager writes, which imports."""
+    out, _code = _build(tmp_path, export_zip, all_of_it=True)
+    with zipfile.ZipFile(out) as z:
+        entries = [i for i in z.infolist() if i.filename.endswith("/")]
+    assert entries
+    for info in entries:
+        assert info.file_size == 0 and info.compress_type == zipfile.ZIP_STORED
+        assert info.is_dir()
+
+
+def test_an_export_with_no_sharing_member_gets_one_synthesized(tmp_path):
+    """The 8.18.7 export carries the dashboardsharings/ directory and no file
+    under it. The target needs one beside every dashboards member, and writing
+    scaffolding the source lacked is the container half of the contract."""
+    source = tmp_path / "no-sharing.zip"
+    source.write_bytes(build_export_zip(
+        without=[f"dashboardsharings/{OWNER}", f"dashboardsharings/{OWNER_2}"]))
+    out, code = _build(tmp_path, source, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
+    assert code == 0
+    with zipfile.ZipFile(out) as z:
+        assert f"dashboardsharings/{OWNER}" in z.namelist()
+        assert z.read(f"dashboardsharings/{OWNER}") == b"[]"
+        assert "dashboardsharings/" in z.namelist()
 
 
 def test_dashboards_are_rebuilt_per_owner_inner_zip(tmp_path, export_zip):

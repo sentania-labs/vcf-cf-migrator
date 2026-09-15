@@ -418,7 +418,9 @@ class PageState:
         self.build_out = out
         try:
             result = _bundle.build_bundle(self.members.data, self.members.order, self.graph,
-                                          self.selection, out, marker=self.members.marker)
+                                          self.selection, out, marker=self.members.marker,
+                                          directories=self.members.directories,
+                                          directory_order=self.members.directory_order)
         except OSError as e:
             self.error = f"cannot write {out}: {e}"
             return

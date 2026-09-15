@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Bundles are refused by VCF Operations no longer.** Every bundle this tool
+  had built was rejected with `INVALID_FILE_FORMAT` and an empty operation
+  list, on any source version, including one built from an instance's own
+  export and fed straight back to it. The cause was the two zip directory
+  entries: an export carries `dashboards/` and `dashboardsharings/` as
+  zero-length entries, the reader dropped every entry whose name ends in `/`,
+  and the writer never put them back. The factory's own packager writes them
+  with the comment "Explicit directory entries mirror the real export shape",
+  above a docstring recording an earlier version rejected with that same code.
+
+  A bundle now carries a directory entry for every directory it writes into,
+  in the source's own spelling, and never one with nothing under it. Where a
+  source has no `dashboardsharings/<owner>` (the 8.18.7 export carries the
+  directory and no file in it) the bundle synthesizes an empty sharing list,
+  which is the container half of the contract: the document is the source's,
+  the scaffolding is the tool's.
+
+  **The check that was lying.** Every comparison went through the reader, which
+  dropped directory entries on both sides, so the tool agreed with itself about
+  something neither side could see. `corpus-check` and the suite now compare the
+  two zips' own entry lists with `zipfile`: a select-all bundle must carry every
+  entry the export has except the members this tool never carries, must add
+  nothing but a scaffolding member the target requires, and must have a
+  directory entry for everything it writes.
+
 - `preview`: three reads of a field corrected, all the same shape as the
   `instanced="false"` finding, a field's truthiness taken for its content.
   `viewModeHTML` is a flag saying a text widget's words are markup, not the

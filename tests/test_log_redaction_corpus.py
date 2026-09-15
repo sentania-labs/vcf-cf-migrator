@@ -184,7 +184,8 @@ def full_run(path: Path, declared, out_dir: Path) -> list:
         picked = _selection.select_all(graph)
         _bundle.build_bundle(members.data, members.order, graph, picked,
                              out_dir / (path.stem + "-bundle.zip"),
-                             marker=members.marker)
+                             marker=members.marker, directories=members.directories,
+                             directory_order=members.directory_order)
         log.finish(0, what="build")
     finally:
         runlog.set_current(previous)

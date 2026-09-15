@@ -32,9 +32,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import zipfile
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, TextIO, Tuple
+from typing import Dict, List, Optional, Sequence, TextIO, Tuple
 
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import containers as _containers
@@ -109,10 +110,19 @@ def _check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
         picked = _selection.select_all(graph)
         out = scratch / (path.stem + "-bundle.zip")
         result = _bundle.build_bundle(members.data, members.order, graph, picked,
-                                      out, marker=members.marker)
+                                      out, marker=members.marker,
+                                      directories=members.directories,
+                                      directory_order=members.directory_order)
         rebuilt = read_export(out, source_version=declared)
     except (RawDocError, NotAnExport, UnsupportedExport, ValueError, OSError) as e:
         return f"error    {path.name}: build failed: {e}"
+
+    synthesized = [n for n in result.members if n not in members.data
+                   and n not in ("configuration.json",) and not n.endswith("/")]
+    entry_problems = namelist_problems(path, out, graph.unknown_members, synthesized)
+    if entry_problems:
+        return (f"error    {path.name}: the bundle's zip entries do not match the export: "
+                + "; ".join(entry_problems[:4]))
 
     bundle_members = read_members(out, source_version=declared).data
     source_docs = _containers.documents(members.data)
@@ -147,9 +157,58 @@ def _check_one(path: Path, declared: Optional[str], scratch: Path) -> str:
             if missing else "")
     return (f"ok       {path.name}: {_fmt(inspect_counts)}; "
             f"{plural(rendered, 'object')} previewed; "
-            f"select-all bundle round trips, {len(result.members)} members, "
+            f"select-all bundle round trips, {len(result.members)} members "
+            f"({len(result.directories)} directory entries), "
             f"{len(source_docs)} documents byte-identical, "
             f"{len(bundle_shapes)} containers unchanged{tail}")
+
+
+def namelist_problems(source: Path, bundle: Path, unknown_members: Sequence[str],
+                      synthesized: Sequence[str] = ()) -> List[str]:
+    """What a select-all bundle's zip entries say against the source export's.
+
+    **Read with zipfile, not with the reader.** Every comparison this tool made
+    before went through ``read_members``, which dropped zip directory entries
+    on both sides, so the two agreed about a thing neither could see. VCF
+    Operations refused every bundle this tool had ever built, with
+    ``INVALID_FILE_FORMAT`` and an empty operation list, because the
+    ``dashboards/`` and ``dashboardsharings/`` entries were missing, and no
+    check here could have noticed. So this one opens both zips itself.
+
+    On a select-all the bundle carries every member the tool understands, so
+    the two lists must agree except for: members this tool never carries, a
+    directory holding nothing but those, and a scaffolding member the target
+    requires that the source did not have.
+    """
+    with zipfile.ZipFile(source) as z:
+        src = z.namelist()
+    with zipfile.ZipFile(bundle) as z:
+        got = z.namelist()
+    unknown = set(unknown_members)
+    problems: List[str] = []
+    for name in src:
+        if name in got or name in unknown:
+            continue
+        if name.endswith("/"):
+            # A directory entry is required only where the bundle still has
+            # something under it.
+            if any(other.startswith(name) for other in got):
+                problems.append(f"the bundle is missing the directory entry {name}")
+            continue
+        problems.append(f"the bundle is missing {name}")
+    for name in got:
+        if name in src or name in synthesized:
+            continue
+        problems.append(f"the bundle carries {name}, which the source did not")
+    for name in got:
+        if name.endswith("/"):
+            if not any(other != name and other.startswith(name) for other in got):
+                problems.append(f"the bundle declares the empty directory {name}")
+            continue
+        parent = name.rsplit("/", 1)[0] + "/" if "/" in name else ""
+        if parent and parent not in got:
+            problems.append(f"the bundle writes {name} with no {parent} entry")
+    return problems
 
 
 def _preview_all(graph: _graph.Graph) -> Tuple[int, List[str]]:

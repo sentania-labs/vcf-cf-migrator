@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from vcfcf_migrator import rawdoc
 from vcfcf_migrator import runlog
-from vcfcf_migrator.containers import Container, zip_entry
+from vcfcf_migrator.containers import Container, zip_directory_entry, zip_entry
 from vcfcf_migrator.graph import Graph
 from vcfcf_migrator.selection import Selection
 
@@ -55,10 +55,12 @@ class BuildResult:
     members: List[str] = field(default_factory=list)
     skipped_members: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    directories: List[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {"path": self.path, "counts": self.counts, "members": self.members,
-                "skipped_members": self.skipped_members, "notes": self.notes}
+                "skipped_members": self.skipped_members, "notes": self.notes,
+                "directories": self.directories}
 
 
 def _entry_key(kind: str, ident: str, owner: str) -> str:
@@ -165,15 +167,47 @@ def _narrow_sharings(data: bytes, dashboard_uuids: Sequence[str]) -> Optional[by
     return rawdoc.build_array(out).encode("utf-8")
 
 
+def directory_entries(written: Sequence[str], source_directories: Sequence[str] = ()
+                      ) -> List[str]:
+    """The zip directory entries a bundle needs: one per directory it puts a
+    member in, plus any the source declared above those.
+
+    A bundle that writes ``dashboards/<owner>`` and no ``dashboards/`` entry is
+    refused by VCF Operations before a document is read. The entries are
+    derived from what the bundle actually carries rather than copied wholesale,
+    so a bundle never declares a directory it has nothing in.
+    """
+    needed: List[str] = []
+    for name in written:
+        parts = name.split("/")[:-1]
+        for depth in range(1, len(parts) + 1):
+            entry = "/".join(parts[:depth]) + "/"
+            if entry not in needed:
+                needed.append(entry)
+    for name in source_directories:
+        # A source entry above a directory the bundle uses (``a/`` where the
+        # bundle writes ``a/b/c``) is kept in the source's own spelling.
+        if name in needed:
+            continue
+        if any(other.startswith(name) for other in needed):
+            needed.append(name)
+    return needed
+
+
 def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
-                 selection: Selection, out_path, marker: Optional[str] = None) -> BuildResult:
+                 selection: Selection, out_path, marker: Optional[str] = None,
+                 directories: Sequence[str] = (),
+                 directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
     """Write the bundle for *selection* and report what went into it."""
     with runlog.phase("build", out=str(out_path), carrying=len(selection.keys)):
-        return _build_bundle(members, member_order, graph, selection, out_path, marker)
+        return _build_bundle(members, member_order, graph, selection, out_path, marker,
+                             directories, directory_order or {})
 
 
 def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
-                  selection: Selection, out_path, marker: Optional[str] = None) -> BuildResult:
+                  selection: Selection, out_path, marker: Optional[str] = None,
+                  directories: Sequence[str] = (),
+                  directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
     result = BuildResult(path=str(out_path))
     picked = _picked_indexes(graph.containers, selection.keys)
     by_owner, dashboard_uuids = _carried_dashboards(graph, selection.keys)
@@ -233,6 +267,25 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
             runlog.warn("scaffolding.dropped", member="usermappings.json",
                         reason="nothing in it matched the owners carried, or it did not "
                                "parse, so the bundle carries none of it")
+    for owner in owners:
+        member = f"dashboardsharings/{owner}"
+        if member in members:
+            continue
+        # The target requires a sharing member beside every dashboards member:
+        # the 8.18.7 export carries the dashboardsharings/ directory and no
+        # file under it, and a bundle built from it has to have one. An empty
+        # list is "shared with nobody", which imports the dashboards private to
+        # whoever imports them. Choosing who else may see an admin's content is
+        # not this tool's decision to make, so it makes the smallest one.
+        written[member] = b"[]"
+        result.notes.append(
+            f"the source carried no {member}, and the target needs one beside every "
+            "dashboards member, so the bundle carries an empty sharing list: the "
+            "dashboards import private to whoever imports them, and sharing is set on "
+            "the target")
+        runlog.detail("scaffolding.synthesized", member=member,
+                      reason="the source export carried no sharing member for this owner "
+                             "and the target requires one; an empty list shares with nobody")
     for name, data in members.items():
         if not name.startswith("dashboardsharings/"):
             continue
@@ -276,7 +329,41 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
             "verification list")
 
     ordered = [n for n in member_order if n in written]
-    ordered += [n for n in sorted(written) if n not in ordered]
+    # A member the source did not have goes beside the member it belongs to,
+    # not on the end: a synthesized dashboardsharings/<owner> sits after its
+    # dashboards/<owner>, which is where every export puts it and where the
+    # factory's own packager writes it.
+    for name in sorted(written):
+        if name in ordered:
+            continue
+        sibling = ("dashboards/" + name.split("/", 1)[1]
+                   if name.startswith("dashboardsharings/") else "")
+        if sibling and sibling in ordered:
+            ordered.insert(ordered.index(sibling) + 1, name)
+        else:
+            ordered.append(name)
+
+    # Directory entries, in the place the source put them: before the members
+    # that sit under them, which is where every corpus export writes them.
+    needed_dirs = directory_entries(ordered, directories)
+    positions = directory_order or {}
+    placed: List[str] = []
+    for name in ordered:
+        for entry in needed_dirs:
+            if entry in placed or not name.startswith(entry):
+                continue
+            placed.append(entry)
+        placed.append(name)
+    for entry in needed_dirs:
+        if entry not in placed:
+            placed.append(entry)
+    ordered = placed
+    result.directories = [n for n in ordered if n.endswith("/")]
+    runlog.detail("bundle.directories", directories=result.directories,
+                  from_source=[d for d in result.directories if d in (directories or ())],
+                  reason="a zip directory entry per directory the bundle writes into; "
+                         "without them VCF Operations refuses the bundle as an invalid "
+                         "file format before it reads a document")
 
     out_path = Path(out_path)
     try:
@@ -285,6 +372,9 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             for name in ordered:
+                if name.endswith("/"):
+                    z.writestr(zip_directory_entry(name), b"")
+                    continue
                 z.writestr(zip_entry(name), written[name])
         out_path.write_bytes(buf.getvalue())
     except OSError as e:

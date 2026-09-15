@@ -619,11 +619,23 @@ def _read_export(path, source_version: Optional[str] = None) -> Export:
 class Members:
     """An export's members in memory: the bytes, the order the zip wrote them
     in, and the marker's name. ``tree`` and ``build`` work from this, so both
-    read the zip exactly once."""
+    read the zip exactly once.
+
+    ``directories`` is the export's zip directory entries, the zero length
+    entries whose name ends in ``/``. They carry no content, which is why they
+    were dropped here and stayed invisible to every comparison this tool makes,
+    and VCF Operations refuses a bundle that has no ``dashboards/`` and
+    ``dashboardsharings/`` entry with ``INVALID_FILE_FORMAT`` before it reads a
+    single document. They are scaffolding, so the bundle writer puts them back.
+    """
     path: str
     data: dict = field(default_factory=dict)
     order: List[str] = field(default_factory=list)
     marker: Optional[str] = None
+    directories: List[str] = field(default_factory=list)
+    # Directory entry name -> the order position it had in the source, so a
+    # bundle writes them where the export wrote them.
+    directory_order: dict = field(default_factory=dict)
 
 
 def read_members(path, source_version: Optional[str] = None) -> Members:
@@ -650,8 +662,12 @@ def _read_members(path, source_version: Optional[str] = None) -> Members:
         raise NotAnExport(f"{path} is not a zip file")
     members = Members(path=str(path))
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-        for name in zf.namelist():
-            if name.endswith("/") or name.startswith("__MACOSX/"):
+        for position, name in enumerate(zf.namelist()):
+            if name.startswith("__MACOSX/"):
+                continue
+            if name.endswith("/"):
+                members.directories.append(name)
+                members.directory_order[name] = position
                 continue
             members.data[name] = zf.read(name)
             members.order.append(name)
@@ -670,6 +686,10 @@ def _read_members(path, source_version: Optional[str] = None) -> Members:
                 **runlog.input_fingerprint(path, raw, members.order, manifest))
     for name in members.order:
         runlog.debug("member.read", member=name, bytes=len(members.data[name]))
+    if members.directories:
+        runlog.detail("input.directories", directories=list(members.directories),
+                      reason="zip directory entries the export carries; the importer "
+                             "refuses a bundle without the ones its content sits under")
     if members.marker is None and "configuration.json" not in members.data:
         runlog.error("input.not_an_export", path=str(path), members=len(members.order),
                      reason="no <digits>L.v1 marker and no configuration.json")

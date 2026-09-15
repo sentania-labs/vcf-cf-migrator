@@ -377,6 +377,11 @@ def test_inspect_reports_navigation_links_pointing_outside_the_export(tmp_path, 
     with zipfile.ZipFile(out, "w") as z:
         for name in src.namelist():
             data = src.read(name)
+            if name.endswith("/"):
+                # A zip directory entry, which every real export carries and
+                # which is not a nested zip: copied across untouched.
+                z.writestr(name, data)
+                continue
             if name.startswith("dashboards/"):
                 inner = io.BytesIO()
                 with zipfile.ZipFile(io.BytesIO(data)) as dash_zip:

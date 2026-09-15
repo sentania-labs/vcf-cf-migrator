@@ -762,6 +762,11 @@ def build_export_zip(without=()) -> bytes:
                 "dashboardsByOwner": [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 3}]}
     policies = '<?xml version="1.0" encoding="UTF-8"?><PolicyContent><Policies/></PolicyContent>'
 
+    # Zip directory entries, as every real export carries them. They hold
+    # nothing, which is exactly why a bundle missing them went unnoticed here
+    # and was refused by VCF Operations with INVALID_FILE_FORMAT.
+    directories = ["dashboards/", "dashboardsharings/"]
+
     members = [
         (MARKER, OWNER),
         ("configuration.json", json.dumps(manifest)),
@@ -799,9 +804,14 @@ def build_export_zip(without=()) -> bytes:
     skip = set(without)
     outer = io.BytesIO()
     with zipfile.ZipFile(outer, "w", zipfile.ZIP_DEFLATED) as z:
+        written_dirs = set()
         for name, data in members:
             if name in skip:
                 continue
+            for directory in directories:
+                if name.startswith(directory) and directory not in written_dirs:
+                    z.writestr(zipfile.ZipInfo(directory), b"")
+                    written_dirs.add(directory)
             z.writestr(name, data)
     return outer.getvalue()
 
