@@ -486,7 +486,7 @@ def view_columns(root: ET.Element) -> List[Column]:
 # What a person reads, and what hides behind it
 # ---------------------------------------------------------------------------
 
-# ``Super Metric|sm_6dfea6a6-e633-4b32-b438-8975e3dc06fa`` is how a view names
+# ``Super Metric|sm_<uuid>`` is how a view names
 # a super metric column. Across two corpus exports, 54 columns carry a key of
 # this shape under a perfectly good display name. Printing it tells a reader
 # nothing they can act on and buries the name it sits under.
