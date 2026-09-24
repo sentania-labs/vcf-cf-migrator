@@ -665,6 +665,9 @@ def test_a_receiver_names_its_provider_and_a_provider_says_what_it_feeds(built):
     page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
     assert "driven by [Fixture] Clusters" in page
     assert "drives 1 widget" in page
+    # A long list is cut with an ellipsis; the tooltip keeps every name.
+    assert "title='driven by [Fixture] Clusters'" in page
+    assert "text-overflow:ellipsis }" in page
     assert "is-receiver" in page and "is-provider" in page
     # The flow is visible above the layout, not only inside the boxes.
     assert "This dashboard is interaction driven" in page

@@ -16,6 +16,7 @@ from make_export_fixture import (
     build_export_zip,
 )
 from vcfcf_migrator import __version__
+from vcfcf_migrator import cli
 from vcfcf_migrator.cli import build_parser, main
 from vcfcf_migrator.export_reader import read_export
 
@@ -344,9 +345,13 @@ def test_bad_input_exits_without_a_traceback(argv, code, capsys, tmp_path, monke
     assert "Traceback" not in capsys.readouterr().err
 
 
-def test_no_command_prints_help(capsys):
-    assert main([]) == 2
-    assert "usage:" in capsys.readouterr().out
+@pytest.mark.parametrize("argv", [[], ["--corpus", "somewhere"]])
+def test_no_command_opens_the_ui(argv, monkeypatch):
+    seen = []
+    monkeypatch.setitem(cli.COMMANDS, "ui", lambda a: seen.append(a) or 0)
+    assert main(argv) == 0
+    assert len(seen) == 1
+    assert seen[0].command == "ui" and seen[0].zip is None and not seen[0].server
 
 
 def test_exit_code_survives_the_console_script(tmp_path):

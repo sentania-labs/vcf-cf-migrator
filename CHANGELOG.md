@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **No arguments opens the window.** A bare `vcfcf-migrator`, or a
+  double-clicked binary, now runs `ui` instead of printing help and exiting 2.
+  `--help` still prints help. (#28)
+
+- **A "driven by" badge that runs out of room ends in an ellipsis** and
+  carries the full list as a tooltip, instead of cutting names off
+  mid-word with no sign. (#25)
+
+- **CI and release actions moved to their Node 24 releases**: checkout
+  v5.1.0, setup-python v6.3.0, upload-artifact v6.0.0, download-artifact
+  v7.0.0, still pinned by full SHA. (#15)
+
 - **No version handling at all.** `--source-version`, the
   `VCFCF_MIGRATOR_SOURCE_VERSION` environment variable, the saved
   `source_version` setting and its control on the page are gone, along with

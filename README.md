@@ -29,7 +29,8 @@ vcfcf-migrator ui my-export.zip
 
 That opens a window, which does the whole job. Nothing listens on a port and
 nothing leaves your machine. Leave the path off and use Browse if you would
-rather pick the file.
+rather pick the file. Run it with no arguments at all, or double-click it,
+and you get the same window.
 
 On Linux, or anywhere without a system webview, the same page opens in your
 browser instead, served on 127.0.0.1. `--server` asks for that deliberately.

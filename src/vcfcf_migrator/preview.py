@@ -148,7 +148,7 @@ PREVIEW_CSS = """
 .pv .pv-w > h3 .pv-type { margin-left:auto; font-weight:400; font-size:10px; color:var(--pv-ink3);
   text-transform:uppercase; letter-spacing:.04em; white-space:nowrap }
 .pv .pv-flow { font-size:10px; font-weight:500; padding:1px 6px; border-radius:9px;
-  white-space:nowrap }
+  white-space:nowrap; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis }
 .pv .pv-flow.driven { background:rgba(57,135,229,0.16); color:#8fbcf5 }
 .pv .pv-flow.drives { background:rgba(25,158,112,0.16); color:#67c9a2 }
 .pv .pv-w.is-receiver { border-left:3px solid var(--pv-accent) }
@@ -1781,7 +1781,11 @@ def _widget_cell(widget: dict, widget_type: str, title: str, inner: str,
         klass += " is-provider"
     badge = ""
     if driven_by:
-        badge = (f"<span class='pv-flow driven'>driven by {_e(', '.join(driven_by))}</span>")
+        # The list can outrun the widget. The ellipsis says so, and the title
+        # holds the names the ellipsis cut.
+        names = _e(", ".join(driven_by))
+        badge = (f"<span class='pv-flow driven' title='driven by {names}'>"
+                 f"driven by {names}</span>")
     elif feeds:
         badge = (f"<span class='pv-flow drives'>drives {len(feeds)} widget"
                  f"{'s' if len(feeds) != 1 else ''}</span>")
