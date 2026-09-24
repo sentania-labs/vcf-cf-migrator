@@ -416,8 +416,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     given = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(argv)
     if args.command is None:
-        parser.print_help()
-        return 2
+        # A double-clicked binary has no arguments, and help text in a console
+        # that closes at once is nothing to someone who expected a window.
+        args = parser.parse_args([*given, "ui"])
     try:
         log = open_run_log(args, given)
     except (_runlog.BadLogSetting, OSError) as e:
