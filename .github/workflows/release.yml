@@ -12,7 +12,9 @@
 #
 # Signing and notarization are the org's shared actions in sentania-labs/.github
 # (pinned by commit below); the Developer ID and notary credentials are org
-# secrets scoped to this repository, so nothing signing-related is stored here.
+# secrets scoped to this repository. The repo-level copies from 2026-09-15
+# were deleted on 2026-09-30 (a repo secret would silently override the org
+# one), so rotating the org secrets is the only rotation there is.
 # The notary diagnostics workflow lives there too (Actions tab of that repo).
 #
 # One consequence of the macOS signing steps is worth stating plainly: the
