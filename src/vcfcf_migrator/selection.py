@@ -22,6 +22,7 @@ quietly missing what the admin asked for.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -159,18 +160,26 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
             runlog.detail("closure.picked", kind=node.kind, uuid=node.uuid or "",
                           name=node.name, owner=node.owner or None,
                           member=node.member, reason=runlog.prose("named by the selection"))
-    queue: List[str] = list(keys)
-    seen: List[str] = []
+    queue = deque(keys)
+    queued = set(keys)
+    seen = set()
+    ordered = []
+    gaps_by_source = {}
+    for gap in graph.missing:
+        gaps_by_source.setdefault(gap.source_key, []).append(gap)
+    selected_gaps = set()
     while queue:
-        key = queue.pop(0)
+        key = queue.popleft()
+        queued.discard(key)
         if key in seen:
             continue
-        seen.append(key)
+        seen.add(key)
+        ordered.append(key)
         node = graph.nodes.get(key)
         if node is None:
             continue
         for target in graph.edges.get(key, []):
-            if target in seen or target in queue:
+            if target in seen or target in queued:
                 continue
             child = graph.nodes.get(target)
             if child is None:
@@ -186,9 +195,11 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
                                  "it would point at an object it does not carry"))
             runlog.count("added_by_closure")
             queue.append(target)
-        for gap in graph.missing_for(key):
-            if gap not in selection.missing:
+            queued.add(target)
+        for gap in gaps_by_source.get(key, ()):
+            if gap not in selected_gaps:
                 selection.missing.append(gap)
+                selected_gaps.add(gap)
         # Matched on the node, not on the wording of a string built elsewhere.
         for note in graph.ambiguous:
             if note.source_key == key and note.text not in selection.ambiguous:
@@ -196,7 +207,7 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
         for note in graph.unhandled:
             if note.source_key == key and note.text not in selection.unhandled:
                 selection.unhandled.append(note.text)
-    selection.keys = seen
+    selection.keys = ordered
     for gap in selection.missing:
         source = graph.nodes.get(gap.source_key)
         runlog.detail("closure.not_carried", wants=gap.kind, ident=gap.ident,

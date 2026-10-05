@@ -158,6 +158,55 @@ li.node { padding:1px 0 }
 }
 """
 
+ACTIVITY_JS = """
+<script>
+(function () {
+  var busy = false, timer = null;
+  function finish() {
+    busy = false;
+    if (timer !== null) { clearInterval(timer); timer = null; }
+    var bar = document.getElementById('operation-progress');
+    if (bar) { bar.remove(); }
+    document.body.removeAttribute('aria-busy');
+  }
+  function start(action) {
+    if (busy) { return false; }
+    busy = true;
+    document.body.setAttribute('aria-busy', 'true');
+    var bar = document.createElement('div');
+    bar.id = 'operation-progress';
+    bar.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#ffffffaa;display:grid;place-items:center;cursor:progress';
+    var status = document.createElement('div');
+    status.setAttribute('role', 'status');
+    status.style.cssText = 'background:#fff;border:1px solid #d9dee5;border-radius:9px;padding:24px;color:#1d2430;font:16px system-ui';
+    var labels = {'/open':'Opening export', '/pick-export':'Choosing and opening export',
+      '/select-all':'Selecting content', '/clear':'Clearing selection',
+      '/select':'Updating selection', '/build':'Building bundle',
+      '/diagnostics':'Saving anonymized diagnostics'};
+    var label = labels[action] || 'Updating page';
+    var began = Date.now();
+    function update() {
+      status.textContent = label + ' (' + Math.floor((Date.now() - began) / 1000) + ' seconds). Please wait.';
+    }
+    update();
+    bar.appendChild(status); document.body.appendChild(bar);
+    timer = setInterval(update, 1000);
+    return true;
+  }
+  window.migratorActivity = {start:start, finish:finish};
+  document.addEventListener('submit', function (ev) {
+    // The native bridge collects form data and calls start itself.
+    if (window.pywebview && window.pywebview.api) { return; }
+    if (!start(ev.target.getAttribute('action'))) { ev.preventDefault(); }
+  }, true);
+  window.addEventListener('pageshow', function (ev) {
+    finish();
+    if (ev.persisted) { window.location.reload(); }
+  });
+})();
+</script>
+"""
+
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -190,7 +239,35 @@ def _button(label: str, name: str = "", value: str = "", primary: bool = False,
     return f"<button type='submit'{attrs}{css}>{e(label)}</button>"
 
 
+class _RenderState:
+    """One coherent page snapshot with membership indexes built once."""
+
+    def __init__(self, state):
+        self._state = state
+        self._picked = state.selected_keys()
+        self._included = state.selection_keys()
+        self._required = {}
+        if state.graph and state.selection:
+            for source in state.selection.keys:
+                for target in state.graph.edges.get(source, ()):
+                    if source != target:
+                        self._required.setdefault(target, []).append(source)
+
+    def __getattr__(self, key):
+        return getattr(self._state, key)
+
+    def selected_keys(self):
+        return self._picked
+
+    def selection_keys(self):
+        return self._included
+
+    def required_by(self, key):
+        return self._required.get(key, [])
+
+
 def render(state) -> str:
+    state = _RenderState(state)
     body = "".join([
         _header(state),
         _messages(state),
@@ -203,7 +280,7 @@ def render(state) -> str:
     if state.graph is not None and state.zip_path:
         title = f"vcfcf-migrator: {state.zip_path.rsplit('/', 1)[-1]}"
     return PAGE.format(title=e(title), style=STYLE,
-                       preview_css=_preview.PREVIEW_CSS, body=body)
+                       preview_css=_preview.PREVIEW_CSS, body=body + ACTIVITY_JS)
 
 
 # The right-hand column used to stack all three of these, so the settings
@@ -450,14 +527,11 @@ def _disclosure(state, did: str, summary: str, body, open_default: bool,
 
 def _kind_group(state, kind: str, nodes: Sequence[Node], open_default: bool,
                 with_children: bool = True, section: str = "roots") -> str:
-    picked = sum(1 for n in nodes if n.key in state.selected_keys())
+    included = state.selection_keys()
+    picked = sum(1 for n in nodes if n.key in included)
     here = len(nodes)
-    total = sum(1 for n in state.graph.by_kind(kind)) if state.graph else here
-    # "12 of 66 here" rather than a bare 66 when the kind is split across the
-    # two halves, so a number smaller than the export's count reads as the
-    # split it is.
-    count = f"{here}" if here == total else f"{here} of {total} here"
-    tail = f"{picked} of {count} selected" if picked else count
+    total = len(state.graph.by_kind(kind)) if state.graph else here
+    tail = f"Selected here: {picked} / {here}; {total} in export"
     # Scoped by section: six kinds appear in both tree sections on the corpus,
     # and a shared id made them one control with one state, so opening the
     # lower group expanded the upper one and sent you there.
