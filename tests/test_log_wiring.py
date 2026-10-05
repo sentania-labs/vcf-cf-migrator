@@ -456,8 +456,9 @@ def test_the_page_has_a_control_for_the_log_file_and_the_level(state):
 def test_the_diagnostics_button_names_what_the_file_holds(state):
     state.tab = "settings"
     page = state.render()
-    assert ("Save the run header, the export&#x27;s fingerprint, every log event and the "
-            "bundle&#x27;s manifest to one file") in page
+    assert "Save anonymized diagnostics" in page
+    assert "No reverse mapping is included" in page
+    assert "Local logs are private" in page
 
 
 def test_saving_a_log_file_setting_turns_the_log_on(tmp_path, export_zip, config_dir):
