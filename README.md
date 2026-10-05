@@ -78,6 +78,19 @@ detail.
 
 ## Reporting a problem
 
+Use **Save diagnostics** in Settings to create the report to share. Its version-2
+format keeps operation codes, counts, timings, software versions and the generic
+OS family. Paths, account and machine details, content names, identifiers,
+hashes, custom keys and free-text messages become opaque per-report labels.
+The same value gets the same label throughout one report so related events
+remain traceable. No reverse mapping is included. Unknown fields receive the
+same treatment, including numeric identifiers and dictionary keys. Exact wall
+times and OS build strings are omitted. This applies even to retained events
+from before a settings change; it does not rewrite previously saved reports.
+
+**Local file logs are private and are not anonymized reports.** Do not attach
+them in place of Save diagnostics. Keep bundles and screenshots private too.
+
 `--log run.log` records what it did and why, in enough detail to diagnose a
 failure without the export. Logs carry content names and ids, and the file
 paths you gave the tool, which on your machine may carry your own user name.

@@ -708,7 +708,9 @@ def _log_controls(state) -> str:
         f"<p class='note'><small>current value from: {e(destination_from)}. The log records "
         "what the tool did and why: content names, uuids and metric keys, member names, "
         "counts and timings. It never records credentials, the export password, encrypted "
-        "values, or anything about people; dashboard owners appear as owner-1, owner-2. "
+        "values; dashboard owners appear as owner-1, owner-2. Local logs are private: "
+        "paths and content names can identify people. Share the anonymized diagnostics "
+        "file below instead of the local log. "
         "This page keeps the events of this session whether or not a file is set, so "
         "diagnostics can be saved after something goes wrong."
         "</small></p>",
@@ -728,11 +730,11 @@ def _log_controls(state) -> str:
         "<label for='diag_out'>Diagnostics file</label>",
         f"<input type='text' name='out' id='diag_out' "
         f"value='{e(state.diagnostics_out or state.default_diagnostics_out())}'>",
-        _button("Save the run header, the export's fingerprint, every log event and the "
-                "bundle's manifest to one file"),
-        "<p class='note'><small>One file, ready to attach to a mail. It holds content "
-        "names, uuids and metric keys and no people and no credentials, so it can be sent "
-        "as it is.</small></p>",
+        _button("Save anonymized diagnostics"),
+        "<p class='note'><small>Share this report: operation codes, counts, timings and "
+        "software versions. Paths, names, identifiers and free text become labels "
+        "that are consistent within this report. No reverse mapping is included. "
+        "Use a filename without personal or customer details.</small></p>",
         "</form>",
     ])
 

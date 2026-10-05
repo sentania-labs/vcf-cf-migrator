@@ -227,7 +227,7 @@ class PageState:
         if not self.zip_path:
             return "vcfcf-migrator-diagnostics.jsonl"
         source = Path(self.zip_path)
-        return str(source.with_name(source.stem + "-diagnostics.jsonl"))
+        return str(source.with_name("vcfcf-migrator-diagnostics.jsonl"))
 
     # -- loading -----------------------------------------------------------
 

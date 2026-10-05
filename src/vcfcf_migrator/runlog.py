@@ -1070,8 +1070,10 @@ def render_log(lines: Iterable[str]) -> str:
 # ---------------------------------------------------------------------------
 
 DIAGNOSTICS_CONTENTS = prose(
-    "the run header, the input export's fingerprint, every log event and the bundle's "
-    "manifest: content names, uuids and metric keys, no people and no credentials"
+    "anonymized operation codes, counts, timings and software versions; "
+    "paths, names, identifiers and free text become per-report labels with no "
+    "reverse mapping: no people and no credentials. Local file logs are private "
+    "and must not be shared as anonymized diagnostics"
 )
 
 
@@ -1086,20 +1088,23 @@ def diagnostics_document(events: Sequence[dict], header: Optional[dict] = None,
     read it before sending it without unpacking anything; and the same reader
     renders it, so nothing has to be learned to open it.
     """
+    from vcfcf_migrator.diagnostics import SharedReport
+
+    report = SharedReport()
     head = {
         "kind": "vcfcf-migrator-diagnostics",
-        "version": 1,
-        "written": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "version": 2,
+        "privacy": "anonymized",
         "contains": DIAGNOSTICS_CONTENTS,
-        "contents_line": CONTENTS,
+        "contents_line": DIAGNOSTICS_CONTENTS,
         "events": len(events),
     }
     if header:
-        head["run"] = header
+        head["run"] = report.document(header)
     if source:
-        head["source"] = source
+        head["source"] = report.document(source)
     if bundle:
-        head["bundle"] = bundle
+        head["bundle"] = report.document(bundle)
     lines = [json.dumps(head, ensure_ascii=False)]
-    lines += [json.dumps(event, ensure_ascii=False) for event in events]
+    lines += [json.dumps(report.document(event), ensure_ascii=False) for event in events]
     return "\n".join(lines) + "\n"
