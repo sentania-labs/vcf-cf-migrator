@@ -52,7 +52,10 @@ _BRIDGE_JS = """
     if (by && by.name) { data[by.name] = by.value; }
     new FormData(form).forEach(function (value, key) { data[key] = value; });
     var action = form.getAttribute('action') || '/';
-    window.pywebview.api.act(action, data).then(function (res) {
+    if (!window.migratorActivity.start(action)) { return; }
+    Promise.resolve().then(function () {
+      return window.pywebview.api.act(action, data);
+    }).then(function (res) {
       var doc = new DOMParser().parseFromString(res.html, 'text/html');
       document.body.replaceWith(doc.body);
       if (doc.title) { document.title = doc.title; }
@@ -65,7 +68,7 @@ _BRIDGE_JS = """
       // Without this the window just stops responding to a button, with
       // nothing on screen and the reason on a stderr nobody launched it from.
       banner('That action failed, and the page below may now be out of date: ' + err);
-    });
+    }).finally(function () { window.migratorActivity.finish(); });
   }, true);
 })();
 </script>
@@ -155,25 +158,26 @@ class Bridge:
     def act(self, path: str, form: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         from . import ui
 
-        path = str(path)
-        fields = {str(k): "" if v is None else str(v) for k, v in (form or {}).items()}
-        anchor = ""
-        # The lookup is checked separately from running the action. Wrapping
-        # both in `except KeyError` would report a stray KeyError from deep
-        # inside an action as "no such page action", which is a lie that would
-        # cost someone an afternoon.
-        if path not in ui.ACTIONS:
-            self._state.message = ""
-            self._state.error = f"this build has no page action called {path!r}"
-        else:
-            try:
-                anchor = ui.dispatch(self._state, path, fields)
-            except Exception as exc:
-                # The window has no status bar and no console the user will
-                # find. An action that dies has to say so on the page.
+        with self._state.action_lock:
+            path = str(path)
+            fields = {str(k): "" if v is None else str(v) for k, v in (form or {}).items()}
+            anchor = ""
+            # The lookup is checked separately from running the action. Wrapping
+            # both in `except KeyError` would report a stray KeyError from deep
+            # inside an action as "no such page action", which is a lie that would
+            # cost someone an afternoon.
+            if path not in ui.ACTIONS:
                 self._state.message = ""
-                self._state.error = f"{type(exc).__name__}: {exc}"
-        return {"html": page_html(self._state), "anchor": anchor or ""}
+                self._state.error = f"this build has no page action called {path!r}"
+            else:
+                try:
+                    anchor = ui.dispatch(self._state, path, fields)
+                except Exception as exc:
+                    # The window has no status bar and no console the user will
+                    # find. An action that dies has to say so on the page.
+                    self._state.message = ""
+                    self._state.error = f"{type(exc).__name__}: {exc}"
+            return {"html": page_html(self._state), "anchor": anchor or ""}
 
 
 def _picker_for(holder: Dict[str, Any]) -> Any:

@@ -108,7 +108,7 @@ def test_the_tree_says_which_half_of_the_split_a_count_belongs_to(state):
     assert split, "the fixture should have at least one kind in both halves"
     for kind in split:
         here = sum(1 for n in graph.roots() if n.kind == kind)
-        assert f"{here} of {len(graph.by_kind(kind))} here" in page
+        assert f"Selected here: 0 / {here}; {len(graph.by_kind(kind))} in export" in page
 
 
 def test_an_object_the_export_does_not_carry_is_shown_as_missing(state):
@@ -228,7 +228,9 @@ def test_the_page_carries_no_external_resource(state):
         state.tab = tab
         page = state.render()
         assert "http://" not in page and "https://" not in page, tab
-        assert "<script" not in page.lower(), tab
+        # Busy feedback is local, inline code; no external script is loaded.
+        assert page.count("<script>") == 1, tab
+        assert "<script src" not in page.lower(), tab
         assert "<img" not in page.lower(), tab
         assert "@import" not in page, tab
         assert not re.search(r"\bsrc\s*=", page), tab

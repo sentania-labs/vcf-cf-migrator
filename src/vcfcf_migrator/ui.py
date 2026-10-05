@@ -33,6 +33,7 @@ the process runs.
 from __future__ import annotations
 
 import io
+from functools import wraps
 import json
 import os
 import shlex
@@ -97,6 +98,15 @@ def _shell_quote(value: str, windows: Optional[bool] = None) -> str:
     return '"' + text.replace('"', '""') + '"'
 
 
+def serialized(method):
+    """One state mutation or snapshot at a time, including direct callers."""
+    @wraps(method)
+    def call(state, *args, **kwargs):
+        with state.action_lock:
+            return method(state, *args, **kwargs)
+    return call
+
+
 class PageState:
     """What the page shows, and every action it can take. One per server."""
 
@@ -106,6 +116,7 @@ class PageState:
         # The page always keeps its events in memory, whether or not a file is
         # asked for, because "save diagnostics" has to be answerable after the
         # run that went wrong rather than only before it.
+        self.action_lock = threading.RLock()
         self.log = _runlog.NULL
         self.zip_path = zip_path or ""
         self.corpus_cli = corpus_cli
@@ -231,6 +242,7 @@ class PageState:
 
     # -- loading -----------------------------------------------------------
 
+    @serialized
     def open_export(self, zip_path: str) -> None:
         """Read the export and build the graph, then swap.
 
@@ -284,6 +296,11 @@ class PageState:
     def _reclose(self) -> None:
         self.selection = _selection.close(self.graph, self.picked) if self.graph else None
 
+    def _set_picked(self, keys) -> None:
+        picked = list(keys)
+        closed = _selection.close(self.graph, picked) if self.graph else None
+        self.picked, self.selection = picked, closed
+
     def selected_keys(self) -> set:
         """What the admin picked by hand."""
         return set(self.picked)
@@ -300,6 +317,7 @@ class PageState:
         return [k for k in self.selection.keys
                 if key in self.graph.edges.get(k, []) and k != key]
 
+    @serialized
     def toggle(self, key: str, on: bool) -> None:
         """Check or uncheck one object.
 
@@ -321,8 +339,7 @@ class PageState:
                 self.message = f"{node.label()} was already selected"
                 return
             before = self.selection_keys()
-            self.picked.append(key)
-            self._reclose()
+            self._set_picked(self.picked + [key])
             pulled = [self.graph.nodes[k].label() for k in self.selection.keys
                       if k not in before and k != key and k in self.graph.nodes]
             self.message = f"selected {node.label()}"
@@ -370,22 +387,23 @@ class PageState:
                 + (f" and {len(names) - 5} more" if len(names) > 5 else "")
                 + ". Remove those first, or leave it in the bundle.")
 
+    @serialized
     def select_all(self) -> None:
         if self.graph is None:
             self.error = "open an export first"
             return
-        self.picked = [n.key for n in self.graph.ordered()]
-        self._reclose()
+        self._set_picked(n.key for n in self.graph.ordered())
         self.message = f"selected every object in the export ({len(self.picked)})"
 
+    @serialized
     def clear(self) -> None:
         if self.graph is None:
             self.error = "open an export first"
             return
-        self.picked = []
-        self._reclose()
+        self._set_picked([])
         self.message = "cleared the selection"
 
+    @serialized
     def apply_lines(self, text: str) -> None:
         """Take a selection the way ``build --select`` takes a file: one object
         per line, ``#`` comments allowed. The page's equivalent of the flag."""
@@ -395,8 +413,7 @@ class PageState:
         lines = [line.split("#", 1)[0].strip() for line in (text or "").splitlines()]
         lines = [line for line in lines if line]
         if not lines:
-            self.picked = []
-            self._reclose()
+            self._set_picked([])
             self.message = "cleared the selection (no lines given)"
             return
         try:
@@ -404,8 +421,7 @@ class PageState:
         except _selection.BadSelection as e:
             self.error = str(e)
             return
-        self.picked = keys
-        self._reclose()
+        self._set_picked(keys)
         self.message = (f"applied {plural(len(lines), 'line')}: {len(self.picked)} picked, "
                         f"{len(self.selection.keys)} after closure")
 
@@ -427,6 +443,7 @@ class PageState:
 
     # -- the commands ------------------------------------------------------
 
+    @serialized
     def build(self, out_path: str) -> None:
         """Write the bundle for the closed selection, exactly as the CLI does.
 
@@ -535,6 +552,7 @@ class PageState:
             return f"{head} build {target} --select <picks.txt> --out {out}"
         return f"{head} {cmd} {target}"
 
+    @serialized
     def render(self) -> str:
         """The page, and the end of the story so far.
 
@@ -555,6 +573,7 @@ class PageState:
 # hand-maintained list in the test could not promise.
 # ---------------------------------------------------------------------------
 
+@serialized
 def dispatch(state: "PageState", path: str, form: dict) -> str:
     """Run one page action and return the anchor to land on.
 
