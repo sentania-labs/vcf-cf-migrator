@@ -312,7 +312,7 @@ def test_log_render_says_so_when_the_file_is_not_there(tmp_path, capsys, config_
 def test_the_page_saves_one_diagnostics_file_that_names_its_contents(tmp_path, export_zip,
                                                                      config_dir):
     state = PageState(str(export_zip))
-    state.select_all()
+    state.toggle(next(n.key for n in state.graph.ordered() if n.name == "[Fixture] SM Empty"), True)
     state.build(str(tmp_path / "bundle.zip"))
     out = tmp_path / "diagnostics.jsonl"
     state.save_diagnostics(str(out))

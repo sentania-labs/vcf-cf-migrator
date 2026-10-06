@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from vcfcf_migrator import selection, uipage
+from vcfcf_migrator import selection, workspace
 from vcfcf_migrator.desktop import Bridge
 from vcfcf_migrator.graph import Graph, Node
 from vcfcf_migrator.ui import PageState, dispatch
@@ -80,12 +80,8 @@ def test_selection_failure_preserves_previous_committed_state(monkeypatch):
 def test_counts_include_dependencies_and_explicit_zero():
     page = state()
     page.toggle('report:report', True)
-    group = uipage._kind_group(page, 'dashboard', [page.graph.nodes['dashboard:' + str(i)] for i in range(4)], False)
-    assert 'Selected here: 4 / 4' in group
-    assert '78 in export' in group
+    assert '1 picked + 4 required = 5 total objects' in workspace.footer(page)
     page.clear()
-    group = uipage._kind_group(page, 'dashboard', [page.graph.nodes['dashboard:' + str(i)] for i in range(4)], False)
-    assert 'Selected here: 0 / 4' in group
+    assert '0 picked + 0 required = 0 total objects' in workspace.footer(page)
     page.select_all()
-    group = uipage._kind_group(page, 'dashboard', page.graph.roots()[:-1], False)
-    assert 'of 74 of 78' not in group
+    assert '79 picked + 0 required = 79 total objects' in workspace.footer(page)

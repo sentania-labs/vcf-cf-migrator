@@ -154,7 +154,10 @@ class PageState:
         self.command_output = ""
         self.as_json = False
         self.filter_text = ""
+        self.inventory_kind = "all"
         self.preview_key = ""
+        self.preview_expanded = False
+        self.inspector_tab = "preview"
         self.build_out = ""
         self.build_report = ""
         self.members = None
@@ -279,10 +282,14 @@ class PageState:
         # small one opens its groups by default, and carrying that into a
         # large one expands exactly what the default is there to prevent.
         self.disclosure = {}
+        self.inventory_kind = "all"
+        self.preview_expanded = False
+        self.inspector_tab = "preview"
+        self.tab = "preview"
         self.picked = []
         self._reclose()
         counts = graph.counts()
-        self.message = (f"{zip_path}: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        self.message = (f"Opened {Path(zip_path).name}: {len(graph.nodes)} objects available"
                         if counts else f"{zip_path}: no content objects")
 
     def default_out(self) -> str:
@@ -351,8 +358,7 @@ class PageState:
             if gaps:
                 self.message += (f". {plural(len(gaps), 'object')} it references "
                                  + ("is" if len(gaps) == 1 else "are")
-                                 + " not in this export; the target instance needs them "
-                                   "already")
+                                 + " not in this export; review the missing references before building")
             return
 
         needed_by = self.required_by(key)
@@ -431,6 +437,7 @@ class PageState:
 
     def set_preview(self, key: str) -> None:
         if not key:
+            self.preview_expanded = False
             self.preview_key = ""
             return
         if self.graph is None or key not in self.graph.nodes:
@@ -441,21 +448,50 @@ class PageState:
     def set_filter(self, text: str) -> None:
         self.filter_text = (text or "").strip()
 
+    def visible_nodes(self):
+        if self.graph is None:
+            return []
+        nodes = uipage._matches(self.graph, self.filter_text)
+        if self.inventory_kind == "selected":
+            included = self.selection_keys()
+            return [n for n in nodes if n.key in included]
+        if self.inventory_kind != "all":
+            return [n for n in nodes if n.kind == self.inventory_kind]
+        return nodes
+
+    @serialized
+    def select_shown(self):
+        keys = list(dict.fromkeys(self.picked + [n.key for n in self.visible_nodes()]))
+        self._set_picked(keys)
+        self.message = "selected the shown content; existing picks are retained"
+
+    @serialized
+    def remove_pick(self, key):
+        if key not in self.picked:
+            self.error = "this object is not a direct pick"
+            return
+        self._set_picked(k for k in self.picked if k != key)
+        self.message = "removed pick"
+        if key in self.selection_keys():
+            self.message += "; still included because another pick requires it"
+
     # -- the commands ------------------------------------------------------
 
     @serialized
     def build(self, out_path: str) -> None:
         """Write the bundle for the closed selection, exactly as the CLI does.
 
-        Same closure, same writer, same arguments: the page is another way in
-        to one build path, not a second one, so a bundle built here is the
-        bundle ``build --select`` writes for the same picks.
+        The UI refuses missing references before calling the shared writer.
+        For a complete selection the bytes match ``build --select``.
         """
         if self.graph is None or self.members is None:
             self.error = "open an export first"
             return
         if not (self.selection and self.selection.keys):
             self.error = "the selection is empty, no bundle written"
+            return
+        if self.selection.missing:
+            self.error = "build blocked: missing references in this export; no bundle written"
             return
         out = (out_path or "").strip() or self.default_out()
         self.build_out = out
@@ -467,6 +503,7 @@ class PageState:
         except OSError as e:
             self.error = f"cannot write {out}: {e}"
             return
+        self.tab = "review"
         self.build_report = (_selection.render(self.graph, self.selection)
                              + _bundle.render(result))
         self.message = f"bundle written to {result.path}"
@@ -604,7 +641,7 @@ def _act_open(state: "PageState", form: dict) -> str:
 # The right-hand panels, and which action lands you on which. An action whose
 # output appears on a panel has to move you to that panel, or the button
 # appears to do nothing at all.
-TABS = ("preview", "commands", "settings")
+TABS = ("preview", "commands", "settings", "review")
 
 
 def _act_disclose(state: "PageState", form: dict) -> str:
@@ -624,6 +661,8 @@ def _act_tab(state: "PageState", form: dict) -> str:
     wanted = (form.get("tab") or "").strip()
     if wanted in TABS:
         state.tab = wanted
+        if wanted == "preview":
+            state.preview_expanded = False
     else:
         state.error = f"there is no {wanted!r} panel"
     return ""
@@ -696,8 +735,9 @@ def _act_apply_lines(state: "PageState", form: dict) -> str:
 
 def _act_preview(state: "PageState", form: dict) -> str:
     state.tab = "preview"
+    state.inspector_tab = "dependencies" if form.get("panel") == "dependencies" else "preview"
     state.set_preview(form.get("key", ""))
-    return ""
+    return "inspector"
 
 
 def _act_filter(state: "PageState", form: dict) -> str:
@@ -714,11 +754,8 @@ def _act_filter(state: "PageState", form: dict) -> str:
 
 
 def _act_build(state: "PageState", form: dict) -> str:
-    # The Build button sits in the left column, so it can be pressed from any
-    # panel, and the report it produces renders on the Preview one. Without
-    # this, building from Settings gives you the green banner and hides the
-    # report that says what the bundle carries and what it could not find.
-    state.tab = "preview"
+    # Keep readiness and the written bundle report on the review screen.
+    state.tab = "review"
     state.build(form.get("out", ""))
     return ""
 
@@ -748,7 +785,51 @@ def _act_run(state: "PageState", form: dict) -> str:
     return ""
 
 
+def _act_inspector_tab(state: "PageState", form: dict) -> str:
+    panel = form.get("panel", "preview")
+    if panel in ("preview", "dependencies", "details"):
+        state.inspector_tab = panel
+    else:
+        state.error = "unknown inspector panel"
+    return "inspector"
+
+
+def _act_expand_preview(state: "PageState", form: dict) -> str:
+    state.preview_expanded = form.get("expanded") == "1"
+    state.tab = "preview"
+    return "inspector"
+
+
+def _act_category(state: "PageState", form: dict) -> str:
+    kind = form.get("kind", "all")
+    allowed = {"all", "selected"}
+    if state.graph:
+        allowed.update(state.graph.counts())
+    if kind not in allowed:
+        state.error = "unknown content type"
+        return ""
+    state.inventory_kind = kind
+    state.tab = "preview"
+    return ""
+
+
+def _act_select_shown(state: "PageState", _form: dict) -> str:
+    state.select_shown()
+    return ""
+
+
+def _act_remove_pick(state: "PageState", form: dict) -> str:
+    state.remove_pick(form.get("key", ""))
+    state.tab = "review"
+    return ""
+
+
 ACTIONS = {
+    "/inspector-tab": _act_inspector_tab,
+    "/expand-preview": _act_expand_preview,
+    "/category": _act_category,
+    "/select-shown": _act_select_shown,
+    "/remove-pick": _act_remove_pick,
     "/settings": _act_settings,
     "/open": _act_open,
     "/pick-export": _act_pick_export,

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Inventory workspace and bundle review.** Browse one row per object with
+  content-type and search filters, separate Select shown and Select all
+  actions, and an inspector for previews, dependencies and details. Selection
+  totals remain visible. Review lists picks and automatic inclusions and
+  refuses a UI build when references are missing. Support settings move out
+  of the inventory; previews can expand to fill the window. CLI build policy
+  and native startup loading are unchanged.
+
 - **No arguments opens the window.** A bare `vcfcf-migrator`, or a
   double-clicked binary, now runs `ui` instead of printing help and exiting 2.
   `--help` still prints help. (#28)

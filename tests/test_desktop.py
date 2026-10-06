@@ -228,7 +228,7 @@ def test_the_page_has_no_two_controls_sharing_a_name_in_one_form(state):
             # A checkbox group would legitimately repeat a name; none here.
             assert len(names) == len(set(names)), f"duplicate field name in {names} ({tab})"
     joined = "".join(seen)
-    assert "Clear</button>" in joined, "the control this guards is not on the page"
+    assert "Clear search</button>" in joined, "the control this guards is not on the page"
     assert "Browse" in joined, "the control this guards is not on the page"
 
 

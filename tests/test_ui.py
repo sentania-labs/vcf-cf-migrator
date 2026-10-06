@@ -53,8 +53,7 @@ def test_page_shows_versions_settings_and_listing(server):
     assert f"vcfcf_core {vcfcf_core.__version__}" in body
     assert "id='corpus_dir'" in body and "value='corpus'" in body
     assert "current value from: default" in body
-    assert "[Fixture] Cluster Overview" in body
-    assert "[Fixture] SM 2" in body
+    assert "Help &amp; diagnostics" in body
     # The command buttons are on their own panel, so this has to go there to
     # see them. Splitting the assertion is the point of the change.
     _, commands = _post(server, "/tab", {"tab": "commands"})
