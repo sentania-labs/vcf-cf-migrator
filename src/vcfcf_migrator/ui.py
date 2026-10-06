@@ -661,6 +661,8 @@ def _act_tab(state: "PageState", form: dict) -> str:
     wanted = (form.get("tab") or "").strip()
     if wanted in TABS:
         state.tab = wanted
+        if wanted == "preview":
+            state.preview_expanded = False
     else:
         state.error = f"there is no {wanted!r} panel"
     return ""

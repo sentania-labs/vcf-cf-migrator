@@ -109,3 +109,12 @@ def test_inspector_tabs_and_expansion_preserve_selection(page):
     assert "class='inspector expanded'" in page.render()
     dispatch(page, '/expand-preview', {'expanded': '0'})
     assert page.selection_keys() == before
+
+
+def test_inventory_navigation_exits_expanded_preview(page):
+    node = next(iter(page.graph.nodes))
+    dispatch(page, '/preview', {'key': node})
+    dispatch(page, '/expand-preview', {'expanded': '1'})
+    dispatch(page, '/tab', {'tab': 'preview'})
+    assert not page.preview_expanded
+    assert "class='inventory card'" in page.render()
