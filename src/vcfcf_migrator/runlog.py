@@ -256,6 +256,7 @@ class Redactor:
         self._people: List[str] = []           # values excluded outright
         self._allowed: set = set()             # lowercased content identifiers
         self._pattern: Optional[re.Pattern] = None
+        self._search_pattern: Optional[re.Pattern] = None
         self._replacements: Dict[str, str] = {}
 
     # -- teaching ----------------------------------------------------------
@@ -362,6 +363,7 @@ class Redactor:
                 # whole rather than half.
                 values.sort(key=lambda pair: len(pair[0]), reverse=True)
                 pieces = []
+                bounded, unbounded = [], []
                 for index, (part, replacement) in enumerate(values):
                     group = f"p{index}"
                     self._replacements[group] = replacement
@@ -375,9 +377,17 @@ class Redactor:
                     # ordinary word being half-replaced.
                     pieces.append(escaped if _UUID_RE.fullmatch(part)
                                   else r"(?<![\w-])" + escaped)
+                    (unbounded if _UUID_RE.fullmatch(part) else bounded).append(re.escape(part))
                 self._pattern = re.compile("|".join(pieces), re.I)
+                candidates = []
+                if bounded:
+                    candidates.append(r'(?<![\w-])(?:' + '|'.join(bounded) + ')')
+                if unbounded:
+                    candidates.append('(?:' + '|'.join(unbounded) + ')')
+                self._search_pattern = re.compile('|'.join(candidates), re.I)
             else:
                 self._pattern = re.compile(r"(?!x)x")  # matches nothing
+                self._search_pattern = self._pattern
         return self._pattern
 
     def text(self, value: str, people: bool = True) -> str:
@@ -385,7 +395,16 @@ class Redactor:
 
         *people* is false only for a ``Prose`` value: see that class.
         """
-        out = self._compiled().sub(self._replacement_for, value) if people else value
+        if people:
+            pattern = self._compiled()
+            # Search without named captures and factor out the shared boundary.
+            # This is only a presence check: the original matcher still decides
+            # precedence, match length and Unicode-safe replacement. The union
+            # has the same literals, boundaries and flags, so it cannot miss a
+            # value the original matcher would redact.
+            out = pattern.sub(self._replacement_for, value) if self._search_pattern.search(value) else value
+        else:
+            out = value
         out = _MAIL_RE.sub(EXCLUDED_MAIL, out)
         return _UUID_RE.sub(
             lambda m: m.group(0) if _normal_id(m.group(0)) in self._allowed
@@ -394,10 +413,7 @@ class Redactor:
     def _replacement_for(self, match) -> str:
         """What the group that matched says to write. No second lookup, so
         there is nothing for a second definition of case to disagree with."""
-        for group, replacement in self._replacements.items():
-            if match.group(group) is not None:
-                return replacement
-        return EXCLUDED_PERSON
+        return self._replacements[match.lastgroup]
 
     def field(self, key: str, value):
         """One event field, keyed, which is where the key rules apply."""
