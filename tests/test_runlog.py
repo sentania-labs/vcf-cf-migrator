@@ -97,6 +97,7 @@ def test_the_text_format_and_the_renderer_agree():
 
     jsonl = io.StringIO()
     other = runlog.Log(stream=jsonl, level="debug")
+    other.session = log.session
     other.info("thing.happened", kind="view", name="[Fixture] Cluster List")
     rendered = runlog.render_log(jsonl.getvalue().splitlines()).strip()
     # The two differ only in the timestamp, which is wall-clock dependent.
@@ -126,8 +127,9 @@ def test_a_credential_written_as_a_number_is_still_a_credential(log):
     runlog.info("careless", password=1234, authToken=987654321,
                 apiKey=42, secret=0, passcode=-7)
     body = text_of(log)
-    for number in ("1234", "987654321", "42", "-7"):
-        assert number not in body, number
+    event = json.loads(body)
+    for key in ("password", "authToken", "apiKey", "secret", "passcode"):
+        assert event[key] == runlog.EXCLUDED_CREDENTIAL
     assert body.count(runlog.EXCLUDED_CREDENTIAL) == 5
 
 

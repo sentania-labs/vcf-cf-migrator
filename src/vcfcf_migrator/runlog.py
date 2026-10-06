@@ -68,6 +68,9 @@ import platform
 import re
 import sys
 import time
+import threading
+import uuid
+from contextvars import ContextVar
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -475,6 +478,8 @@ class Redactor:
 class _Phase:
     name: str
     started: float
+    operation: int
+    parent_operation: int
     counts: Dict[str, int] = field(default_factory=dict)
 
 
@@ -493,7 +498,18 @@ class Log:
         self.path = path
         self._clock = clock
         self._t0 = clock()
-        self._phases: List[_Phase] = []
+        self._phase_context = ContextVar('log_phases', default=())
+        self._lock = threading.RLock()
+        self.session = str(uuid.uuid4())
+        self._operation = 0
+        self._sequence = 0
+        self.history: Deque[dict] = deque()
+        self.history_cap = 1000
+        self.history_dropped = 0
+        self.problems: Deque[dict] = deque()
+        self.problem_cap = 1000
+        self.problems_dropped = 0
+        self._dropped_by_level: Dict[str, int] = {}
         self._written = 0
         self._by_level: Dict[str, int] = {}
         # Set to a list to keep events in memory as well as on the stream:
@@ -509,6 +525,49 @@ class Log:
         self.stream_failure: Optional[str] = None
 
     # -- state -------------------------------------------------------------
+
+    @property
+    def _phases(self):
+        return self._phase_context.get()
+
+    def snapshot(self) -> List[dict]:
+        """Merge recent detail and protected summaries without duplicates."""
+        with self._lock:
+            rows = self.events or []
+            seen = {id(e) for e in rows}
+            rows.extend(e for e in self.history if id(e) not in seen)
+            seen.update(id(e) for e in rows)
+            rows.extend(e for e in self.problems if id(e) not in seen)
+            return sorted(rows, key=lambda e: e.get('sequence', 0))
+
+    def retention(self) -> dict:
+        return dict(events=self._written, dropped=self.dropped,
+                    history_dropped=self.history_dropped, cap=self.event_cap,
+                    history_cap=self.history_cap, broken=self._broken,
+                    problem_cap=self.problem_cap, problems_dropped=self.problems_dropped,
+                    by_level=self.counts_by_level(), dropped_by_level=dict(self._dropped_by_level))
+
+    def reconfigure(self, replacement: 'Log') -> None:
+        """Adopt an already-open destination without resetting the session."""
+        with self._lock:
+            self.close()
+            self.stream, replacement.stream = replacement.stream, None
+            self.path, self.fmt = replacement.path, replacement.fmt
+            self.level, self.threshold = replacement.level, replacement.threshold
+            self.stream_failure = None
+            self.info('log.contents', says=CONTENTS, level=self.level,
+                      format=self.fmt, file=self.path)
+            # A new file needs the original session context. Copying this
+            # already-redacted record must not restart or recount the session.
+            header = next((e for e in self._head if e.get('event') == 'run.start'), None)
+            if header and self.stream is not None and self.enabled('info'):
+                try:
+                    line = render_event(header) if self.fmt == 'text' else json.dumps(header, ensure_ascii=False)
+                    self.stream.write(line + '\n')
+                    self.stream.flush()
+                except Exception as failure:
+                    self._drop_stream(failure)
+            self.info('log.reconfigured', level=self.level, format=self.fmt)
 
     @property
     def events(self) -> Optional[List[dict]]:
@@ -532,7 +591,11 @@ class Log:
         """
         if value is None:
             self._head, self._tail = [], None
+            self.history.clear()
+            self.problems.clear()
             return
+        self.history.clear()
+        self.problems.clear()
         head: Dict[str, dict] = {}
         tail = deque()
         for event in value:
@@ -553,7 +616,20 @@ class Log:
         """
         if self._tail is None:
             return
+        self._sequence += 1
+        event['sequence'] = self._sequence
+        event['session'] = self.session
         name = event.get("event")
+        if name in ('phase.end', 'run.end', 'log.reconfigured', 'graph.built', 'selection.closed'):
+            self.history.append(event)
+            while len(self.history) > self.history_cap:
+                self.history.popleft()
+                self.history_dropped += 1
+        if event.get('lvl') in ('warn', 'error'):
+            self.problems.append(event)
+            while len(self.problems) > self.problem_cap:
+                self.problems.popleft()
+                self.problems_dropped += 1
         if name in HEAD_EVENTS:
             # A head event replaces its slot rather than being turned away as a
             # duplicate, which is the same last-one-wins rule the setter uses.
@@ -591,20 +667,19 @@ class Log:
         # Positional-only, so a call site may log a field called ``level``,
         # ``code`` or ``name`` without colliding with the method's own
         # parameters. A logging call that raises is worse than a missing line.
-        if not self.enabled(level):
+        # Operation summaries remain available to diagnostics at every level.
+        protected = code in ('phase.start', 'phase.end', 'run.start', 'run.end',
+                             'log.contents', 'log.reconfigured', 'graph.built',
+                             'selection.closed') or level in ('warn', 'error')
+        if not self.enabled(level) and not (self._tail is not None and protected):
             return
-        try:
-            self._emit(level, code, **fields)
-        except Exception as failure:  # noqa: BLE001 - see below
-            # The invariant, enforced rather than asserted: nothing about
-            # logging may end a command. A redactor defect took a preview down
-            # with a traceback at the default level, so the tool worked without
-            # --log and crashed with it, which is the release's headline
-            # feature breaking the tool. A failure here is recorded as an
-            # event of its own, with no value from the failed event in it: the
-            # event that could not be redacted is exactly the one that must not
-            # be written.
-            self._failed(level, code, failure)
+        with self._lock:
+            try:
+                self._emit(level, code, **fields)
+            except Exception as failure:  # noqa: BLE001 - see below
+                # Logging must never end a command. Do not include values from
+                # the event that could not be redacted in the failure record.
+                self._failed(level, code, failure)
 
     def _failed(self, level: str, code: str, failure: BaseException) -> None:
         """Record that an event could not be written, without ever raising.
@@ -665,6 +740,9 @@ class Log:
             "lvl": level,
             "phase": self._phases[-1].name if self._phases else "run",
             "event": str(code),
+            "session": self.session,
+            "operation": self._phases[-1].operation if self._phases else 0,
+            "parent_operation": self._phases[-1].parent_operation if self._phases else 0,
         }
         for key, value in fields.items():
             if value is None:
@@ -673,7 +751,7 @@ class Log:
         self._written += 1
         self._by_level[level] = self._by_level.get(level, 0) + 1
         self._keep(event)
-        if self.stream is None:
+        if self.stream is None or not self.enabled(level):
             return
         line = (render_event(event) if self.fmt == "text"
                 else json.dumps(event, ensure_ascii=False))
@@ -710,7 +788,11 @@ class Log:
             return
         first_drop = self.dropped == 0
         while len(self._head) + len(self._tail) > self.event_cap and self._tail:
-            self._tail.popleft()
+            evicted = self._tail.popleft()
+            level = evicted.get('lvl', 'unknown')
+            if level not in LEVELS:
+                level = 'unknown'
+            self._dropped_by_level[level] = self._dropped_by_level.get(level, 0) + 1
             self.dropped += 1
         if first_drop:
             self.warn("log.truncated", cap=self.event_cap, dropped=self.dropped,
@@ -745,8 +827,11 @@ class Log:
         caller, so "a slow or wrong run can be located without a rerun" does
         not depend on anyone remembering to add up.
         """
-        phase = _Phase(name=name, started=self._clock())
-        self._phases.append(phase)
+        with self._lock:
+            self._operation += 1
+            phase = _Phase(name=name, started=self._clock(), operation=self._operation,
+                           parent_operation=self._phases[-1].operation if self._phases else 0)
+        token = self._phase_context.set(self._phases + (phase,))
         self.info("phase.start", **fields)
         failed = None
         try:
@@ -756,11 +841,14 @@ class Log:
             raise
         finally:
             elapsed = round((self._clock() - phase.started) * 1000, 1)
-            self.emit("error" if failed is not None else "info", "phase.end",
-                      ms=elapsed,
-                      failed=(type(failed).__name__ if failed is not None else None),
-                      **{k: v for k, v in phase.counts.items()})
-            self._phases.pop()
+            end_fields = dict(fields)
+            end_fields.update(phase.counts)
+            end_fields.update(ms=elapsed, start_t=round(phase.started - self._t0, 4),
+                              failed=(type(failed).__name__ if failed is not None else None))
+            try:
+                self.emit("error" if failed is not None else "info", 'phase.end', **end_fields)
+            finally:
+                self._phase_context.reset(token)
 
     def count(self, key: str, by: int = 1) -> None:
         """Add to the current phase's counter, if there is one."""
@@ -1079,7 +1167,8 @@ DIAGNOSTICS_CONTENTS = prose(
 
 def diagnostics_document(events: Sequence[dict], header: Optional[dict] = None,
                          source: Optional[dict] = None,
-                         bundle: Optional[dict] = None) -> str:
+                         bundle: Optional[dict] = None,
+                         retention: Optional[dict] = None) -> str:
     """The diagnostics file: one head line saying what it is and what is in it,
     then the events, one JSON object per line.
 
@@ -1105,6 +1194,8 @@ def diagnostics_document(events: Sequence[dict], header: Optional[dict] = None,
         head["source"] = report.document(source)
     if bundle:
         head["bundle"] = report.document(bundle)
+    if retention is not None:
+        head['retention'] = report.document(retention)
     lines = [json.dumps(head, ensure_ascii=False)]
     lines += [json.dumps(report.document(event), ensure_ascii=False) for event in events]
     return "\n".join(lines) + "\n"
