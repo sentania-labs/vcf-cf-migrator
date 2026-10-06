@@ -349,14 +349,15 @@ def test_a_log_setting_change_keeps_what_the_page_learned_about_people(
     assert state.log.redactor.owners_seen() >= before
 
 
-def test_the_page_ends_its_log_so_a_truncated_one_can_be_told_apart(
+def test_the_page_logs_render_completion_without_ending_the_session(
         tmp_path, export_zip, config_dir):
     state = PageState(str(export_zip))
     state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
     state.run_tree()
     state.render()
-    ends = [e for e in state.log.events if e["event"] == "run.end"]
-    assert ends, [e["event"] for e in state.log.events][-5:]
+    assert not of(state.log.events, "run.end")
+    assert any(e["phase"] == "render" for e in of(state.log.events, "phase.end"))
+    state.log.close()
 
 
 def test_the_ui_command_writes_the_log_the_flag_asks_for(tmp_path, export_zip,
@@ -383,7 +384,7 @@ def test_the_ui_command_writes_the_log_the_flag_asks_for(tmp_path, export_zip,
     codes = {e["event"] for e in events}
     assert len(events) > 50, len(events)
     # Not just the header: what the page actually did.
-    assert {"input.fingerprint", "graph.built", "closure.picked", "run.end"} <= codes, codes
+    assert {"input.fingerprint", "graph.built", "closure.picked", "phase.end"} <= codes, codes
     for needle in EXCLUDED_FROM_THE_FIXTURE:
         assert needle not in target.read_text(encoding="utf-8"), needle
 

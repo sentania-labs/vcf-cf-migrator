@@ -183,20 +183,19 @@ class PageState:
         fmt, _fmt_from = _runlog.resolve_format(self.log_format_cli)
         old = self.log
         try:
-            self.log = _runlog.open_log(destination, level=level, fmt=fmt,
+            replacement = _runlog.open_log(destination, level=level, fmt=fmt,
                                         keep_events=True,
-                                        redactor=old.redactor if old else None)
+                                        redactor=old.redactor if old is not _runlog.NULL else None)
         except (_runlog.BadLogSetting, OSError) as e:
             self.error = f"cannot write the log to {destination}: {e}"
             return
-        if old is not None and getattr(old, "events", None):
-            # A level or destination change mid-session keeps the story so far.
-            self.log.events = list(old.events) + self.log.events
         if old is not _runlog.NULL:
-            old.close()
+            old.reconfigure(replacement)
+        else:
+            self.log = replacement
+            self.log.header(["ui"], tool_version=__version__,
+                            core_version=vcfcf_core.__version__)
         _runlog.set_current(self.log)
-        self.log.header(["ui"], tool_version=__version__,
-                        core_version=vcfcf_core.__version__)
 
     def log_settings(self):
         """Destination, level and where each came from, for the page."""
@@ -217,9 +216,10 @@ class PageState:
         header = self._last_event("run.start")
         source = self._last_event("input.fingerprint")
         bundle = self._last_event("output.fingerprint")
-        document = _runlog.diagnostics_document(list(self.log.events or []),
+        events = self.log.snapshot()
+        document = _runlog.diagnostics_document(events,
                                                 header=header, source=source,
-                                                bundle=bundle)
+                                                bundle=bundle, retention=self.log.retention())
         try:
             target = Path(out)
             if target.parent and str(target.parent):
@@ -231,7 +231,7 @@ class PageState:
             return
         self.diagnostics_out = str(target)
         self.message = (f"diagnostics written to {target}: "
-                        f"{plural(len(self.log.events or []), 'event')}, "
+                        f"{plural(len(events), 'event')}, "
                         + _runlog.DIAGNOSTICS_CONTENTS)
 
     def default_diagnostics_out(self) -> str:
@@ -554,16 +554,9 @@ class PageState:
 
     @serialized
     def render(self) -> str:
-        """The page, and the end of the story so far.
-
-        A page can be closed at any moment, so a log it wrote has to end. The
-        page renders after every action, so ``run.end`` goes here: without it a
-        truncated log and a finished one look the same, which is the one thing
-        a log must never be ambiguous about.
-        """
-        page = uipage.render(self)
-        self.log.finish(1 if self.error else 0, what="page")
-        return page
+        """Measure page generation without claiming the session has ended."""
+        with self.log.phase('render'):
+            return uipage.render(self)
 
 
 # ---------------------------------------------------------------------------
@@ -869,7 +862,11 @@ def run_desktop(zip_path: Optional[str] = None, corpus_cli: Optional[str] = None
 
     state = PageState(zip_path, corpus_cli, log_cli, log_level_cli, log_format_cli)
     print("vcfcf-migrator ui: opening a window (close it to stop)", flush=True)
-    desktop.run(state)
+    try:
+        desktop.run(state)
+    finally:
+        state.log.finish(what='page', failed=sys.exc_info()[1])
+        state.log.close()
     return 0
 
 
@@ -889,4 +886,6 @@ def serve(zip_path: Optional[str] = None, port: int = 0, open_browser: bool = Tr
         print("\nvcfcf-migrator ui: stopped", file=sys.stderr)
     finally:
         server.server_close()
+        server.page_state.log.finish(what='page', failed=sys.exc_info()[1])
+        server.page_state.log.close()
     return 0

@@ -20,7 +20,7 @@ corpus.zip_checked document.absent document.unreadable graph.built
 grid.columns_defaulted grid.coords_unreadable grid.widened input.directories
 input.fingerprint input.listed input.not_a_zip input.not_an_export input.note
 input.unreadable item.listed log.contents log.level log.truncated log.failed
-log.destination_lost manifest.written marker.absent marker.copied marker.read
+log.destination_lost log.reconfigured manifest.written marker.absent marker.copied marker.read
 marker.unknown_format member.carried_not_inspected member.not_carried member.read
 member.unknown member.unreadable node.duplicate node.found object.carries_nothing
 output.document output.fingerprint output.unwritable owners.carried page.action
@@ -39,7 +39,7 @@ LEVELS = frozenset(('error', 'warn', 'info', 'detail', 'debug'))
 ENUMS = {
     'event': EVENTS,
     'phase': frozenset(('run', 'build', 'command', 'corpus-zip', 'graph', 'page',
-                        'preview-all', 'read', 'select')),
+                        'preview-all', 'read', 'select', 'render')),
     'lvl': LEVELS, 'level': LEVELS,
     'kind': KINDS, 'to_kind': KINDS, 'wants': KINDS, 'required_by_kind': KINDS,
     'format': frozenset(('jsonl', 'text')),
@@ -59,6 +59,8 @@ lines objects items documents directories owners_seen dashboards_by_owner
 members_written added_by_closure notes errors matches matched zips widgets
 empty_widgets elsewhere_widgets navigation_gaps orphan_receivers providers
 receivers selectors columns state_blob_chars declared_w declared_x drawn_w drawn_x
+sequence operation parent_operation start_t history_cap history_dropped
+problem_cap problems_dropped
 '''.split())
 # configuration.json's documented aggregate counts. Arbitrary manifest fields
 # are never assumed to be counts, even when their values happen to be numbers.
@@ -75,7 +77,7 @@ argv asked_for answered_by carrying command config_keys container context_driven
 core corpus_dir corpus_from counts cwd declared destination_lost detail dir dir_from
 directory_entries driven_by drives failed failure fields file files from_source
 had_source ident keys line log_file manifest marker marker_format member member_names
-name note out owner owners path platform python python_build reason renderer
+name note out owner owners path platform python python_build reason renderer session
 required_by_name required_by_uuid says setting sha256 skipped started state subject
 subjects title to_name to_owner to_uuid tool unhandled_types uuid verdict via what
 widget widget_type widget_types zip zip_sha256
@@ -116,7 +118,7 @@ class SharedReport:
         if value is None:
             return None
         if isinstance(value, dict):
-            if parent == '' and key in ('counts', 'manifest', 'by_level', 'files'):
+            if parent == '' and key in ('counts', 'manifest', 'by_level', 'dropped_by_level', 'files'):
                 return self.document(value, parent=key, depth=depth + 1)
             return self.opaque(value, depth + 1)
         if isinstance(value, (list, tuple)):
@@ -137,7 +139,7 @@ class SharedReport:
             return self.label(value)
         is_count = (key in MEASUREMENTS and parent in ('', 'files')
                     or parent == 'counts' and key in KINDS
-                    or parent == 'by_level' and key in LEVELS
+                    or parent in ('by_level', 'dropped_by_level') and key in LEVELS
                     or parent == 'manifest' and key in MANIFEST_COUNTS)
         if is_count:
             if type(value) is int and abs(value) < 2 ** 63:
@@ -150,9 +152,9 @@ class SharedReport:
     def document(self, document, parent='', depth=0):
         out = {}
         for key, value in document.items():
-            allowed = (key in FIELDS or key == 'by_level'
+            allowed = (key in FIELDS or key in ('by_level', 'dropped_by_level')
                        or parent == 'counts' and key in KINDS
-                       or parent == 'by_level' and key in LEVELS
+                       or parent in ('by_level', 'dropped_by_level') and key in LEVELS
                        or parent == 'manifest' and key in MANIFEST_COUNTS)
             safe_key = key if allowed else self.label(key)
             out[safe_key] = (self.field(key, value, parent, depth) if allowed

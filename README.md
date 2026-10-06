@@ -88,6 +88,15 @@ same treatment, including numeric identifiers and dictionary keys. Exact wall
 times and OS build strings are omitted. This applies even to retained events
 from before a settings change; it does not rewrite previously saved reports.
 
+Diagnostics keep one session clock across logging changes. Completed operations
+carry their own start time, duration and parent operation, including page
+generation. The most recent 1,000 operation summaries and 1,000 warnings/errors
+are retained separately from the 40,000-event detail buffer. The report states
+how many records each buffer evicted, with detail evictions counted by level.
+These are bounded histories, not a promise to retain every operation forever.
+Changing the file log level does not suppress these diagnostic summaries.
+Only application shutdown records a session end; a page redraw does not.
+
 **Local file logs are private and are not anonymized reports.** Do not attach
 them in place of Save diagnostics. Keep bundles and screenshots private too.
 
