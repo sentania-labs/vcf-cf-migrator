@@ -1,37 +1,19 @@
-"""The selection page's markup: the tree, the selection, the preview, the build.
+"""Shared page shell, activity feedback and support controls.
 
-Split out of ``ui.py`` so the server is handlers and the page is rendering.
-Two rules shaped what is here.
-
-**No script file, no external anything, and one inline handler.** Every
-control is a form that posts and gets a page back, so the page works with
-JavaScript off, works with the keyboard alone, and needs no asset from
-anywhere. The single exception is an ``onchange`` on each tree checkbox that
-submits its own form, so a click on the box acts at once; every one of those
-forms also carries an add/remove button that does the same thing, which is
-what makes the handler an accelerator rather than a requirement. That costs a
-round trip per click, which on a loopback socket is not a cost an admin can
-feel.
-
-**The tree has to stay readable at 430 objects.** Sixty-six dashboards is the
-real corpus shape, so the tree groups by kind, collapses each group, and each
-object's dependencies sit in a nested disclosure rather than in a wall of
-indented rows. A filter box narrows the whole thing to what the admin typed.
+Inventory and review rendering lives in workspace.py. Controls remain forms,
+so the browser and native window use the same actions and no remote assets.
 """
 from __future__ import annotations
 
+from collections import Counter
 import hashlib
 import html
-from typing import Dict, List, Optional, Sequence
+from typing import List
 
 from vcfcf_migrator import preview as _preview
 from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import settings as _settings
-from vcfcf_migrator.cli import version_lines
-from vcfcf_migrator.graph import KIND_ORDER, Graph, Node
-from vcfcf_migrator.wording import plural
-
-MAX_DEPTH = 6
+from vcfcf_migrator.graph import Graph, Node
 
 STYLE = """
 :root {
@@ -71,12 +53,6 @@ header.top { position:sticky; top:0; z-index:5; background:var(--card);
 header.top .ver { color:var(--ink3); font-size:11.5px; font-family:ui-monospace,monospace }
 header.top form { display:flex; gap:8px; align-items:flex-end; flex:1 1 380px }
 header.top form.nogrow { flex:0 0 auto }
-nav.tabs { display:flex; gap:2px; margin:0 0 10px 0; border-bottom:1px solid var(--line) }
-nav.tabs form.tabform { margin:0 }
-nav.tabs button.tab { background:none; border:0; border-bottom:2px solid transparent;
-  padding:8px 14px; font:inherit; color:var(--ink2); cursor:pointer; border-radius:0 }
-nav.tabs button.tab:hover { color:var(--ink) }
-nav.tabs button.tab.on { color:var(--ink); border-bottom-color:var(--accent); font-weight:600 }
 header.top form .grow { flex:1 1 auto }
 
 .msg, .err { margin:10px 18px 0; padding:9px 12px; border-radius:6px; font-size:13px }
@@ -85,66 +61,15 @@ header.top form .grow { flex:1 1 auto }
 .err { background:var(--bad-soft); border-left:3px solid var(--bad); color:#7f1d1d;
   white-space:pre-wrap }
 
-.cols { display:grid; grid-template-columns:minmax(340px,440px) 1fr; gap:16px;
-  padding:16px 18px 40px; align-items:start }
 .card { background:var(--card); border:1px solid var(--line); border-radius:9px;
-  padding:14px 16px; margin-bottom:16px }
-/* A grid item's default min-width is its content, so one long line inside a
-   <pre> made the whole page scroll sideways at phone width. */
-.cols > div { min-width:0 }
+  padding:14px 16px; margin-bottom:16px; min-width:0 }
 .card pre { max-width:100% }
-.left { position:sticky; top:59px; max-height:calc(100vh - 75px); overflow:auto }
-
-.counts { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 10px }
-.pill { background:var(--line2); border-radius:999px; padding:2px 10px; font-size:12px;
-  color:var(--ink2) }
-.pill b { color:var(--ink); font-variant-numeric:tabular-nums }
-.pill.on { background:var(--accent-soft); color:#12376f }
-
-.kindgroup { border-top:1px solid var(--line2); padding:2px 0 }
-.discloser { margin:0 }\n
-.kindgroup > .discloser > .summary, .deps > .discloser > .summary {
-  background:none; border:0; border-radius:0; width:100%; text-align:left;
-  font:inherit; cursor:pointer }
-.kindgroup > .discloser > .summary { cursor:pointer; padding:6px 2px; font-weight:600; font-size:13px;
-  list-style:none; display:flex; align-items:center; gap:8px }
-.kindgroup > .discloser > .summary::before { content:"\\25B8"; color:var(--ink3); font-size:11px }
-.kindgroup.on > .discloser > .summary::before { content:"\\25BE" }
-.deps > .discloser > .summary::before { content:"\\25B8"; color:var(--ink3); font-size:10px;
-  margin-right:4px }
-.deps.on > .discloser > .summary::before { content:"\\25BE" }
-.kindgroup > .discloser > .summary .n { margin-left:auto; color:var(--ink3); font-weight:400; font-size:12px }
-
-ul.tree { list-style:none; margin:0; padding:0 }
-ul.tree ul { list-style:none; margin:2px 0 4px; padding-left:14px;
-  border-left:2px solid var(--line2) }
-li.node { padding:1px 0 }
-/* wrap, and give "required by" its own line. Letting it share a line with
-   the name made both shrink together: measured on a real export at a normal
-   1280 desktop, 402 of 756 rows went over 60px tall and the worst name was
-   squeezed into a 110px column eight lines deep. It was nowrap on .why that
-   had been holding the name on one line, not anything about the name. */
-.row { display:flex; flex-wrap:wrap; align-items:baseline; gap:7px; padding:3px 6px;
-  border-radius:6px }
+.row { border-radius:6px; gap:7px }
 .row:hover { background:var(--line2) }
 .row.sel { background:var(--accent-soft) }
-.row form { display:contents }
-/* The name wraps rather than being cut off with an ellipsis. Dependency rows
-   are indented once per level, so the deeper an object sits the less width it
-   has and the sooner it was truncated: exactly the rows an admin is reading
-   to decide whether to carry something. overflow-wrap catches a single
-   unbroken token wider than the column, which a truncating rule used to hide.
-   The title stays for the identifier, which is still abbreviated on purpose. */
-.row .name { flex:1 1 auto; min-width:0; overflow-wrap:anywhere }
-/* This carries a name too ("required by <object>"), so it wraps for the same
-   reason, on a line of its own. */
-.row .why { flex:1 0 100%; color:var(--warn); font-size:11px; overflow-wrap:anywhere }
-.row .uuid { color:var(--ink3); font-size:11px; font-family:ui-monospace,monospace }
-.row .kindtag { color:var(--ink3); font-size:11px }
 .row.preview-on { box-shadow:inset 0 0 0 2px var(--accent) }
-.tick { width:15px; height:15px; margin:0; accent-color:var(--accent) }
-.deps > .discloser > .summary { font-size:11.5px; color:var(--ink2); padding:2px 6px }
-.missing { color:var(--warn); font-size:11.5px; padding:2px 6px }
+.tick { width:16px; height:16px; margin:0; accent-color:var(--accent) }
+.missing { color:var(--warn); font-size:12px; overflow-wrap:anywhere }
 
 .stack { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end }
 .stack .grow { flex:1 1 200px }
@@ -152,8 +77,6 @@ li.node { padding:1px 0 }
 .note { color:var(--ink2); font-size:12px; margin:6px 0 0 }
 
 @media (max-width: 900px) {
-  .cols { grid-template-columns:1fr; padding:12px }
-  .left { position:static; max-height:none }
   header.top { position:static }
 }
 """
@@ -180,7 +103,8 @@ ACTIVITY_JS = """
     status.setAttribute('role', 'status');
     status.style.cssText = 'background:#fff;border:1px solid #d9dee5;border-radius:9px;padding:24px;color:#1d2430;font:16px system-ui';
     var labels = {'/open':'Opening export', '/pick-export':'Choosing and opening export',
-      '/select-all':'Selecting content', '/clear':'Clearing selection',
+      '/select-all':'Selecting content', '/select-shown':'Selecting shown content',
+      '/remove-pick':'Updating selection', '/clear':'Clearing selection',
       '/select':'Updating selection', '/build':'Building bundle',
       '/diagnostics':'Saving anonymized diagnostics'};
     var label = labels[action] || 'Updating page';
@@ -194,14 +118,33 @@ ACTIVITY_JS = """
     return true;
   }
   window.migratorActivity = {start:start, finish:finish};
+  function captureNavigation(action) {
+    if (action !== '/select' && !(action === '/preview' && window.innerWidth > 800)) { return null; }
+    return {y:window.scrollY, focus:document.activeElement.id || ''};
+  }
+  function restoreNavigation(saved) {
+    if (!saved) { return; }
+    var focused = document.getElementById(saved.focus);
+    if (focused) { focused.focus({preventScroll:true}); }
+    window.scrollTo(0, saved.y);
+  }
+  window.migratorNavigation = {capture:captureNavigation, restore:restoreNavigation};
   document.addEventListener('submit', function (ev) {
     // The native bridge collects form data and calls start itself.
     if (window.pywebview && window.pywebview.api) { return; }
-    if (!start(ev.target.getAttribute('action'))) { ev.preventDefault(); }
+    var action = ev.target.getAttribute('action');
+    if (!start(action)) { ev.preventDefault(); return; }
+    try { sessionStorage.setItem('migrator-navigation', JSON.stringify(captureNavigation(action))); }
+    catch (err) { /* Storage may be unavailable in a restricted browser. */ }
   }, true);
   window.addEventListener('pageshow', function (ev) {
     finish();
-    if (ev.persisted) { window.location.reload(); }
+    if (ev.persisted) { window.location.reload(); return; }
+    try {
+      var saved = JSON.parse(sessionStorage.getItem('migrator-navigation') || 'null');
+      sessionStorage.removeItem('migrator-navigation');
+      restoreNavigation(saved);
+    } catch (err) { /* Navigation still works without storage. */ }
   });
 })();
 </script>
@@ -244,6 +187,7 @@ class _RenderState:
 
     def __init__(self, state):
         self._state = state
+        self.name_counts = Counter((n.kind, n.name) for n in state.graph.nodes.values()) if state.graph else {}
         self._picked = state.selected_keys()
         self._included = state.selection_keys()
         self._required = {}
@@ -268,81 +212,13 @@ class _RenderState:
 
 def render(state) -> str:
     state = _RenderState(state)
-    body = "".join([
-        _header(state),
-        _messages(state),
-        "<div class='cols'>",
-        f"<div class='left'>{_selection_panel(state)}{_tree_panel(state)}</div>",
-        f"<div class='right'>{_tabs(state)}{_current_panel(state)}</div>",
-        "</div>",
-    ])
+    from vcfcf_migrator import workspace
+    body = workspace.body(state)
     title = "vcfcf-migrator"
     if state.graph is not None and state.zip_path:
         title = f"vcfcf-migrator: {state.zip_path.rsplit('/', 1)[-1]}"
-    return PAGE.format(title=e(title), style=STYLE,
+    return PAGE.format(title=e(title), style=STYLE + workspace.STYLE,
                        preview_css=_preview.PREVIEW_CSS, body=body + ACTIVITY_JS)
-
-
-# The right-hand column used to stack all three of these, so the settings
-# were a permanent block of controls sitting under whatever you were actually
-# looking at. One at a time, and the tab you are on is part of the page state
-# because every action redraws the whole page.
-# Labels only. The keys come from ui.TABS, which is what /tab validates
-# against: two lists would let a tab render a button that every click refuses.
-_TAB_LABELS = {"preview": "Preview", "commands": "Commands", "settings": "Settings"}
-
-
-def _tabs(state) -> str:
-    out = ["<nav class='tabs' aria-label='panels'>"]
-    from vcfcf_migrator.ui import TABS
-
-    for key in TABS:
-        label = _TAB_LABELS.get(key, key.title())
-        here = getattr(state, "tab", "preview") == key
-        out.append(
-            "<form method='post' action='/tab' class='tabform'>"
-            f"<input type='hidden' name='tab' value='{key}'>"
-            f"<button type='submit' class='tab{' on' if here else ''}'"
-            + (" aria-current='true'" if here else "")
-            + f">{e(label)}</button></form>")
-    out.append("</nav>")
-    return "".join(out)
-
-
-def _current_panel(state) -> str:
-    tab = getattr(state, "tab", "preview")
-    if tab == "commands":
-        return _commands_panel(state)
-    if tab == "settings":
-        return _settings_panel(state)
-    return _right_panel(state)
-
-
-def _header(state) -> str:
-    return "".join([
-        "<header class='top'>",
-        "<h1>vcfcf-migrator</h1>",
-        f"<span class='ver'>{e(' | '.join(version_lines()))}</span>",
-        "<form method='post' action='/open'>",
-        "<div class='grow'><label for='zip'>Export zip</label>",
-        f"<input type='text' name='zip' id='zip' value='{e(state.zip_path)}' "
-        "placeholder='/path/to/export.zip'></div>",
-        _button("Open", primary=True),
-        "</form>",
-        # Its own form, because the dialog names the file and a path typed
-        # into the box beside it is not an input to that. The cost is that
-        # cancelling redraws the page from state, so anything half-typed in
-        # the box is lost. That is the existing render model rather than
-        # anything this button introduced, but the button does put the
-        # trigger right next to the box, so it is worth knowing.
-        # 'nogrow' because header forms otherwise take flex:1 1 380px, which
-        # would halve the path box beside it and leave this button alone in a
-        # 380px column with a gap to its right.
-        ("<form method='post' action='/pick-export' class='nogrow'>"
-         "<button type='submit'>Browse\u2026</button></form>"
-         if state.file_picker is not None else ""),
-        "</header>",
-    ])
 
 
 def _messages(state) -> str:
@@ -358,52 +234,15 @@ def _messages(state) -> str:
 # The selection panel: what a build would carry, and the build itself
 # ---------------------------------------------------------------------------
 
-def _selection_panel(state) -> str:
-    if state.graph is None:
-        return ("<div class='card'><h2>Selection</h2><p class='note'>Open an export zip "
-                "above to see what it holds.</p></div>")
-    graph = state.graph
-    selection = state.selection
-    counts = selection.counts(graph) if selection else {}
-    total = len(selection.keys) if selection else 0
-    pills = [f"<span class='pill{' on' if total else ''}'><b>{total}</b> objects</span>"]
-    for kind in KIND_ORDER:
-        if counts.get(kind):
-            pills.append(f"<span class='pill on'><b>{counts[kind]}</b> {e(kind)}</span>")
-    if not total:
-        pills.append("<span class='pill'>nothing picked yet</span>")
-
-    added = len(selection.added) if selection else 0
-    missing = len(selection.missing) if selection else 0
-    lines = [
-        "<div class='card'>",
-        "<h2>What a build would carry</h2>",
-        "<div class='counts'>" + "".join(pills) + "</div>",
-    ]
-    if added:
-        lines.append(f"<p class='note'>{added} pulled in as dependencies of what you "
-                     "picked.</p>")
-    if missing:
-        lines.append(f"<p class='note'>{plural(missing, 'referenced object')} "
-                     + ("is" if missing == 1 else "are")
-                     + " not in this export; they are listed with each object below and "
-                       "in the build report.</p>")
-    lines += [
-        "<div class='stack'>",
-        "<form method='post' action='/select-all'>" + _button("Select everything") + "</form>",
-        "<form method='post' action='/clear'>" + _button("Clear the selection") + "</form>",
-        "</div>",
-        _build_form(state),
-        "</div>",
-    ]
-    return "".join(lines)
 
 
 def _build_form(state) -> str:
-    ready = bool(state.selection and state.selection.keys)
+    ready = bool(state.selection and state.selection.keys and not state.selection.missing)
     reasons = []
     if not (state.selection and state.selection.keys):
         reasons.append("pick at least one object")
+    if state.selection and state.selection.missing:
+        reasons.append("resolve the missing references before building")
     return "".join([
         "<hr style='border:none;border-top:1px solid var(--line2);margin:14px 0'>",
         "<form method='post' action='/build'>",
@@ -417,231 +256,6 @@ def _build_form(state) -> str:
         ("<p class='note'>" + e("; ".join(reasons)) + "</p>") if reasons else "",
         "</form>",
     ])
-
-
-# ---------------------------------------------------------------------------
-# The tree
-# ---------------------------------------------------------------------------
-
-def _tree_panel(state) -> str:
-    if state.graph is None:
-        return ""
-    graph = state.graph
-    parts = [
-        "<div class='card'>",
-        "<h2>Everything in this export</h2>",
-        "<form method='post' action='/filter' class='stack'>",
-        "<div class='grow'><label for='filter'>Filter by name, kind or uuid</label>",
-        f"<input type='text' name='filter' id='filter' value='{e(state.filter_text)}'></div>",
-        _button("Filter"),
-        ("<button type='submit' name='clear-filter' value='1'>Clear</button>"
-         if state.filter_text else ""),
-        "</form>",
-    ]
-    if state.filter_text:
-        matches = _matches(graph, state.filter_text)
-        parts.append(f"<p class='note'>{plural(len(matches), 'object')} match "
-                     f"{e(state.filter_text)!s}.</p>")
-        parts.append("<ul class='tree'>"
-                     + "".join(_node_row(state, node, depth=0, with_children=False)
-                               for node in matches)
-                     + "</ul>")
-        parts.append("</div>")
-        return "".join(parts)
-
-    roots = graph.roots()
-    root_keys = {n.key for n in roots}
-    shown: Dict[str, List[Node]] = {}
-    for node in roots:
-        shown.setdefault(node.kind, []).append(node)
-    others = [n for n in graph.ordered() if n.key not in root_keys]
-    by_kind_other: Dict[str, List[Node]] = {}
-    for node in others:
-        by_kind_other.setdefault(node.kind, []).append(node)
-
-    # The list is in two halves, and a per-kind count in the first half is a
-    # count of that half, not of the export. Saying so where the numbers are
-    # is the difference between "56 views" reading as a split and reading as
-    # 125 views that went missing.
-    total = len(graph.nodes)
-    parts.append(
-        f"<p class='note'>{plural(total, 'object')}: {len(roots)} that nothing else "
-        "points at, "
-        f"listed first, and {len(others)} reached only as a dependency of one of them, "
-        "listed under their own heading below. Both halves are here, and a build carries "
-        "either.</p>")
-    parts.append("<h3 style='margin-top:10px'>Nothing else points at these</h3>")
-    for kind in KIND_ORDER + sorted(set(shown) - set(KIND_ORDER)):
-        nodes = shown.get(kind)
-        if not nodes:
-            continue
-        parts.append(_kind_group(state, kind, nodes, open_default=len(roots) <= 40))
-    if by_kind_other:
-        parts.append("<h3 style='margin-top:16px'>Reached only as a dependency of "
-                     "something above</h3>")
-        for kind in KIND_ORDER + sorted(set(by_kind_other) - set(KIND_ORDER)):
-            nodes = by_kind_other.get(kind)
-            if not nodes:
-                continue
-            parts.append(_kind_group(state, kind, nodes, open_default=False,
-                                     with_children=False, section="viadep"))
-    parts.append("</div>")
-    return "".join(parts)
-
-
-def _disclosure(state, did: str, summary: str, body, open_default: bool,
-                cls: str = "kindgroup") -> str:
-    """A group that stays as the user left it.
-
-    This was a <details> element. That toggles in the browser and tells the
-    server nothing, so every action redrew the tree from its default and shut
-    whatever had been opened: ticking a checkbox collapsed the very list being
-    ticked. The summary is a form now, like every other control on the page,
-    so the state survives the redraw.
-    """
-    shown = state.disclosure.get(did, open_default)
-    # hidden='until-found' rather than a bare hidden: the browser can still
-    # find text inside and expand it to show a match, which is what a <details>
-    # did and what a long tree needs. A display:none rule of our own would
-    # defeat it, so there is deliberately none. Browsers without until-found
-    # treat the attribute as an ordinary hidden, which is the old behaviour.
-    shut_attr = "" if shown else " hidden='until-found'"
-    return ("<div class='" + cls + ("" if not shown else " on")
-            + f"' id='{e(anchor(did))}'>"
-            "<form method='post' action='/disclose' class='discloser'>"
-            f"<input type='hidden' name='id' value='{e(did)}'>"
-            f"<input type='hidden' name='on' value='{'0' if shown else '1'}'>"
-            f"<button type='submit' class='summary' aria-expanded='{str(shown).lower()}'>"
-            f"{summary}</button></form>"
-            # The body is always in the page, shut or not, exactly as a
-            # <details> kept it. Dropping it would have been cheaper, and
-            # would also have taken the rows out of reach of the browser's own
-            # find, which is a real way people look through a long tree.
-            # hidden='until-found' rather than a bare hidden: the browser can
-            # still find text in here and expand it, which is what a <details>
-            # did and what a long tree needs. A display:none rule of our own
-            # would defeat it, so there is deliberately none.
-            + f"<div class='disc-body'{shut_attr}>{body()}</div>"
-            + "</div>")
-
-
-def _kind_group(state, kind: str, nodes: Sequence[Node], open_default: bool,
-                with_children: bool = True, section: str = "roots") -> str:
-    included = state.selection_keys()
-    picked = sum(1 for n in nodes if n.key in included)
-    here = len(nodes)
-    total = len(state.graph.by_kind(kind)) if state.graph else here
-    tail = f"Selected here: {picked} / {here}; {total} in export"
-    # Scoped by section: six kinds appear in both tree sections on the corpus,
-    # and a shared id made them one control with one state, so opening the
-    # lower group expanded the upper one and sent you there.
-    return _disclosure(
-        state, f"kind:{section}:{kind}",
-        f"{e(kind)}<span class='n'>{e(tail)}</span>",
-        lambda: ("<ul class='tree'>"
-                 + "".join(_node_row(state, node, 0, with_children) for node in nodes)
-                 + "</ul>"),
-        open_default)
-
-
-def _node_row(state, node: Node, depth: int, with_children: bool = True,
-              seen: Optional[frozenset] = None, path: str = "") -> str:
-    graph = state.graph
-    seen = seen or frozenset()
-    selected = node.key in state.selection_keys()
-    picked = node.key in state.selected_keys()
-    required_by = state.required_by(node.key) if selected and not picked else []
-    classes = "row" + (" sel" if selected else "") + (
-        " preview-on" if state.preview_key == node.key else "")
-    checked = " checked" if selected else ""
-    # The identifier is abbreviated in the row and complete in the title: a
-    # full uuid per row is three lines of wrapping at 66 dashboards, and the
-    # abbreviation is enough to tell two objects apart while the admin is
-    # scanning. The whole value is a hover and a screen reader away.
-    ident = node.uuid or node.ident
-    short = _short_ident(ident, node.name)
-    label = (f"<span class='name' title='{e(node.name)} ({e(ident)})'>{e(node.name)} "
-             f"<span class='kindtag'>{e(node.kind)}</span>"
-             + (f" <span class='uuid'>{e(short)}</span>" if short else "")
-             + (f" <span class='uuid'>owner {e(node.owner[:8])}</span>" if node.owner else "")
-             + "</span>")
-    why = ""
-    if required_by:
-        first = graph.nodes.get(required_by[0])
-        more = f" +{len(required_by) - 1}" if len(required_by) > 1 else ""
-        why = (f"<span class='why' title='required by'>required by "
-               f"{e(first.name if first else required_by[0])}{e(more)}</span>")
-
-    row = "".join([
-        f"<div class='{classes}' id='{e(anchor(node.key))}'>",
-        "<form method='post' action='/select'>",
-        f"<input type='hidden' name='key' value='{e(node.key)}'>",
-        f"<input type='hidden' name='on' value='{'0' if selected else '1'}'>",
-        f"<input type='checkbox' class='tick'{checked} name='tick' "
-        # requestSubmit fires a real submit event; submit() does not, and the
-        # desktop window drives every action off that event. With submit() the
-        # tree checkboxes are dead in the window while the buttons beside them
-        # still work, which reads as "the checkboxes are broken". The fallback
-        # keeps very old browsers working in --server mode.
-        f"onchange='this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()' "
-        f"aria-label='{e(('deselect ' if selected else 'select ') + node.name)}'>",
-        label,
-        why,
-        _button("remove" if selected else "add", ghost=True),
-        "</form>",
-        "<form method='post' action='/preview'>",
-        f"<input type='hidden' name='key' value='{e(node.key)}'>",
-        _button("preview", ghost=True),
-        "</form>",
-        "</div>",
-    ])
-
-    children_html = ""
-    # Where this row sits in the tree, not just what it is. The same object is
-    # rendered once per route to it, and an id built from the object alone
-    # made every copy one control: opening the dependencies under one
-    # dashboard opened them under the other and scrolled you there.
-    here = f"{path}>{node.key}" if path else node.key
-    if with_children and depth < MAX_DEPTH and node.key not in seen:
-        targets = [graph.nodes[t] for t in graph.edges.get(node.key, []) if t in graph.nodes]
-        gaps = graph.missing_for(node.key)
-        if targets or gaps:
-            inner = "".join(_node_row(state, child, depth + 1, True,
-                                      seen | {node.key}, path=here)
-                            for child in targets)
-            inner += "".join(
-                f"<li class='node'><div class='missing'>missing {e(gap.kind)} "
-                f"{e(gap.ident)} (via {e(gap.via)})</div></li>" for gap in gaps)
-            children_html = _disclosure(
-                state, f"deps:{here}",
-                "depends on "
-                + f"{len(targets)}"
-                + (f", {len(gaps)} not in this export" if gaps else ""),
-                lambda: f"<ul>{inner}</ul>",
-                False, cls="deps")
-    return f"<li class='node'>{row}{children_html}</li>"
-
-
-def _short_ident(ident: str, name: str) -> str:
-    """The abbreviation shown beside a name, or nothing.
-
-    This used to be the first eight characters of whatever the identifier was.
-    For a uuid that is the convention and it works. For anything else it is
-    noise: across one corpus export it rendered "SymptomD" on 43 rows and
-    "AlertDef" on 13, which tells a reader nothing at all. Worse, a custom
-    group has no uuid, so its identifier IS its name, and the column showed
-    the name cut to eight characters, immediately beside the full name.
-
-    So: a uuid is abbreviated, and anything else is left out. The name is
-    already on the row, and the whole identifier is still in the title.
-    """
-    if not ident or ident == name:
-        return ""
-    bare = ident.replace("-", "")
-    looks_like_a_uuid = len(bare) >= 32 and all(c in "0123456789abcdefABCDEF" for c in bare)
-    if not looks_like_a_uuid:
-        return ""
-    return ident[:8]
 
 
 def anchor(key: str) -> str:
@@ -678,37 +292,6 @@ def _matches(graph: Graph, text: str) -> List[Node]:
     return [n for n in graph.ordered()
             if needle in n.name.lower() or needle in n.kind.lower()
             or needle in n.uuid.lower() or needle in n.ident.lower()]
-
-
-# ---------------------------------------------------------------------------
-# The right column: preview, listings, build report
-# ---------------------------------------------------------------------------
-
-def _right_panel(state) -> str:
-    parts = ["<div class='card'>"]
-    if state.build_report:
-        parts += ["<h2>Last build</h2>", f"<pre>{e(state.build_report)}</pre>",
-                  "<hr style='border:none;border-top:1px solid var(--line2);margin:14px 0'>"]
-    if state.graph is not None and state.preview_key in state.graph.nodes:
-        node = state.graph.nodes[state.preview_key]
-        parts.append("<h2>Preview</h2>")
-        try:
-            parts.append(_preview.fragment(state.graph, node))
-        except _preview.PreviewError as err:
-            parts.append(f"<p class='err'>{e(str(err))}</p>")
-        parts.append("<form method='post' action='/preview' style='margin-top:10px'>"
-                     "<input type='hidden' name='key' value=''>"
-                     + _button("Close the preview") + "</form>")
-    elif state.graph is not None:
-        parts.append("<h2>Preview</h2><p class='note'>Choose <b>preview</b> next to any "
-                     "object to see it laid out here, with mock values, before deciding "
-                     "to carry it.</p>")
-    else:
-        parts.append("<h2>Start here</h2><p class='note'>Give the page a content export "
-                     "zip at the top. Nothing leaves this machine: the tool reads the "
-                     "zip, and the page is served on 127.0.0.1 only.</p>")
-    parts.append("</div>")
-    return "".join(parts)
 
 
 def _commands_panel(state) -> str:
@@ -774,6 +357,7 @@ def _log_controls(state) -> str:
         f"<option value='{e(name)}'{' selected' if name == level else ''}>{e(name)}</option>"
         for name in _runlog.LEVEL_NAMES)
     return "".join([
+        "<details><summary>Local logging</summary>",
         "<form method='post' action='/settings' class='field'>",
         "<label for='log_file'>Run log file (empty for none; - writes to the terminal)"
         "</label>",
@@ -800,6 +384,7 @@ def _log_controls(state) -> str:
         "and per-widget detail behind them.</small></p>",
         _button("Save log level"),
         "</form>",
+        "</details>",
         "<form method='post' action='/diagnostics' class='field'>",
         "<label for='diag_out'>Diagnostics file</label>",
         f"<input type='text' name='out' id='diag_out' "
@@ -818,6 +403,8 @@ def _settings_panel(state) -> str:
     return "".join([
         "<div class='card'>",
         "<h2>Settings</h2>",
+        _log_controls(state),
+        "<details><summary>Advanced settings</summary>",
         "<form method='post' action='/settings' class='field'>",
         "<label for='corpus_dir'>Corpus directory (real export zips; never inside the repo)"
         "</label>",
@@ -827,7 +414,7 @@ def _settings_panel(state) -> str:
         "variable and the --corpus flag override the saved value.</small></p>",
         _button("Save corpus directory"),
         "</form>",
-        _log_controls(state),
+        "</details>",
         "<p class='note'><small>This page listens on 127.0.0.1 only, and a same-origin "
         "check stops another web page in your browser from driving it. That is a CSRF "
         "control, not an access control: any process on this machine can reach the port "

@@ -20,6 +20,7 @@ import pytest
 
 from make_export_fixture import (
     DASHBOARD_ID,
+    EMPTY_SM_ID,
     DASHBOARD_ID_2,
     OWNER,
     OWNER_2,
@@ -78,42 +79,35 @@ def test_the_page_shows_every_object_with_a_checkbox(state):
     assert page.count("type='checkbox'") >= len(state.graph.nodes)
     # Grouped by kind, with a count per group, so 66 dashboards do not arrive
     # as 66 undifferentiated rows.
-    assert "class='kindgroup" in page
-    assert "dashboard<span class='n'>" in page
+    assert "aria-label='Content types'" in page
+    assert "<span>Dashboards</span><span>4</span>" in page
 
 
-def test_the_tree_shows_what_each_object_depends_on(state):
+def test_inspector_shows_dependencies(state):
+    state.set_preview(DASH)
+    state.inspector_tab = "dependencies"
     page = state.render()
-    assert "depends on" in page
-    # The dashboard's view, and the view's super metric, are reachable in the
-    # nested disclosure under the dashboard.
-    assert f"value='{VIEW}'" in page and f"value='{SM_1}'" in page
+    inspector = page.split("id='inspector'", 1)[1]
+    assert "Depends on</h3>" in inspector
+    assert f"value='{VIEW}'" in inspector
 
 
-def test_the_tree_says_which_half_of_the_split_a_count_belongs_to(state):
-    """The list is in two halves, and a per-kind count in the first half
-    counts that half. Without saying so, "56 of 181 views" reads as 125 views
-    that went missing."""
+
+def test_inventory_contains_each_object_once_with_whole_export_counts(state):
     page = state.render()
-    graph = state.graph
-    roots = len(graph.roots())
-    others = len(graph.nodes) - roots
-    assert f"{len(graph.nodes)} objects: {roots} that nothing else points at" in page
-    assert f"{others} reached only as a dependency" in page
-    assert "Nothing else points at these" in page
-    assert "Reached only as a dependency of something above" in page
-    # A kind split across both halves says so where its number is.
-    split = [k for k in {n.kind for n in graph.nodes.values()}
-             if 0 < sum(1 for n in graph.roots() if n.kind == k) < len(graph.by_kind(k))]
-    assert split, "the fixture should have at least one kind in both halves"
-    for kind in split:
-        here = sum(1 for n in graph.roots() if n.kind == kind)
-        assert f"Selected here: 0 / {here}; {len(graph.by_kind(kind))} in export" in page
+    from vcfcf_migrator.uipage import anchor
+    for node in state.graph.ordered():
+        assert page.count(f"id='{anchor(node.key)}'") == 1
+    assert f"{len(state.graph.nodes)} shown / {len(state.graph.nodes)} in export" in page
+    assert "Nothing else points" not in page
+
 
 
 def test_an_object_the_export_does_not_carry_is_shown_as_missing(state):
-    page = state.render()
-    assert "missing supermetric" in page
+    state.set_preview(DASH)
+    state.inspector_tab = "dependencies"
+    assert "missing view" in state.render()
+
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +126,10 @@ def test_checking_a_dashboard_pulls_in_what_it_needs(state):
 def test_a_pulled_in_object_says_what_needs_it(state):
     state.toggle(DASH, on=True)
     assert state.required_by(VIEW) == [DASH]
+    state.set_preview(VIEW)
+    state.inspector_tab = "dependencies"
     page = state.render()
-    assert "required by" in page
+    assert "Required by:" in page
 
 
 def test_unchecking_something_still_needed_is_refused_with_the_reason(state):
@@ -276,10 +272,10 @@ def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
          "this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()")
     }, handlers
     # One handler per tree checkbox, and each of those forms has a button.
-    checkboxes = page.count("type='checkbox' class='tick'")
+    checkboxes = page.count("type='checkbox'")
     assert len(handlers) == checkboxes
     assert page.count("<form method='post' action='/select'>") == checkboxes
-    assert page.count(">add</button>") + page.count(">remove</button>") == checkboxes
+    assert page.count(">Add</button>") + page.count(">Remove</button>") == checkboxes
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +289,7 @@ def test_build_refuses_an_empty_selection(state, tmp_path):
 
 def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip, tmp_path):
     """The page is another way in to one build path, not a second one."""
-    state.toggle(DASH, on=True)
-    state.toggle("symptom:SymptomDefinition-VMWARE-Fixture_CPU_high", on=True)
+    state.toggle(f"supermetric:{EMPTY_SM_ID}", on=True)
     from_page = tmp_path / "page.zip"
     state.build(str(from_page))
     assert not state.error, state.error
@@ -314,7 +309,7 @@ def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip,
 
 
 def test_two_builds_of_one_selection_are_byte_identical(state, tmp_path):
-    state.select_all()
+    state.toggle(f"supermetric:{EMPTY_SM_ID}", on=True)
     first, second = tmp_path / "one.zip", tmp_path / "two.zip"
     state.build(str(first))
     state.build(str(second))
@@ -322,13 +317,13 @@ def test_two_builds_of_one_selection_are_byte_identical(state, tmp_path):
 
 
 def test_build_reports_where_the_bundle_went_and_what_is_in_it(state, tmp_path):
-    state.toggle(DASH, on=True)
+    state.toggle(f"supermetric:{EMPTY_SM_ID}", on=True)
     out = tmp_path / "b.zip"
     state.build(str(out))
     page = state.render()
     assert str(out) in page
     assert "carrying:" in page
-    assert "dashboards/" in page  # the members it wrote
+    assert "supermetrics.json" in page  # the members it wrote
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +339,7 @@ def test_endpoints_drive_the_same_actions(server, export_zip, tmp_path):
     _, body = _post(server, "/preview", {"key": DASH})
     assert "class='pv-grid'" in body
     _, body = _post(server, "/filter", {"filter": "cluster overview"})
-    assert "objects match" in body
+    assert "shown /" in body
     _, body = _post(server, "/tree", {})
     assert "items: " in body
     _, body = _post(server, "/select-all", {})
@@ -354,7 +349,7 @@ def test_endpoints_drive_the_same_actions(server, export_zip, tmp_path):
 
 
 def test_build_endpoint_writes_the_bundle(server, tmp_path, config_dir):
-    _post(server, "/select", {"key": DASH, "on": "1"})
+    _post(server, "/select", {"key": f"supermetric:{EMPTY_SM_ID}", "on": "1"})
     out = tmp_path / "from-endpoint.zip"
     _, body = _post(server, "/build", {"out": str(out)})
     assert f"bundle written to {out}" in body
@@ -369,6 +364,11 @@ def test_opening_an_export_that_is_not_one_says_so(server, tmp_path):
 
 
 ENDPOINT_FORMS = [
+    ("/inspector-tab", {"panel": "dependencies"}),
+    ("/expand-preview", {"expanded": "1"}),
+    ("/category", {"kind": "dashboard"}),
+    ("/select-shown", {}),
+    ("/remove-pick", {"key": DASH}),
     ("/open", {"zip": "/tmp/whatever.zip"}),
     ("/select", {"key": DASH, "on": "1"}),
     ("/select-all", {}),
@@ -419,7 +419,7 @@ def test_a_refused_cross_origin_build_writes_nothing(server, tmp_path):
 
 def test_the_page_still_works_with_no_export_open(config_dir):
     page = PageState().render()
-    assert "Open an export zip" in page
+    assert "Open a content export zip" in page
     assert "Start here" in page
 
 
@@ -468,7 +468,7 @@ def test_a_failed_open_over_http_keeps_the_selection(server, tmp_path):
     _post(server, "/select", {"key": DASH, "on": "1"})
     _, body = _post(server, "/open", {"zip": str(bad)})
     assert "is still open" in body
-    assert "<b>1</b> dashboard" in body
+    assert "1 picked +" in body
 
 
 def test_a_successful_open_still_resets_the_selection(state, tmp_path):

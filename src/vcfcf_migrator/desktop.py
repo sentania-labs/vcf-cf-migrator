@@ -53,6 +53,7 @@ _BRIDGE_JS = """
     new FormData(form).forEach(function (value, key) { data[key] = value; });
     var action = form.getAttribute('action') || '/';
     if (!window.migratorActivity.start(action)) { return; }
+    var navigation = window.migratorNavigation.capture(action);
     Promise.resolve().then(function () {
       return window.pywebview.api.act(action, data);
     }).then(function (res) {
@@ -63,7 +64,8 @@ _BRIDGE_JS = """
       // back to the top of a four-hundred-row tree. The server gets this from
       // a redirect; here it comes back beside the page.
       var target = res.anchor ? document.getElementById(res.anchor) : null;
-      if (target) { target.scrollIntoView(); } else { window.scrollTo(0, 0); }
+      if (navigation) { window.migratorNavigation.restore(navigation); }
+      else if (target) { target.scrollIntoView(); } else { window.scrollTo(0, 0); }
     }).catch(function (err) {
       // Without this the window just stops responding to a button, with
       // nothing on screen and the reason on a stderr nobody launched it from.

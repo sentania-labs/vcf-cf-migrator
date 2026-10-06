@@ -42,9 +42,17 @@ same release page.
 
 ![Tick a dashboard and the views and super metrics under it come with it](docs/selection-and-dependencies.png)
 
-Tick what you want. What it depends on comes with it, said out loud, and the
-tool will not let you drop something the rest of your selection still needs.
-Then Build the bundle, and import it on the target the way you exported.
+In the current development UI, choose a content type and search the inventory.
+Each object appears once. Click its name for Preview, Dependencies or Details;
+Expand preview gives a large dashboard more room. Select shown adds only the
+filtered results, while Select all includes the entire export.
+
+The bottom bar shows your picks plus automatically required objects. Review
+bundle lists the picks and dependencies before writing. Missing references
+block the UI build; remove the affected picks or open a more complete export.
+Removing a pick retains it if another pick still requires it. The command-line
+build behavior is unchanged. Import the completed bundle on the target the
+way you exported. Help & diagnostics contains the support and advanced controls.
 
 An imported dashboard finishes arriving in the background, which can take
 minutes or hours, and while it does its widgets may look empty. That is normal
