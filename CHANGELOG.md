@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Connect directly to Operations from the native window to download supported
+  custom content. Credentials are session-only, TLS is verified, and failed
+  acquisition preserves the current inventory. (#32)
+
 - Builds now refuse missing required dependencies in both the native window
   and command line, before touching the output file. Policy references remain
   visible but do not block a build. (#31)

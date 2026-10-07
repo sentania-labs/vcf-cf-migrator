@@ -40,7 +40,7 @@ button.primary { background:var(--accent); border-color:var(--accent); color:#ff
 button.primary:hover { background:#1a4fa0 }
 button.ghost { border-color:transparent; color:var(--ink2); padding:4px 7px }
 button.ghost:hover { border-color:var(--line); background:#fff }
-input[type=text], textarea { font:inherit; font-size:13px; padding:6px 9px; width:100%;
+input[type=text], input[type=url], input[type=password], textarea { font:inherit; font-size:13px; padding:6px 9px; width:100%;
   border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink) }
 textarea { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px }
 label { display:block; font-size:12px; color:var(--ink2); margin-bottom:3px }
@@ -84,7 +84,7 @@ header.top form .grow { flex:1 1 auto }
 ACTIVITY_JS = """
 <script>
 (function () {
-  var busy = false, timer = null;
+  var busy = false, timer = null, stageLabel = null;
   function finish() {
     busy = false;
     if (timer !== null) { clearInterval(timer); timer = null; }
@@ -95,6 +95,7 @@ ACTIVITY_JS = """
   function start(action) {
     if (busy) { return false; }
     busy = true;
+    stageLabel = null;
     document.body.setAttribute('aria-busy', 'true');
     var bar = document.createElement('div');
     bar.id = 'operation-progress';
@@ -103,21 +104,21 @@ ACTIVITY_JS = """
     status.setAttribute('role', 'status');
     status.style.cssText = 'background:#fff;border:1px solid #d9dee5;border-radius:9px;padding:24px;color:#1d2430;font:16px system-ui';
     var labels = {'/open':'Opening export', '/pick-export':'Choosing and opening export',
-      '/select-all':'Selecting content', '/select-shown':'Selecting shown content',
+      '/connect':'Connecting to Operations', '/select-all':'Selecting content', '/select-shown':'Selecting shown content',
       '/remove-pick':'Updating selection', '/clear':'Clearing selection',
       '/select':'Updating selection', '/build':'Building bundle',
       '/diagnostics':'Saving anonymized diagnostics'};
     var label = labels[action] || 'Updating page';
     var began = Date.now();
     function update() {
-      status.textContent = label + ' (' + Math.floor((Date.now() - began) / 1000) + ' seconds). Please wait.';
+      status.textContent = (stageLabel || label) + ' (' + Math.floor((Date.now() - began) / 1000) + ' seconds). Please wait.';
     }
     update();
     bar.appendChild(status); document.body.appendChild(bar);
     timer = setInterval(update, 1000);
     return true;
   }
-  window.migratorActivity = {start:start, finish:finish};
+  window.migratorActivity = {start:start, finish:finish, stage:function(text) { stageLabel = text; }};
   function captureNavigation(action) {
     if (action !== '/select' && !(action === '/preview' && window.innerWidth > 800)) { return null; }
     return {y:window.scrollY, focus:document.activeElement.id || ''};
