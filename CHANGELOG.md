@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Mac downloads now include a Finder `.app` with a stapled notarization
+  ticket, alongside the separate command-line executable. Apple silicon
+  and Intel archives remain separate. (#45)
+
 - Connect directly to Operations from the native window to download supported
   custom content. Credentials are session-only, TLS is verified, and failed
   acquisition preserves the current inventory. (#32)
