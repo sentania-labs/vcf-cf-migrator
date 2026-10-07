@@ -205,7 +205,7 @@ def test_nested_export_budget_includes_dashboard_owner_containers(monkeypatch, t
 
 def test_legacy_negotiation_only_replays_the_initial_get():
     values = replies()
-    values.insert(1, urllib.error.HTTPError('https://operations.example', 401, 'Unauthorized', {}, None))
+    values.insert(1, urllib.error.HTTPError('https://operations.example', 401, 'Unauthorized', {}, io.BytesIO(b'')))
     c, opener = client(values)
     snapshot = c.acquire('user', 'password')
     snapshot.close()
