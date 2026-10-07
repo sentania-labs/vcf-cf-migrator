@@ -206,7 +206,7 @@ jobs:
       - name: Exercise the packaged Mac window
         if: runner.os == 'macOS'
         run: |
-          python -m pip install pyobjc-framework-Quartz
+          python -m pip install pyobjc-framework-Quartz pyobjc-framework-Vision
           python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app'
 
       - name: Smoke the binary from a directory holding nothing else

@@ -1,6 +1,6 @@
 """Launch a packaged Mac app, use its native controls, and read the built ZIP.
 
-Requires a logged-in Mac graphical session and pyobjc-framework-Quartz.
+Requires a logged-in Mac graphical session and pyobjc-framework-Quartz / pyobjc-framework-Vision.
 Only invented content is used. A missing GUI or input permission fails the check.
 """
 from __future__ import annotations
@@ -31,6 +31,8 @@ def wait_for(predicate, timeout=45):
 def main():
     import Quartz
     from AppKit import NSRunningApplication
+    from Foundation import NSURL
+    import Vision
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('app', type=Path)
@@ -99,16 +101,33 @@ def main():
                         and w.get('kCGWindowBounds', {}).get('Width', 0) > 600), None)
 
                 native = wait_for(window)
-                bounds = native['kCGWindowBounds']
-                # Cocoa's title bar is outside the 1280x860 web content area.
-                # Coordinates match the synthetic one-object inventory/review.
-                title_height = bounds['Height'] - 860
-                assert bounds['Width'] >= 1280 and 0 <= title_height <= 60, bounds
+                def button_point(label):
+                    # Find the visible label, rather than assuming Cocoa and Qt
+                    # render fonts and control spacing at the same coordinates.
+                    capture = scratch / 'screen.png'
+                    subprocess.run(['screencapture', '-x', '-D', '1', str(capture)], check=True)
+                    request = Vision.VNRecognizeTextRequest.alloc().init()
+                    request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+                    request.setRecognitionLanguages_(['en-US'])
+                    handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(
+                        NSURL.fileURLWithPath_(str(capture)), {})
+                    ok, error = handler.performRequests_error_([request], None)
+                    if not ok:
+                        raise AssertionError('Could not read native control labels: ' + str(error))
+                    matches = [item for item in request.results() or []
+                               if str(item.topCandidates_(1)[0].string()).lower().startswith(label.lower())]
+                    if len(matches) != 1:
+                        return None
+                    rect = matches[0].boundingBox()
+                    screen = Quartz.CGDisplayBounds(display)
+                    return (screen.origin.x + (rect.origin.x + rect.size.width / 2) * screen.size.width,
+                            screen.origin.y + (1 - rect.origin.y - rect.size.height / 2) * screen.size.height)
+
                 wait_for(lambda: rendered_after('/open'))
-                for x, y, action in [(435, 266, '/select-all'), (1170, 827, '/tab'), (190, 458, '/build')]:
-                    # The completed render is observable; allow its native paint event to follow.
-                    time.sleep(.5)
-                    point = (bounds['X'] + x, bounds['Y'] + title_height + y)
+                for label, action in [('Select all', '/select-all'), ('Review bundle', '/tab'),
+                                      ('Build the bundle', '/build')]:
+                    point = wait_for(lambda: button_point(label))
+                    print('Clicking visible native control:', label, flush=True)
                     for event_type in (Quartz.kCGEventMouseMoved, Quartz.kCGEventLeftMouseDown,
                                        Quartz.kCGEventLeftMouseUp):
                         event = Quartz.CGEventCreateMouseEvent(None, event_type, point, Quartz.kCGMouseButtonLeft)
@@ -127,6 +146,8 @@ def main():
                 subprocess.run(['screencapture', '-x', str(args.screenshot)], check=False)
                 log.seek(0)
                 print(log.read())
+                if events_path.exists():
+                    print(events_path.read_text())
                 raise
             finally:
                 if running is not None:

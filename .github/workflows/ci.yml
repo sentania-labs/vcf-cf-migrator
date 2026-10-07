@@ -130,7 +130,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install packaging and native test dependencies
-        run: python -m pip install . pyinstaller pyobjc-framework-Quartz
+        run: python -m pip install . pyinstaller pyobjc-framework-Quartz pyobjc-framework-Vision
       - name: Build the application
         run: python packaging/build_macos.py
       - name: Exercise the packaged native window
