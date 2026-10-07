@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from vcfcf_migrator import __version__
 from vcfcf_migrator import preview
+from vcfcf_migrator.releases import RELEASE_PAGE
 from vcfcf_migrator.cli import version_lines
 from vcfcf_migrator.graph import KIND_ORDER
 from vcfcf_migrator.uipage import e, _button, anchor
@@ -19,6 +21,8 @@ KIND_LABELS = {
 STYLE = """
 header.top > form { flex:0 0 auto }
 header.top .ver { font-family:inherit }
+#release-notice { font-size:12px; white-space:nowrap; text-decoration:none }
+#release-notice:hover { text-decoration:underline }
 .workspace { display:grid; grid-template-columns:170px minmax(300px,1.25fr) minmax(300px,1fr);
   gap:16px; padding:16px 18px 110px; align-items:start }
 .workspace > * { min-width:0 }
@@ -126,7 +130,9 @@ def header(state):
                + _button('Connect and load', primary=True) + '</form></details>')
     title = ('Operations snapshot' if state.source_snapshot is not None else e(Path(state.zip_path).name)) if state.graph else 'Open a content export to begin'
     return ("<header class='top'><h1>VCF content migrator</h1>"
-            f"<span class='export-name'>{title}</span><span class='ver'>Local session</span>"
+            f"<span class='export-name'>{title}</span><span class='ver'>v{e(__version__)}</span>"
+            f"<a id='release-notice' href='{RELEASE_PAGE}' hidden "
+            "title='View the latest release on GitHub'></a>"
             + action('/tab', 'Inventory', {'tab': 'preview'})
             + action('/tab', 'Help & diagnostics', {'tab': 'settings'})
             + f"<details{' open' if not state.graph else ''}><summary>"

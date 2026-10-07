@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A small link beside the app version appears when a newer stable release is
+  available. The startup check runs in the background and stays quiet offline.
+
+## 0.5.1
+
 - Mac downloads now include a Finder `.app` with a stapled notarization
   ticket, alongside the separate command-line executable. Apple silicon
   and Intel archives remain separate. (#45)

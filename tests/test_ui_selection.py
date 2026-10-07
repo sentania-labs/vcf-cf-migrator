@@ -214,6 +214,12 @@ def test_the_page_carries_no_external_resource(state):
     for tab in TABS:
         state.tab = tab
         page = state.render()
+        # The update notice is an explicit outbound link, not a fetched page
+        # asset. Everything used to render the application remains local.
+        from vcfcf_migrator.releases import RELEASE_PAGE
+        link = f"href='{RELEASE_PAGE}'"
+        assert page.count(link) == 1
+        page = page.replace(link, '')
         assert "http://" not in page and "https://" not in page, tab
         # Busy feedback is local, inline code; no external script is loaded.
         assert page.count("<script>") == 1, tab
