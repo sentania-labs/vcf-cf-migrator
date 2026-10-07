@@ -22,27 +22,27 @@ Choose the archive for your computer and extract it:
 
 | Your computer | Download |
 | --- | --- |
-| Mac with Apple silicon (M-series chip) | `vcfcf-migrator-macos-arm64.zip` |
-| Mac with an Intel processor | `vcfcf-migrator-macos-x86_64.zip` |
+| Mac with Apple silicon (M-series chip) | `vcfcf-migrator-macos-arm64-app.zip` |
+| Mac with an Intel processor | `vcfcf-migrator-macos-x86_64-app.zip` |
 | Linux x86-64 | `vcfcf-migrator-linux.tar.gz` |
 | Windows x86-64 | `vcfcf-migrator-windows.zip` |
 
-Each archive contains `vcfcf-migrator`, or `vcfcf-migrator.exe` on Windows.
-Older releases provide executables directly, with the platform in the filename.
+On a Mac, **Apple menu > About This Mac** shows the chip or processor. Extract
+the archive, drag **VCF Content Migrator.app** to **Applications**, and open it.
+The app opens its own window without a Terminal window. Mac app downloads are
+signed and notarized, with the notarization ticket attached to the app.
 
-On a Mac, **Apple menu > About This Mac** shows the chip or processor.
-
-On Windows, double-click the extracted executable. On macOS or Linux, open a
-terminal in the extracted folder and run:
+On Windows, extract and double-click `vcfcf-migrator.exe`. On Linux, extract the
+archive, open a terminal in the extracted folder, and run:
 
 ```sh
 ./vcfcf-migrator
 ```
 
 If the executable permission was lost when extracting, run
-`chmod +x vcfcf-migrator` first. Keep the terminal open while using the app.
-All three platforms open a native window; the application does not start a
-local web server.
+`chmod +x vcfcf-migrator` first. Keep the terminal open while using the Linux
+app. All three platforms open a native window; the application does not start
+a local web server.
 
 Linux requires a graphical desktop and Qt's system libraries. The
 [Ubuntu 24.04 package list](packaging/linux-runtime.txt) names the required
@@ -150,6 +150,13 @@ Do not attach them, source exports, or screenshots containing private content
 to a public issue. Previously saved reports are not changed by an upgrade.
 
 ## Command-line use
+
+Mac command-line users can download `vcfcf-migrator-macos-arm64.zip` or
+`vcfcf-migrator-macos-x86_64.zip`. These separate archives each contain the
+standalone `vcfcf-migrator` executable. They do not require the `.app` to be
+installed. A bare Mac executable cannot carry an attached notarization ticket,
+so its first launch may need to contact Apple. Older releases provide
+executables directly, with the platform in the filename.
 
 The same tools are available from a terminal. These examples assume the
 executable is named `vcfcf-migrator` and is on your PATH; otherwise use its full

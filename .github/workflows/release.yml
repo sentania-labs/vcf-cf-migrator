@@ -73,7 +73,7 @@ jobs:
       # The secrets are sentania-labs org secrets (selected repositories);
       # the shared action tests them without printing them.
       - name: Refuse to start without every signing secret
-        uses: sentania-labs/.github/.github/actions/signing-secrets-present@bc00d7e652eda18b727b90b3b3236d4e5beb7720 # sentania-labs/.github main 2026-09-30
+        uses: sentania-labs/.github/.github/actions/signing-secrets-present@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github main 2026-10-07
         with:
           macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
           macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -158,9 +158,8 @@ jobs:
           # subcommand the binary claims, which is what would catch it.
           # pywebview picks its platform backend at runtime, which PyInstaller
           # cannot see by following imports, so without --collect-all the
-          # binary builds fine and then reports no native window. The feature
-          # would be gone with nothing failing: `ui` just opens a browser. The
-          # smoke step below is what makes that loud.
+          # binary can build successfully while losing its native backend.
+          # The smoke step below catches that before publication.
           extra="--collect-all webview"
           if [ "$RUNNER_OS" = "Linux" ]; then
             extra="$extra --hidden-import PySide6.QtWebEngineCore --hidden-import PySide6.QtWebEngineWidgets --hidden-import PySide6.QtWebChannel"
@@ -173,6 +172,10 @@ jobs:
             src/vcfcf_migrator/__main__.py
           ls -l dist/
 
+      - name: Build the Mac application
+        if: runner.os == 'macOS'
+        run: python packaging/build_macos.py
+
       # ---- macOS signing and notarization -------------------------------
       # The org's shared actions (sentania-labs/.github) do the work; their
       # comments carry the why (hardened runtime, timestamp, strict verify,
@@ -182,13 +185,30 @@ jobs:
       # seconds rather than after Apple's round trip.
       - name: Sign the binary (macOS)
         if: runner.os == 'macOS'
-        uses: sentania-labs/.github/.github/actions/macos-sign@bc00d7e652eda18b727b90b3b3236d4e5beb7720 # sentania-labs/.github main 2026-09-30
+        uses: sentania-labs/.github/.github/actions/macos-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github main 2026-10-07
         with:
           binary: dist/vcfcf-migrator${{ matrix.ext }}
           entitlements: packaging/macos-entitlements.plist
           macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
           macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
           macos-team-id: ${{ secrets.MACOS_TEAM_ID }}
+
+      - name: Sign the Mac application
+        if: runner.os == 'macOS'
+        uses: sentania-labs/.github/.github/actions/macos-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # main 2026-10-07
+        with:
+          bundle: dist/VCF Content Migrator.app
+          entitlements: packaging/macos-entitlements.plist
+          macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
+          macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+          macos-team-id: ${{ secrets.MACOS_TEAM_ID }}
+
+      - name: Exercise the packaged Mac window
+        if: runner.os == 'macOS'
+        run: |
+          python -m pip install pyobjc-framework-Quartz pyobjc-framework-Vision
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app'
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --objects 9000 --identities 113 --screenshot macos-app-large.png
 
       - name: Smoke the binary from a directory holding nothing else
         shell: bash
@@ -243,9 +263,19 @@ jobs:
 
       - name: Notarize (macOS)
         if: runner.os == 'macOS'
-        uses: sentania-labs/.github/.github/actions/macos-notarize@bc00d7e652eda18b727b90b3b3236d4e5beb7720 # sentania-labs/.github main 2026-09-30
+        uses: sentania-labs/.github/.github/actions/macos-notarize@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github main 2026-10-07
         with:
           binary: dist/vcfcf-migrator${{ matrix.ext }}
+          notary-issuer-id: ${{ secrets.NOTARY_ISSUER_ID }}
+          notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
+          notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
+
+      - name: Notarize and staple the Mac application
+        if: runner.os == 'macOS'
+        uses: sentania-labs/.github/.github/actions/macos-notarize@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # main 2026-10-07
+        with:
+          bundle: dist/VCF Content Migrator.app
+          output-zip: dist/vcfcf-migrator-${{ matrix.name }}-app.zip
           notary-issuer-id: ${{ secrets.NOTARY_ISSUER_ID }}
           notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
           notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
@@ -253,6 +283,18 @@ jobs:
       - name: Package the executable
         shell: bash
         run: python packaging/archive.py "dist/vcfcf-migrator${{ matrix.ext }}" "${{ matrix.name }}"
+
+      - name: Include the stapled Mac application archive
+        if: runner.os == 'macOS'
+        shell: bash
+        run: cp "dist/vcfcf-migrator-${{ matrix.name }}-app.zip" archives/
+
+      - name: Clean up signing material
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/signing.keychain-db}" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8"
 
       - name: Upload the archive
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

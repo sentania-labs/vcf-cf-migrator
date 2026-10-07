@@ -114,3 +114,33 @@ jobs:
           python "$checks" refusal refused.jsonl
           mkdir -p empty-corpus
           vcfcf-migrator corpus-check empty-corpus
+
+  macos-app:
+    # Native Mac packaging cannot be exercised on the Linux workstation.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Install packaging and native test dependencies
+        run: python -m pip install . pyinstaller pyobjc-framework-Quartz pyobjc-framework-Vision
+      - name: Build the application
+        run: python packaging/build_macos.py
+      - name: Exercise the packaged native window
+        run: |
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app'
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --objects 9000 --identities 113 --screenshot macos-app-large.png
+      - name: Save the synthetic-content screenshot
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: macos-app-smoke-${{ matrix.os }}
+          path: macos-app-*.png
+          if-no-files-found: ignore
