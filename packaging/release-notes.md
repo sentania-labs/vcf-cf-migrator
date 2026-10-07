@@ -1,3 +1,5 @@
+The app now shows a small link beside its version when a newer stable release is available. The check runs quietly in the background; clicking the link opens the release page in your browser. You choose when to download and install an update.
+
 Download the archive for your computer and extract it. On Mac, move **VCF Content Migrator.app** to Applications and open it. On Windows, open `vcfcf-migrator.exe`; on Linux, run `./vcfcf-migrator`.
 
 | Computer | Download |
