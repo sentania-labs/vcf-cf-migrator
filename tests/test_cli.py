@@ -432,9 +432,9 @@ def test_inspect_reports_navigation_links_pointing_outside_the_export(tmp_path, 
                                 first["widgets"][0]["id"] = widget
                                 first["dashboardNavigations"] = {
                                     widget: [
-                                        # one target inside the document, one
-                                        # naming something it does not carry
-                                        {"id": widget, "widgets": []},
+                                        # A self-link resolves by dashboard ID;
+                                        # a widget ID is not a dashboard target.
+                                        {"id": first['id'], "widgets": []},
                                         {"id": "a-dashboard-not-in-this-export",
                                          "widgets": []},
                                     ]}
@@ -450,4 +450,3 @@ def test_inspect_reports_navigation_links_pointing_outside_the_export(tmp_path, 
     assert "dashboard navigation links pointing outside this export: 2" in text
     assert main(["inspect", "--json", str(path)]) == 0
     assert json.loads(capsys.readouterr().out)["navigation_gaps"] == 2
-

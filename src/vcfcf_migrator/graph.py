@@ -25,6 +25,7 @@ From and to                   Spelling       Where it is read
 dashboard to view             uuid           widget ``config.viewDefinitionId``
 dashboard to supermetric      uuid and name  any string in the widget subtree
 dashboard to customgroup      name           widget scope, ``entryKeys.resource``
+dashboard to dashboard        uuid           ``dashboardNavigations`` target ``id``
 view to supermetric           uuid and name  any attribute or text value
 supermetric to supermetric    uuid and name  the ``formula`` field
 symptom to supermetric        uuid and name  any attribute or text value
@@ -96,6 +97,7 @@ from vcfcf_core.supermetrics.crossref import crossref_names
 
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator import runlog
+from vcfcf_migrator import navigation
 from vcfcf_migrator.containers import Container
 
 # The only regexes left, and both match inside a *value*, never across a
@@ -147,6 +149,7 @@ class Ref:
     ident: str
     via: str
     optional: bool = False
+    uuid_only: bool = False
 
 
 @dataclass
@@ -445,15 +448,15 @@ def _resource_names(node, where: str, unhandled: List[str]) -> List[str]:
 
 
 def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
-    """A dashboard's views, super metrics and custom group scopes.
+    """A dashboard's views, metrics, group scopes and navigation destinations.
 
     ``widgets`` is walked **wherever the key appears**, not only at the top and
     not only through ``config.widgets``. A dashboard document holds widget
     lists in at least three places: its own ``widgets``, a tab or group
     widget's ``config.widgets``, and each entry of ``dashboardNavigations``,
     which is keyed by widget uuid and whose values are ``{id, widgets}``
-    objects (15 widget-shaped objects across 8 dashboards on this corpus,
-    carrying no content reference today). Enumerating the places a field can
+    objects. Destination dashboard IDs are followed separately, and nested
+    widget IDs are checked against the destination document. Enumerating the places a field can
     appear is the same trap as enumerating the shapes a value can take, so the
     walk takes the key by name at any depth instead.
 
@@ -478,6 +481,11 @@ def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
     out: List[Ref] = []
     seen_views, seen_groups = set(), set()
     metric_values: List[str] = []
+    links, errors = navigation.links(doc)
+    out.extend(Ref('dashboard', target, 'dashboard navigation', uuid_only=True)
+               for target in dict.fromkeys(target for _, target, _ in links))
+    out.extend(Ref('dashboard navigation', error, 'dashboard navigation')
+               for error in dict.fromkeys(errors))
 
     widget_lists = [v for v in _json_values(doc, "widgets")]
     widget_ids = {w["id"] for lst in widget_lists if isinstance(lst, list)
@@ -727,6 +735,7 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
 def _build_graph(members: Dict[str, bytes]) -> Graph:
     found, unknown = _containers.discover(members)
     graph = Graph(containers=found, unknown_members=unknown)
+    dashboard_docs = {}
     for container in found:
         runlog.detail("container.found", member=container.member,
                       container=type(container).__name__,
@@ -762,6 +771,8 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 note = Note(node.key, f"{node.label()}: {text}")
                 if note not in graph.unhandled:
                     graph.unhandled.append(note)
+            if node.kind == 'dashboard':
+                dashboard_docs.setdefault(node.key, []).append(_json(entry.raw))
             if node.key in graph.nodes:
                 runlog.detail("node.duplicate", kind=node.kind, uuid=node.uuid or "",
                               name=node.name, member=container.member,
@@ -771,6 +782,13 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 # notification templates into both notificationrules.json and
                 # payloadtemplates.json). The first member wins the node; the
                 # bundle writer still carries both copies.
+                # Every retained dashboard copy contributes its dependencies,
+                # even when its display identity is duplicated.
+                if node.kind == 'dashboard':
+                    existing = graph.nodes[node.key].refs
+                    for ref in node.refs:
+                        if ref not in existing:
+                            existing.append(ref)
                 continue
             graph.nodes[node.key] = node
     runlog.count("nodes", len(graph.nodes))
@@ -778,11 +796,15 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
     _add_rule_template_refs(found, graph)
 
     index = _resolve_index(graph.nodes)
+    uuid_index = {}
+    for node in graph.nodes.values():
+        if node.uuid:
+            uuid_index.setdefault((node.kind, node.uuid), []).append(node.key)
     seen_gaps: set = set()
     for node in graph.nodes.values():
         targets: List[str] = []
         for ref in node.refs:
-            hits = index.get((ref.kind, ref.ident))
+            hits = (uuid_index if ref.uuid_only else index).get((ref.kind, ref.ident))
             if not hits:
                 # Two widgets on one dashboard can name the same absent
                 # object, which is one thing to tell the admin about, not
@@ -837,6 +859,7 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                                   spelling=_spelling(ref.ident), via=ref.via)
         graph.edges[node.key] = targets
         runlog.count("edges", len(targets))
+    _navigation_widget_gaps(graph, dashboard_docs, uuid_index)
     runlog.info("graph.built", counts=graph.counts(),
                 nodes=len(graph.nodes),
                 edges=sum(len(v) for v in graph.edges.values()),
@@ -844,6 +867,35 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 unhandled_shapes=len(graph.unhandled),
                 unknown_members=len(graph.unknown_members))
     return graph
+
+
+def _navigation_widget_gaps(graph, docs, uuid_index):
+    """A dashboard can exist while its named receiving widget is missing."""
+    widgets = {key: [navigation.widget_ids(doc) for doc in copies if isinstance(doc, dict)]
+               for key, copies in docs.items()}
+    for key, copies in docs.items():
+        gaps = []
+        for doc in copies:
+            if not isinstance(doc, dict):
+                continue
+            source_widgets = navigation.widget_ids(doc)
+            for source, target, receivers in navigation.links(doc)[0]:
+                if source not in source_widgets:
+                    gaps.append(MissingEdge(key, 'dashboard widget', source,
+                                            'dashboard navigation source widget'))
+                destinations = uuid_index.get(('dashboard', target), [])
+                # A missing dashboard already has a blocking gap. Validate
+                # every retained copy, not the union of their widget IDs.
+                for destination in destinations:
+                    for receiver in receivers:
+                        if any(receiver not in defined for defined in widgets[destination]):
+                            gaps.append(MissingEdge(key, 'dashboard widget', receiver,
+                                                    'dashboard navigation destination widget'))
+        for gap in dict.fromkeys(gaps):
+            graph.missing.append(gap)
+            runlog.content_id(gap.ident)
+            runlog.detail('ref.missing', source_key=key, wants=gap.kind,
+                          ident=gap.ident, via=gap.via, reason=missing_reason(gap))
 
 
 def _spelling(ident: str) -> str:
@@ -1008,6 +1060,17 @@ def missing_reason(gap: MissingEdge) -> str:
     """
     if gap.kind in NOT_A_DEPENDENCY:
         return runlog.prose(NOT_A_DEPENDENCY[gap.kind])
+    if gap.kind == 'dashboard widget':
+        return runlog.prose('the navigation names a widget absent from its dashboard; '
+                            'repair the link on the source and export again, or remove '
+                            'the affected dashboard from the selection; bundle creation is blocked')
+    if gap.kind == 'dashboard navigation':
+        return runlog.prose('the navigation structure cannot be resolved; repair the '
+                            'link on the source and export again; bundle creation is blocked')
+    if gap.kind == 'dashboard':
+        return runlog.prose('the referenced dashboard is absent from this export; '
+                            'export it as well or remove the dashboard that needs it; '
+                            'bundle creation is blocked even if it may exist on the target')
     if gap.kind in ("outboundsetting", "notificationtemplate"):
         what = ("an outbound setting is the admin's own endpoint configuration"
                 if gap.kind == "outboundsetting"
