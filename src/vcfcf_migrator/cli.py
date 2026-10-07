@@ -38,14 +38,7 @@ SPEC_POINTER = "knowledge/designs/content-migrator-v1.md in the factory repo"
 
 
 def version_lines() -> List[str]:
-    """What this build is, and what it can do on this machine.
-
-    The window line is not decoration. A one-file binary can be built without
-    the webview backend inside it, and the only visible symptom is that ``ui``
-    quietly opens a browser instead: the feature is gone and nothing says so.
-    Printing it here gives the release smoke something to assert against, so a
-    build that lost the window fails in CI rather than in front of a user.
-    """
+    """Versions and backend availability for support and release checks."""
     from vcfcf_migrator import desktop
 
     ok, why = desktop.available()
@@ -155,14 +148,8 @@ def build_parser() -> argparse.ArgumentParser:
                                            "a person reads")
     sp.add_argument("file", help="the log file, or - for stdin")
 
-    sp = sub.add_parser("ui", help="open the page in a window (or the browser with --server)")
+    sp = sub.add_parser("ui", help="open the native application window")
     sp.add_argument("zip", nargs="?", help="export zip to show on the page")
-    sp.add_argument("--server", action="store_true",
-                    help="use the browser instead: serve on 127.0.0.1 and open it")
-    sp.add_argument("--port", type=int, default=0,
-                    help="listen port for --server (default: a free one)")
-    sp.add_argument("--no-browser", action="store_true",
-                    help="with --server, do not open the browser")
     return p
 
 
@@ -298,6 +285,21 @@ def cmd_build(args) -> int:
         print("vcfcf-migrator build: the selection is empty, no bundle written", file=sys.stderr)
         return 1
 
+    # The one gate before the writer, shared with the page. No flag turns it
+    # off: Scott, 2026-10-05, "there should be no override - a missing
+    # dependency breaks the bundle - it's something we need to guard against."
+    try:
+        _selection.refuse_missing_dependencies(graph, picked)
+    except _selection.MissingDependency as e:
+        if args.json:
+            print(json.dumps({"refused": str(e),
+                              "selection": _selection.as_dict(graph, picked)}, indent=2))
+        print(f"vcfcf-migrator build: refused: {e}", file=sys.stderr)
+        for line in e.lines:
+            print(f"vcfcf-migrator build:   {line}", file=sys.stderr)
+        print("vcfcf-migrator build: no bundle written", file=sys.stderr)
+        return 1
+
     try:
         result = _bundle.build_bundle(members.data, members.order, graph, picked,
                                       args.out, marker=members.marker,
@@ -339,7 +341,7 @@ def cmd_log_render(args) -> int:
 
 def cmd_ui(args) -> int:
     from vcfcf_migrator import desktop
-    from vcfcf_migrator.ui import run_desktop, serve
+    from vcfcf_migrator.ui import run_desktop
 
     # The page is another way in to the same commands, so it takes the same
     # log settings: a flag the tool accepts and ignores is worse than one it
@@ -348,20 +350,13 @@ def cmd_ui(args) -> int:
                       log_cli=getattr(args, "log", None),
                       log_level_cli=getattr(args, "log_level", None),
                       log_format_cli=getattr(args, "log_format", None))
-    if not args.server:
-        ok, why = desktop.available()
-        if ok:
-            return run_desktop(zip_path=args.zip, **log_kwargs)
-        # Falling back silently would leave an admin wondering why the tool
-        # they were told opens a window opened a browser instead, and a
-        # listening socket would appear on a machine whose owner may have
-        # reasons to care.
-        print(f"vcfcf-migrator ui: no native window available here ({why});"
-              " falling back to the browser, which binds a local port."
-              " Use --server to ask for this without the warning.",
+    ok, why = desktop.available()
+    if not ok:
+        print(f"vcfcf-migrator ui: native window unavailable ({why}). "
+              "Install the desktop dependencies or use the command-line tools.",
               file=sys.stderr)
-    return serve(zip_path=args.zip, port=args.port, open_browser=not args.no_browser,
-                 **log_kwargs)
+        return 1
+    return run_desktop(zip_path=args.zip, **log_kwargs)
 
 
 COMMANDS = {

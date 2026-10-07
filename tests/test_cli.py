@@ -351,7 +351,7 @@ def test_no_command_opens_the_ui(argv, monkeypatch):
     monkeypatch.setitem(cli.COMMANDS, "ui", lambda a: seen.append(a) or 0)
     assert main(argv) == 0
     assert len(seen) == 1
-    assert seen[0].command == "ui" and seen[0].zip is None and not seen[0].server
+    assert seen[0].command == "ui" and seen[0].zip is None
 
 
 def test_exit_code_survives_the_console_script(tmp_path):
@@ -377,8 +377,12 @@ def test_the_ci_checker_agrees_with_the_fixture(export_zip, capsys, tmp_path):
     doc = json.loads(capsys.readouterr().out)
     assert "listing matches the fixture" in ci_checks.check_listing(doc)
 
+    # The workflows build the fixture's clean selection, since its select-all
+    # is refused (issue #31), and the checker hands them the lines.
+    picks = tmp_path / "picks.txt"
+    picks.write_text(ci_checks.clean_selection(), encoding="utf-8")
     out = tmp_path / "bundle.zip"
-    assert main(["build", str(export_zip), "--select-all", "--out", str(out)]) == 0
+    assert main(["build", str(export_zip), "--select", str(picks), "--out", str(out)]) == 0
     capsys.readouterr()
     assert main(["inspect", "--json", str(out)]) == 0
     built = json.loads(capsys.readouterr().out)

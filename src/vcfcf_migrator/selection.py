@@ -19,6 +19,14 @@ they are named the way the export names them
 
 A line that matches nothing is refused: continuing would write a bundle
 quietly missing what the admin asked for.
+
+A closed selection that still depends on content the export does not carry is
+refused too, by ``refuse_missing_dependencies``, which both ``build`` and the
+page's Build button call before the writer. There is no flag and no checkbox
+past it. Scott, 2026-10-05 (issue #31): "there should be no override - a
+missing dependency breaks the bundle - it's something we need to guard
+against." What counts as a missing dependency, and what is merely referenced
+but not carried, is ``graph.is_missing_dependency``.
 """
 from __future__ import annotations
 
@@ -28,11 +36,37 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from vcfcf_migrator import runlog
-from vcfcf_migrator.graph import Graph, MissingEdge, Node, missing_reason
+from vcfcf_migrator.graph import (
+    Graph,
+    MissingEdge,
+    Node,
+    is_missing_dependency,
+    missing_line,
+    missing_reason,
+)
 
 
 class BadSelection(Exception):
     """A selection file that names something the export does not carry."""
+
+
+class MissingDependency(Exception):
+    """A closed selection that depends on content the export does not carry.
+
+    Carries every missing dependency, so the caller can name all of them
+    rather than the first: an admin fixing an export wants the whole list.
+    ``lines`` is one readable line per dependency, the same line ``tree``
+    prints for it.
+    """
+
+    def __init__(self, gaps: Sequence[MissingEdge], lines: Sequence[str]):
+        self.gaps = list(gaps)
+        self.lines = list(lines)
+        super().__init__(
+            f"the selection depends on {len(self.gaps)} "
+            + ("object" if len(self.gaps) == 1 else "objects")
+            + " this export does not carry, and a bundle without them would break on "
+              "the target; export them as well, or leave out what depends on them")
 
 
 @dataclass
@@ -62,6 +96,16 @@ class Selection:
             if node is not None:
                 out[node.kind] = out.get(node.kind, 0) + 1
         return out
+
+    def missing_dependencies(self) -> List[MissingEdge]:
+        """The edges out of this selection a bundle would break without.
+        Non-empty means a build is refused."""
+        return [g for g in self.missing if is_missing_dependency(g)]
+
+    def not_carried(self) -> List[MissingEdge]:
+        """The edges out of this selection to content the tool never carries
+        and every instance has anyway: said, and not in the way."""
+        return [g for g in self.missing if not is_missing_dependency(g)]
 
 
 def parse_selection_file(path) -> List[str]:
@@ -144,9 +188,10 @@ def resolve(graph: Graph, lines: Sequence[str]) -> List[str]:
 def close(graph: Graph, keys: Sequence[str]) -> Selection:
     """Pull in everything the selected nodes depend on, recording why.
 
-    Dependencies the export does not carry are reported, not refused: the
-    target instance may already have the object, and the spec's baseline is
-    that the admin is never worse off than importing the whole export by hand.
+    Dependencies the export does not carry are collected here and said, in the
+    log and in the report; the closure itself does not refuse, because the
+    page shows a selection long before anything is built. Refusing is the
+    build's job, through ``refuse_missing_dependencies``.
     """
     with runlog.phase("select", picked=len(keys)):
         return _close(graph, keys)
@@ -210,18 +255,59 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
     selection.keys = ordered
     for gap in selection.missing:
         source = graph.nodes.get(gap.source_key)
-        runlog.detail("closure.not_carried", wants=gap.kind, ident=gap.ident,
-                      via=gap.via,
+        fields = dict(wants=gap.kind, ident=gap.ident, via=gap.via,
                       kind=source.kind if source else "", name=source.name if source else "",
-                      uuid=(source.uuid or "") if source else "",
-                      reason=runlog.prose(
-                          f"{missing_reason(gap)}, so it will be missing on import "
-                          "unless the target already has it"))
+                      uuid=(source.uuid or "") if source else "")
+        if is_missing_dependency(gap):
+            runlog.warn("closure.missing_dependency",
+                        reason=runlog.prose(f"{missing_reason(gap)}; a build of this "
+                                            "selection is refused while it depends on it"),
+                        **fields)
+        else:
+            runlog.detail("closure.not_carried",
+                          reason=runlog.prose(f"{missing_reason(gap)}, so it will be missing "
+                                              "on import unless the target already has it"),
+                          **fields)
     runlog.info("selection.closed", picked=len(selection.picked),
                 carried=len(selection.keys), added=len(selection.added),
-                counts=selection.counts(graph), not_carried=len(selection.missing),
+                counts=selection.counts(graph),
+                missing_dependencies=len(selection.missing_dependencies()),
+                not_carried=len(selection.not_carried()),
                 ambiguous=len(selection.ambiguous), unhandled=len(selection.unhandled))
     return selection
+
+
+def refuse_missing_dependencies(graph: Graph, selection: Selection) -> None:
+    """Raise ``MissingDependency`` if a bundle of *selection* would break.
+
+    The one gate between a closed selection and the writer, called by the
+    command line and by the page alike. It has no parameter that turns it
+    off, on purpose: a bundle that points at a view or a super metric it does
+    not carry imports and then shows an empty widget or a metric that never
+    computes, which is worse than no bundle, and the admin who wants it
+    anyway has a better move, which is to export the content it names.
+
+    Every refusal is logged with every dependency it names.
+    """
+    gaps = selection.missing_dependencies()
+    if not gaps:
+        return
+    lines = [missing_line(graph, gap) for gap in gaps]
+    for gap in gaps:
+        source = graph.nodes.get(gap.source_key)
+        runlog.error("build.missing_dependency", wants=gap.kind, ident=gap.ident,
+                     via=gap.via, kind=source.kind if source else "",
+                     name=source.name if source else "",
+                     uuid=(source.uuid or "") if source else "",
+                     owner=(source.owner or None) if source else None,
+                     reason=missing_reason(gap))
+    runlog.error("build.refused", missing_dependencies=len(gaps),
+                 wants=[f"{gap.kind}:{gap.ident}" for gap in gaps],
+                 carried=len(selection.keys),
+                 reason=runlog.prose("the selection depends on content this export does not "
+                                     "carry; a bundle without it breaks on the target, so no "
+                                     "bundle is written and nothing overrides this"))
+    raise MissingDependency(gaps, lines)
 
 
 def select_all(graph: Graph) -> Selection:
@@ -250,15 +336,25 @@ def render(graph: Graph, selection: Selection) -> str:
                      f"{len(selection.unhandled)}")
         for note in selection.unhandled:
             lines.append(f"  {note}")
-    if selection.missing:
-        lines.append(f"referenced but not carried: {len(selection.missing)}")
-        for gap in selection.missing:
-            source = graph.nodes.get(gap.source_key)
-            lines.append(f"  {gap.kind} [{gap.ident}] wanted by "
-                         f"{source.label() if source else gap.source_key} (via {gap.via}); "
-                         f"{missing_reason(gap)}, so it will be missing on import "
+    blocking = selection.missing_dependencies()
+    if blocking:
+        lines.append(f"missing dependencies: {len(blocking)}; a build of this selection "
+                     "is refused until the export carries them")
+        for gap in blocking:
+            lines.append("  " + missing_line(graph, gap))
+    not_carried = selection.not_carried()
+    if not_carried:
+        lines.append(f"referenced but not carried: {len(not_carried)}")
+        for gap in not_carried:
+            lines.append(f"  {missing_line(graph, gap)}, so it will be missing on import "
                          "unless the target already has it")
     return "\n".join(lines) + "\n"
+
+
+def _gap_dict(gap: MissingEdge) -> dict:
+    return {"source": gap.source_key, "kind": gap.kind, "ident": gap.ident, "via": gap.via,
+            "missing_dependency": is_missing_dependency(gap),
+            "reason": str(missing_reason(gap))}
 
 
 def as_dict(graph: Graph, selection: Selection) -> dict:
@@ -269,8 +365,9 @@ def as_dict(graph: Graph, selection: Selection) -> dict:
         "added": [{"key": a.key, "reason": a.reason} for a in selection.added],
         "ambiguous": list(selection.ambiguous),
         "unhandled_shapes": list(selection.unhandled),
-        "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via}
-                    for m in selection.missing],
+        "missing": [_gap_dict(m) for m in selection.missing],
+        "missing_dependencies": [_gap_dict(m) for m in selection.missing_dependencies()],
+        "not_carried": [_gap_dict(m) for m in selection.not_carried()],
     }
 
 

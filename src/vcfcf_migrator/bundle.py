@@ -31,7 +31,7 @@ from vcfcf_migrator import runlog
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator.containers import Container, zip_directory_entry, zip_entry
 from vcfcf_migrator.graph import Graph
-from vcfcf_migrator.selection import Selection
+from vcfcf_migrator.selection import Selection, refuse_missing_dependencies
 
 # Content kind -> the key configuration.json counts it under.
 MANIFEST_KEYS = {
@@ -196,6 +196,16 @@ def directory_entries(written: Sequence[str], source_directories: Sequence[str] 
 
 
 def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
+                 selection: Selection, out_path, marker: Optional[str] = None,
+                 directories: Sequence[str] = (),
+                 directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
+    """Refuse missing dependencies before creating or touching an output file."""
+    refuse_missing_dependencies(graph, selection)
+    return _write_bundle(members, member_order, graph, selection, out_path, marker,
+                         directories, directory_order)
+
+
+def _write_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
                  selection: Selection, out_path, marker: Optional[str] = None,
                  directories: Sequence[str] = (),
                  directory_order: Optional[Dict[str, int]] = None) -> BuildResult:

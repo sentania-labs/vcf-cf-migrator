@@ -149,30 +149,15 @@ def test_an_anchor_survives_a_name_that_is_not_ascii():
     assert anchor("kind:roots:view") == "node-kind-roots-view"
 
 
-def test_selecting_an_object_named_in_another_script_still_answers(config_dir, tmp_path):
-    """End to end over the real server, because the failure was in the header
-    rather than in anything a direct call would reach."""
-    import threading
-    import urllib.parse
-    import urllib.request
+def test_selecting_an_object_named_in_another_script_still_answers(config_dir):
+    from vcfcf_migrator.desktop import Bridge
+    from vcfcf_migrator.ui import PageState
 
-    from vcfcf_migrator.ui import make_server
-
-    srv = make_server(port=0)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{srv.server_address[1]}"
-    try:
-        data = urllib.parse.urlencode({"key": "customgroup:クラスタ", "on": "1"}).encode()
-        req = urllib.request.Request(base + "/select", data=data,
-                                     headers={"Origin": base})
-        assert urllib.request.urlopen(req).status == 200
-        data = urllib.parse.urlencode({"id": "deps:customgroup:クラスタ", "on": "1"}).encode()
-        req = urllib.request.Request(base + "/disclose", data=data,
-                                     headers={"Origin": base})
-        assert urllib.request.urlopen(req).status == 200
-    finally:
-        srv.shutdown()
-        srv.server_close()
+    bridge = Bridge(PageState())
+    result = bridge.act('/select', {'key': 'customgroup:クラスタ', 'on': '1'})
+    assert '<!doctype html>' in result['html']
+    result = bridge.act('/disclose', {'id': 'deps:customgroup:クラスタ', 'on': '1'})
+    assert '<!doctype html>' in result['html']
 
 
 # ---------------------------------------------------------------------------

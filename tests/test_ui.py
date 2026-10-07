@@ -3,52 +3,42 @@ from __future__ import annotations
 
 import html
 import json
-import threading
-import urllib.error
-import urllib.parse
-import urllib.request
 
 import pytest
 
 import vcfcf_core
 from vcfcf_migrator import __version__
 from vcfcf_migrator import settings
-from vcfcf_migrator.ui import make_server
-
+from vcfcf_migrator.ui import PageState
+from vcfcf_migrator.desktop import Bridge
 
 @pytest.fixture
 def server(config_dir, export_zip):
-    srv = make_server(zip_path=str(export_zip), port=0)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    try:
-        yield srv
-    finally:
-        srv.shutdown()
-        srv.server_close()
+    state = PageState(str(export_zip))
+    yield Bridge(state)
+    state.log.close()
+
+def _post(bridge, path, form):
+    return "rendered", bridge.act(path, form)["html"]
+
+def _get(bridge, path="/"):
+    return "rendered", bridge._state.render()
 
 
-def _url(srv, path="/"):
-    return f"http://127.0.0.1:{srv.server_address[1]}{path}"
 
 
-def _get(srv, path="/"):
-    with urllib.request.urlopen(_url(srv, path)) as r:
-        return r.status, r.read().decode("utf-8")
 
 
-def _post(srv, path, form, headers=None):
-    data = urllib.parse.urlencode(form).encode()
-    req = urllib.request.Request(_url(srv, path), data=data, method="POST", headers=headers or {})
-    with urllib.request.urlopen(req) as r:
-        return r.status, r.read().decode("utf-8")
+
+
+
 
 
 def test_page_shows_versions_settings_and_listing(server):
     # The settings live on their own panel now; getting there is a post like
     # everything else, which is also what proves the tab strip works.
     status, body = _post(server, "/tab", {"tab": "settings"})
-    assert status == 200
+    assert status == "rendered"
     assert f"vcfcf-migrator {__version__}" in body
     assert f"vcfcf_core {vcfcf_core.__version__}" in body
     assert "id='corpus_dir'" in body and "value='corpus'" in body
@@ -63,15 +53,13 @@ def test_page_shows_versions_settings_and_listing(server):
     assert "id='zip'" in body
 
 
-def test_server_binds_loopback_only(server):
-    assert server.server_address[0] == "127.0.0.1"
 
 
 def test_saving_corpus_dir_persists_to_the_settings_file(server, config_dir):
     # Saving a setting leaves you on the panel you saved it from.
     _post(server, "/tab", {"tab": "settings"})
     status, body = _post(server, "/settings", {"corpus_dir": "/data/exports"})
-    assert status == 200
+    assert status == "rendered"
     assert "corpus directory saved to" in body
     saved = json.loads((config_dir / "settings.json").read_text())
     assert saved == {"corpus_dir": "/data/exports"}
@@ -80,29 +68,6 @@ def test_saving_corpus_dir_persists_to_the_settings_file(server, config_dir):
     assert settings.corpus_dir()[0].as_posix() == "/data/exports"
 
 
-def test_foreign_origin_post_is_refused_with_403(server, config_dir):
-    """Review W2: a page on another origin must not be able to post here."""
-    port = server.server_address[1]
-    for headers in ({"Origin": "http://evil.example"},
-                    {"Origin": "http://127.0.0.1:1"},
-                    {"Origin": f"http://localhost:{port + 1}"},
-                    {"Origin": "null"},
-                    {"Host": "evil.example"}):
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _post(server, "/settings", {"corpus_dir": "/pwned"}, headers=headers)
-        assert e.value.code == 403, headers
-        assert f"http://127.0.0.1:{port}, http://localhost:{port}" in e.value.read().decode()
-    assert not (config_dir / "settings.json").exists()
-    # The page's own origin (127.0.0.1 or localhost), and a bare same-host
-    # request with no Origin, pass.
-    status, _ = _post(server, "/settings", {"corpus_dir": "/ok"}, headers={"Origin": f"http://127.0.0.1:{port}"})
-    assert status == 200
-    status, _ = _post(server, "/settings", {"corpus_dir": "/ok-localhost"}, headers={"Origin": f"http://localhost:{port}"})
-    assert status == 200
-    status, _ = _post(server, "/settings", {"corpus_dir": "/ok-host"}, headers={"Host": f"localhost:{port}"})
-    assert status == 200
-    status, _ = _post(server, "/settings", {"corpus_dir": "/ok2"})
-    assert status == 200
 
 
 def test_environment_overrides_the_saved_setting(server, config_dir, monkeypatch):
@@ -140,10 +105,6 @@ def test_the_buttons_hand_back_the_equivalent_command_line(server, export_zip):
     assert "vcfcf-migrator corpus-check" in body
 
 
-def test_unknown_path_is_404(server):
-    with pytest.raises(urllib.error.HTTPError) as e:
-        _get(server, "/nope")
-    assert e.value.code == 404
 
 
 @pytest.mark.parametrize("path,expected", [

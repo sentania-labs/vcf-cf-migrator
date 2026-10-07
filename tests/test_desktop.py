@@ -94,12 +94,6 @@ def test_one_dispatch_writes_the_page_action_log_line():
     assert 'page.action' not in inspect.getsource(desktop)
 
 
-def test_the_post_handler_goes_through_dispatch():
-    src = inspect.getsource(ui._handler_for)
-    assert "dispatch(state," in src
-    # The handler must not run an action itself; that is what would let the
-    # two modes diverge.
-    assert "ACTIONS.get(" not in src
 
 
 def test_the_bridge_goes_through_dispatch():
@@ -118,7 +112,7 @@ def test_desktop_mode_binds_nothing(monkeypatch, config_dir, export_zip):
     assert ui.run_desktop(zip_path=str(export_zip)) == 0
     # origins is the server's same-origin allow list. Empty means there is no
     # socket for anything to reach.
-    assert opened["state"].origins == ()
+    assert opened["state"].graph is None
 
 
 def test_desktop_path_never_constructs_a_server():
@@ -135,29 +129,8 @@ def test_availability_reports_a_reason(monkeypatch):
         assert why, "a machine that cannot open a window must say why"
 
 
-def test_ui_falls_back_to_the_browser_and_says_why(monkeypatch, capsys, export_zip):
-    monkeypatch.setattr(desktop, "available", lambda: (False, "NoWebviewHere: nope"))
-    served = {}
-
-    def fake_serve(**kwargs):
-        served.update(kwargs)
-        return 0
-
-    monkeypatch.setattr(ui, "serve", fake_serve)
-    assert main(["ui", str(export_zip)]) == 0
-    assert served, "it must fall back to the server, not give up"
-    err = capsys.readouterr().err
-    assert "NoWebviewHere: nope" in err
-    assert "--server" in err
 
 
-def test_server_flag_skips_the_window_entirely(monkeypatch, export_zip):
-    def boom():
-        raise AssertionError("--server must not even ask about a window")
-
-    monkeypatch.setattr(desktop, "available", boom)
-    monkeypatch.setattr(ui, "serve", lambda **kwargs: 0)
-    assert main(["ui", str(export_zip), "--server"]) == 0
 
 
 # --- what the review caught, now guarded -----------------------------------
@@ -433,3 +406,28 @@ def test_a_dialog_returning_something_unusable_says_so_instead_of_crashing(state
     ui.dispatch(state, "/pick-export", {})
     assert "unusable" in state.error
     assert "bytes" in state.error
+
+
+def test_missing_window_fails_without_binding_a_socket(monkeypatch, capsys, export_zip):
+    import socket
+    monkeypatch.setattr(desktop, "available", lambda: (False, "backend unavailable"))
+    def refuse_bind(*args, **kwargs):
+        raise AssertionError("No UI path may bind a socket")
+    monkeypatch.setattr(socket.socket, "bind", refuse_bind)
+    assert main(["ui", str(export_zip)]) == 1
+    assert "native window unavailable" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["--server", "--port", "--no-browser"])
+def test_retired_server_options_are_rejected(flag):
+    with pytest.raises(SystemExit) as exc:
+        main(["ui", flag])
+    assert exc.value.code == 2
+
+
+def test_initial_export_opens_after_the_window_bridge_is_ready(config_dir):
+    page = desktop.page_html(ui.PageState(), initial_zip='/tmp/a</script>.zip')
+    assert "window.addEventListener('pywebviewready'" in page
+    assert 'input.form.requestSubmit()' in page
+    assert '/tmp/a</script>.zip' not in page
+    assert r'/tmp/a\u003c/script>.zip' in page

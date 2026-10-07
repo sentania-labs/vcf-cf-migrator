@@ -10,14 +10,21 @@ So the workflow asks here instead, and owns nothing:
 
     python tests/fixtures/ci_checks.py listing inspect.json
     python tests/fixtures/ci_checks.py listing bundle.json --bundle
+    python tests/fixtures/ci_checks.py clean-selection > picks.txt
     python tests/fixtures/ci_checks.py preview-object -> dashboard:<uuid>@<owner>
     python tests/fixtures/ci_checks.py python-floor   -> 3.9
     python tests/fixtures/ci_checks.py preview preview.html
     python tests/fixtures/ci_checks.py log run.jsonl
+    python tests/fixtures/ci_checks.py refusal refused.jsonl
 
 ``listing`` compares an ``inspect --json`` document against
 ``make_export_fixture.EXPECTED_ITEMS``, the same set the suite asserts on, so
-the two can never disagree.
+the two can never disagree. With ``--bundle`` it compares against
+``EXPECTED_CLEAN_ITEMS`` instead: the fixture's select-all depends on content
+the fixture leaves out on purpose, so ``build`` refuses it (issue #31), and
+the bundle the workflows build is ``clean-selection``, the largest selection
+of the fixture that builds. ``refusal`` checks the log of the select-all build
+the workflows run to prove the installed binary refuses it.
 
 Run from anywhere; the fixture module is found next to this file.
 """
@@ -31,8 +38,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from make_export_fixture import (  # noqa: E402
+    CLEAN_SELECTION,
     DASHBOARD_ID,
     EXPECTED_CARRIED,
+    EXPECTED_CLEAN_DASHBOARD_LISTINGS,
+    EXPECTED_CLEAN_ITEMS,
     EXPECTED_DASHBOARD_LISTINGS,
     EXPECTED_ITEMS,
     OWNER,
@@ -62,6 +72,34 @@ def python_floor() -> tuple:
 
 def python_floor_text() -> str:
     return ".".join(str(part) for part in python_floor())
+
+
+def clean_selection() -> str:
+    """The selection file the workflows build the fixture with: one line per
+    object, taken from the fixture module so the workflow owns none of it."""
+    return "".join(line + "\n" for line in CLEAN_SELECTION)
+
+
+def check_refusal(text: str) -> str:
+    """The log of a build that had to be refused: it was, it said why, it
+    named every missing dependency, and it ended with a non-zero exit.
+
+    The workflows run ``build --select-all`` on the fixture for exactly this,
+    since the fixture depends on content it leaves out on purpose. A binary
+    that wrote the bundle anyway would pass every other smoke step.
+    """
+    events = [json.loads(line) for line in text.splitlines() if line.strip()]
+    codes = [e["event"] for e in events]
+    assert "build.refused" in codes, sorted(set(codes))
+    refused = next(e for e in events if e["event"] == "build.refused")
+    named = [e for e in events if e["event"] == "build.missing_dependency"]
+    assert refused["missing_dependencies"] == len(named) > 0, (refused, len(named))
+    assert all(e["wants"] and e["reason"] for e in named), named
+    assert "output.fingerprint" not in codes, "a refused build wrote a bundle"
+    ends = [e for e in events if e["event"] == "run.end"]
+    assert ends and all(e["exit"] != 0 for e in ends), ends
+    return (f"the build was refused and named {len(named)} missing "
+            f"{'dependency' if len(named) == 1 else 'dependencies'}, exit {ends[-1]['exit']}")
 
 
 def preview_object() -> str:
@@ -126,9 +164,9 @@ def check_log(text: str) -> str:
 def check_listing(doc: dict, bundle: bool = False) -> str:
     """Compare an ``inspect --json`` document with what the fixture holds.
 
-    The same item set is expected of the source export and of a select-all
-    bundle built from it, which is the round trip in one line. They differ in
-    one thing: a bundle carries no member this tool does not understand, so
+    The source export lists every item; a bundle built from ``clean-selection``
+    lists EXPECTED_CLEAN_ITEMS, since the fixture's select-all is refused.
+    A bundle also carries no member this tool does not understand, so
     *bundle* flips the "carried, not inspected" assertion from the fixture's
     set to the empty set rather than skipping it.
 
@@ -136,9 +174,12 @@ def check_listing(doc: dict, bundle: bool = False) -> str:
     difference, so a failure says which items appeared or went missing rather
     than only that two numbers differ.
     """
+    expected = EXPECTED_CLEAN_ITEMS if bundle else EXPECTED_ITEMS
+    dashboard_listings = (EXPECTED_CLEAN_DASHBOARD_LISTINGS if bundle
+                          else EXPECTED_DASHBOARD_LISTINGS)
     got = {(item["kind"], item["name"], item["uuid"]) for item in doc["items"]}
-    extra = sorted(got - EXPECTED_ITEMS)
-    absent = sorted(EXPECTED_ITEMS - got)
+    extra = sorted(got - expected)
+    absent = sorted(expected - got)
     if extra or absent:
         raise AssertionError(
             f"the listing does not match the fixture: {len(absent)} expected item(s) "
@@ -147,11 +188,11 @@ def check_listing(doc: dict, bundle: bool = False) -> str:
     # (kind, name, uuid) collapses, so the total is derived rather than
     # compared: every expected item lists once, except dashboards, which list
     # once per owner.
-    unique_dashboards = sum(1 for kind, _n, _u in EXPECTED_ITEMS if kind == "dashboard")
-    want = len(EXPECTED_ITEMS) - unique_dashboards + EXPECTED_DASHBOARD_LISTINGS
+    unique_dashboards = sum(1 for kind, _n, _u in expected if kind == "dashboard")
+    want = len(expected) - unique_dashboards + dashboard_listings
     listings = len(doc["items"])
     assert listings == want, (listings, want, doc["counts"])
-    assert doc["counts"]["dashboard"] == EXPECTED_DASHBOARD_LISTINGS, doc["counts"]
+    assert doc["counts"]["dashboard"] == dashboard_listings, doc["counts"]
     want_carried = set() if bundle else EXPECTED_CARRIED
     assert set(doc["carried"]) == want_carried, (doc["carried"], want_carried)
     return (f"listing matches the fixture: {listings} items, {doc['counts']}"
@@ -163,8 +204,13 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="what", required=True)
     sub.add_parser("preview-object", help="an object of the fixture to preview")
     sub.add_parser("python-floor", help="the oldest Python this package supports")
+    sub.add_parser("clean-selection", help="the selection file of the fixture that builds, "
+                                           "one object per line")
     logs = sub.add_parser("log", help="check a run log the tool wrote")
     logs.add_argument("path", help="the jsonl log, or - for stdin")
+    refusal = sub.add_parser("refusal", help="check the run log of a build that had to be "
+                                             "refused for missing dependencies")
+    refusal.add_argument("path", help="the jsonl log, or - for stdin")
     prev = sub.add_parser("preview", help="check a preview HTML file")
     prev.add_argument("path", help="the HTML file, or - for stdin")
     listing = sub.add_parser("listing", help="check an inspect --json document")
@@ -179,6 +225,14 @@ def main(argv=None) -> int:
         return 0
     if args.what == "preview-object":
         print(preview_object())
+        return 0
+    if args.what == "clean-selection":
+        sys.stdout.write(clean_selection())
+        return 0
+    if args.what == "refusal":
+        text = (sys.stdin.read() if args.path == "-"
+                else Path(args.path).read_text(encoding="utf-8"))
+        print(check_refusal(text))
         return 0
     if args.what == "log":
         text = (sys.stdin.read() if args.path == "-"

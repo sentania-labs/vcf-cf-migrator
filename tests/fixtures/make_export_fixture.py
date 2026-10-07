@@ -152,6 +152,67 @@ EXPECTED_ITEMS = {
     ("outboundsetting", "[Fixture] Mail relay (StandardEmailPlugin)", ""),
 }
 EXPECTED_CARRIED = {"policies.xml"}
+
+# The fixture leaves objects out on purpose, so a select-all of it depends on
+# content it does not carry and ``build`` refuses it (issue #31). This is the
+# largest selection of it that builds: every object whose closure reaches
+# nothing absent. ``tests/test_issue_31_missing_dependency.py`` asserts that
+# it closes clean, that it is maximal (everything left out really does depend
+# on something absent), and that its bundle lists EXPECTED_CLEAN_ITEMS, so the
+# workflows can build it without owning a line of it. What is left out, and
+# why, so the list reads as a decision rather than an accident:
+#
+#   Cluster Overview (both owners)   names a view that is not here, and a super
+#                                     metric whose formula chain ends in a name
+#                                     nothing defines
+#   VM Overview                      embeds the VM List view, below
+#   Cluster List, VM List            each names a super metric that is not here,
+#                                     one by uuid and one at the end of the chain
+#   SM 1, SM 2, SM 3                 the chain: SM 3's formula names SM Nowhere
+#   CPU high, Cluster CPU alert      the symptom's threshold is on SM 2
+#   Cluster Report                   embeds Cluster List and Cluster Overview
+#   Cluster rule                     fires on an alert that is not here and
+#                                     sends to a webhook endpoint that is not
+#                                     here
+#
+# The three custom groups are in: Prod Clusters names a policy, and a policy is
+# never carried and never a missing dependency.
+CLEAN_SELECTION = (
+    f"dashboard:{EMPTY_DASHBOARD_ID}@{OWNER_2}",
+    f"view:{EMPTY_VIEW_ID}",
+    f"view:{EMPTY_CHART_VIEW_ID}",
+    f"supermetric:{EMPTY_SM_ID}",
+    f"customgroup:{GROUP_NAME}",
+    f"customgroup:{GROUP_NAME_2}",
+    f"customgroup:{GROUP_NAME_3}",
+    f"symptom:{EMPTY_SYMPTOM_ID}",
+    f"symptom:{CONDITIONLESS_SYMPTOM_ID}",
+    f"alert:{EMPTY_ALERT_ID}",
+    f"alert:{STATELESS_ALERT_ID}",
+    "recommendation:Recommendation-df-VMWARE-Fixture_Add_hosts",
+    f"recommendation:{EMPTY_RECOMMENDATION_ID}",
+    f"report:{EMPTY_REPORT_ID}",
+    f"notificationrule:{RULE_ID_2}",
+    f"notificationrule:{EMPTY_RULE_ID}",
+    f"notificationtemplate:{TEMPLATE_ID}",
+    f"notificationtemplate:{TEMPLATE_ID_2}",
+    "outboundsetting:StandardEmailPlugin/[Fixture] Mail relay",
+)
+# What a bundle of CLEAN_SELECTION lists: the same triples as EXPECTED_ITEMS,
+# minus what is left out above. Derived by name so the two sets cannot drift.
+_CLEAN_NAMES = {
+    "[Fixture] Empty Overview", "[Fixture] Empty List", "[Fixture] Empty Chart",
+    "[Fixture] SM Empty", GROUP_NAME, GROUP_NAME_2, GROUP_NAME_3,
+    "[Fixture] Symptom with no state", "[Fixture] Symptom with no condition",
+    "[Fixture] Alert with no symptoms", "[Fixture] Alert with no state",
+    "Add hosts to the cluster", "(unnamed)", "[Fixture] Empty Report",
+    "[Fixture] Host rule", "[Fixture] Rule with no conditions",
+    "[Fixture] Cluster template", "[Fixture] Host template",
+    "[Fixture] Mail relay (StandardEmailPlugin)",
+}
+EXPECTED_CLEAN_ITEMS = {item for item in EXPECTED_ITEMS if item[1] in _CLEAN_NAMES}
+# One dashboard, under one owner.
+EXPECTED_CLEAN_DASHBOARD_LISTINGS = 1
 # Which member each optional kind comes from, for the drop-a-member tests.
 MEMBER_FOR_KIND = {
     "report": "reports.zip",

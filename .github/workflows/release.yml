@@ -6,8 +6,9 @@
 # be built on Windows and a macOS binary on macOS.
 #
 # Order, each job a gate for the next: refuse a bad tag and run the suite;
-# build one binary per OS (two for macOS) and smoke it (version, inspect on a generated
-# fixture) from a directory holding nothing but the binary; then build the
+# build one binary per OS (two for macOS) and smoke it (every subcommand on a
+# generated fixture, including the refusal of a build with a missing
+# dependency) from a directory holding nothing but the binary; then build the
 # wheel and publish the GitHub Release, idempotently per tag.
 #
 # Signing and notarization are the org's shared actions in sentania-labs/.github
@@ -133,6 +134,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install . pyinstaller
 
+      - name: Install native Linux runtime
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          mapfile -t runtime_packages < packaging/linux-runtime.txt
+          sudo apt-get install -y xvfb xdotool "${runtime_packages[@]}"
+
+      - name: Exercise the native Linux window
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python tools/smoke_native.py
+
       - name: Build the one-file binary
         shell: bash
         run: |
@@ -149,13 +161,13 @@ jobs:
           # binary builds fine and then reports no native window. The feature
           # would be gone with nothing failing: `ui` just opens a browser. The
           # smoke step below is what makes that loud.
-          extra=""
-          if [ "$RUNNER_OS" != "Linux" ]; then
-            extra="--collect-all webview"
+          extra="--collect-all webview"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            extra="$extra --hidden-import PySide6.QtWebEngineCore --hidden-import PySide6.QtWebEngineWidgets --hidden-import PySide6.QtWebChannel"
           fi
           # shellcheck disable=SC2086
           python -m PyInstaller --onefile --clean --noconfirm \
-            --name "vcfcf-migrator-${{ matrix.name }}" \
+            --name "vcfcf-migrator" \
             --copy-metadata vcf-cf-migrator --copy-metadata vcf-cf-tooling-core \
             $extra \
             src/vcfcf_migrator/__main__.py
@@ -172,7 +184,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: sentania-labs/.github/.github/actions/macos-sign@bc00d7e652eda18b727b90b3b3236d4e5beb7720 # sentania-labs/.github main 2026-09-30
         with:
-          binary: dist/vcfcf-migrator-${{ matrix.name }}${{ matrix.ext }}
+          binary: dist/vcfcf-migrator${{ matrix.ext }}
           entitlements: packaging/macos-entitlements.plist
           macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
           macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -187,49 +199,66 @@ jobs:
           checks="$PWD/tests/fixtures/ci_checks.py"
           python tests/fixtures/make_export_fixture.py "$RUNNER_TEMP/fixture.zip"
           mkdir -p "$RUNNER_TEMP/smoke"
-          cp "dist/vcfcf-migrator-${{ matrix.name }}${{ matrix.ext }}" "$RUNNER_TEMP/smoke/"
+          cp "dist/vcfcf-migrator${{ matrix.ext }}" "$RUNNER_TEMP/smoke/"
           cd "$RUNNER_TEMP/smoke"
-          bin="./vcfcf-migrator-${{ matrix.name }}${{ matrix.ext }}"
+          bin="./vcfcf-migrator${{ matrix.ext }}"
           "$bin" version
           "$bin" inspect "$RUNNER_TEMP/fixture.zip"
           "$bin" inspect --json "$RUNNER_TEMP/fixture.zip" > inspect.json
           python "$checks" listing inspect.json
           "$bin" tree "$RUNNER_TEMP/fixture.zip"
-          "$bin" build "$RUNNER_TEMP/fixture.zip" --select-all --out bundle.zip
+          # The fixture's select-all depends on content the fixture leaves
+          # out on purpose, so build refuses it (#31): no override, no file.
+          # The bundle smoked here is the fixture's clean selection, whose
+          # lines come from the fixture module, never from here.
+          python "$checks" clean-selection > picks.txt
+          "$bin" build "$RUNNER_TEMP/fixture.zip" --select picks.txt --out bundle.zip
           "$bin" inspect --json bundle.zip > bundle.json
           python "$checks" listing bundle.json --bundle
+          # And the refusal, on the shipped binary: a non-zero exit, no file,
+          # and every missing dependency in the log.
+          if "$bin" --log refused.jsonl build "$RUNNER_TEMP/fixture.zip" --select-all --out refused.zip; then
+            echo "::error::the binary wrote a bundle for a selection with missing dependencies"
+            exit 1
+          fi
+          if [ -e refused.zip ]; then
+            echo "::error::a refused build left refused.zip behind"
+            exit 1
+          fi
+          python "$checks" refusal refused.jsonl
           mkdir -p empty-corpus
           "$bin" corpus-check empty-corpus
           # The binary must report the tag's version, not a dev version.
           "$bin" version | grep -F "vcfcf-migrator ${GITHUB_REF_NAME#v}"
-          # And on a platform that has a system webview, the window has to
-          # have survived the bundling. A binary that lost it still passes
-          # every other check here and then silently opens a browser, which is
-          # the failure this line exists to catch. Linux is not asserted
-          # either way: it has no webview backend by design and the browser
-          # mode is its supported path.
+          # Every platform must retain its native window backend in the binary.
           "$bin" version
-          if [ "$RUNNER_OS" != "Linux" ]; then
-            "$bin" version | grep -F "native window: available" || {
-              echo "::error::this build lost the native window; PyInstaller did not bundle the webview backend"
-              exit 1
-            }
-          fi
+          "$bin" version | grep -F "native window: available" || {
+            echo "::error::this build lost the native window backend"
+            exit 1
+          }
+
+      - name: Exercise the packaged Linux window
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' python tools/smoke_frozen_linux.py dist/vcfcf-migrator
 
       - name: Notarize (macOS)
         if: runner.os == 'macOS'
         uses: sentania-labs/.github/.github/actions/macos-notarize@bc00d7e652eda18b727b90b3b3236d4e5beb7720 # sentania-labs/.github main 2026-09-30
         with:
-          binary: dist/vcfcf-migrator-${{ matrix.name }}${{ matrix.ext }}
+          binary: dist/vcfcf-migrator${{ matrix.ext }}
           notary-issuer-id: ${{ secrets.NOTARY_ISSUER_ID }}
           notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
           notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
 
-      - name: Upload the binary
+      - name: Package the executable
+        shell: bash
+        run: python packaging/archive.py "dist/vcfcf-migrator${{ matrix.ext }}" "${{ matrix.name }}"
+
+      - name: Upload the archive
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: vcfcf-migrator-${{ matrix.name }}
-          path: dist/vcfcf-migrator-${{ matrix.name }}${{ matrix.ext }}
+          path: archives/*
           if-no-files-found: error
 
   publish:
@@ -264,10 +293,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          chmod +x binaries/vcfcf-migrator-linux binaries/vcfcf-migrator-macos-arm64 binaries/vcfcf-migrator-macos-x86_64
           ls -l binaries/
           TAG="$GITHUB_REF_NAME"
-          ASSETS="dist/*.whl binaries/vcfcf-migrator-linux binaries/vcfcf-migrator-macos-arm64 binaries/vcfcf-migrator-macos-x86_64 binaries/vcfcf-migrator-windows.exe"
+          ASSETS="dist/*.whl binaries/*.zip binaries/*.tar.gz"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # shellcheck disable=SC2086
             gh release upload "$TAG" $ASSETS --clobber --repo "$GITHUB_REPOSITORY"
@@ -276,5 +304,5 @@ jobs:
             gh release create "$TAG" $ASSETS \
               --repo "$GITHUB_REPOSITORY" \
               --title "vcf-cf-migrator $TAG" \
-              --notes "Binaries for Linux, macOS (arm64 and x86_64) and Windows plus the Python wheel. Install: download the binary for your OS, or pip install the wheel URL. See README.md."
+              --notes-file packaging/release-notes.md
           fi

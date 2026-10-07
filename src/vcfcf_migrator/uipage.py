@@ -1,7 +1,7 @@
 """Shared page shell, activity feedback and support controls.
 
 Inventory and review rendering lives in workspace.py. Controls remain forms,
-so the browser and native window use the same actions and no remote assets.
+submitted through the native bridge, with no remote assets.
 """
 from __future__ import annotations
 
@@ -237,11 +237,11 @@ def _messages(state) -> str:
 
 
 def _build_form(state) -> str:
-    ready = bool(state.selection and state.selection.keys and not state.selection.missing)
+    ready = bool(state.selection and state.selection.keys and not state.selection.missing_dependencies())
     reasons = []
     if not (state.selection and state.selection.keys):
         reasons.append("pick at least one object")
-    if state.selection and state.selection.missing:
+    if state.selection and state.selection.missing_dependencies():
         reasons.append("resolve the missing references before building")
     return "".join([
         "<hr style='border:none;border-top:1px solid var(--line2);margin:14px 0'>",
@@ -259,27 +259,7 @@ def _build_form(state) -> str:
 
 
 def anchor(key: str) -> str:
-    """The element id of a node's row, and the only definition of it.
-
-    This used to return the bare slug while the row was rendered with a
-    "node-" prefix glued on at the point of use, so the anchor an action
-    returned named nothing on the page. The browser's redirect to /#<slug>
-    matched no element and the desktop window's lookup found none either: in
-    both modes every click on a tree halfway down jumped back to the top,
-    which is the exact thing the anchor exists to prevent. One function now
-    produces the id and the row uses it verbatim.
-    """
-    # ASCII only. str.isalnum() is true for Japanese, Cyrillic and every other
-    # script, and the server puts this value straight into a Location header,
-    # which http.server encodes as Latin-1: a custom group named in Japanese
-    # raised UnicodeEncodeError and the response was dropped, so the click did
-    # nothing. That predates disclosures, since selecting a row anchors the
-    # same way.
-    #
-    # A key that is already plain ASCII is spelled exactly as before, so the
-    # readable ids stay readable. Anything else keeps a short digest of the
-    # original, because collapsing every non-ASCII character to a dash would
-    # give two differently named groups the same id.
+    """Stable row ID, with a digest to distinguish non-ASCII names."""
     flat = "".join(ch if ("a" <= ch <= "z" or "A" <= ch <= "Z" or "0" <= ch <= "9")
                    else "-" for ch in key)
     if not key.isascii():
@@ -415,11 +395,7 @@ def _settings_panel(state) -> str:
         _button("Save corpus directory"),
         "</form>",
         "</details>",
-        "<p class='note'><small>This page listens on 127.0.0.1 only, and a same-origin "
-        "check stops another web page in your browser from driving it. That is a CSRF "
-        "control, not an access control: any process on this machine can reach the port "
-        "while it is running, and the page reads and writes the paths you give it with "
-        "your own rights. Stop it with Ctrl-C in the terminal that started it."
-        "</small></p>",
+        "<p class='note'><small>The application runs in a native window. "
+        "It does not start a local web server. Close the window to stop.</small></p>",
         "</div>",
     ])

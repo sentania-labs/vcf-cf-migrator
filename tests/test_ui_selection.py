@@ -10,10 +10,6 @@ Fixture only. Nothing here reads the corpus.
 from __future__ import annotations
 
 import re
-import threading
-import urllib.error
-import urllib.parse
-import urllib.request
 import zipfile
 
 import pytest
@@ -28,7 +24,21 @@ from make_export_fixture import (
     VIEW_IDS,
 )
 from vcfcf_migrator.cli import main
-from vcfcf_migrator.ui import ACTIONS, POST_PATHS, PageState, make_server
+from vcfcf_migrator.ui import ACTIONS, POST_PATHS, PageState, dispatch
+from vcfcf_migrator.desktop import Bridge
+
+@pytest.fixture
+def server(config_dir, export_zip):
+    state = PageState(str(export_zip))
+    yield Bridge(state)
+    state.log.close()
+
+def _post(bridge, path, form):
+    return "rendered", bridge.act(path, form)["html"]
+
+def _get(bridge, path="/"):
+    return "rendered", bridge._state.render()
+
 
 DASH = f"dashboard:{DASHBOARD_ID}@{OWNER}"
 DASH_2 = f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"
@@ -42,29 +52,10 @@ def state(config_dir, export_zip):
     return PageState(str(export_zip))
 
 
-@pytest.fixture
-def server(config_dir, export_zip):
-    srv = make_server(zip_path=str(export_zip), port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield srv
-    finally:
-        srv.shutdown()
-        srv.server_close()
 
 
-def _post(srv, path, form, headers=None):
-    url = f"http://127.0.0.1:{srv.server_address[1]}{path}"
-    data = urllib.parse.urlencode(form).encode()
-    req = urllib.request.Request(url, data=data, method="POST", headers=headers or {})
-    with urllib.request.urlopen(req) as r:
-        return r.status, r.read().decode("utf-8")
 
 
-def _get(srv, path="/"):
-    with urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}{path}") as r:
-        return r.status, r.read().decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +323,7 @@ def test_build_reports_where_the_bundle_went_and_what_is_in_it(state, tmp_path):
 
 def test_endpoints_drive_the_same_actions(server, export_zip, tmp_path):
     status, body = _post(server, "/select", {"key": DASH, "on": "1"})
-    assert status == 200
+    assert status == "rendered"
     assert "pulled in" in body
     _, body = _post(server, "/select", {"key": VIEW, "on": "0"})
     assert "refused:" in body
@@ -362,59 +353,6 @@ def test_opening_an_export_that_is_not_one_says_so(server, tmp_path):
     _, body = _post(server, "/open", {"zip": str(bad)})
     assert "is not a zip file" in body or "cannot read" in body
 
-
-ENDPOINT_FORMS = [
-    ("/inspector-tab", {"panel": "dependencies"}),
-    ("/expand-preview", {"expanded": "1"}),
-    ("/category", {"kind": "dashboard"}),
-    ("/select-shown", {}),
-    ("/remove-pick", {"key": DASH}),
-    ("/open", {"zip": "/tmp/whatever.zip"}),
-    ("/select", {"key": DASH, "on": "1"}),
-    ("/select-all", {}),
-    ("/clear", {}),
-    ("/apply-lines", {"lines": DASH}),
-    ("/preview", {"key": DASH}),
-    ("/filter", {"filter": "x"}),
-    ("/build", {"out": "/tmp/pwned.zip"}),
-    ("/tree", {}),
-    ("/corpus-check", {"dir": "/tmp"}),
-    ("/inspect", {"zip": "/tmp/whatever.zip"}),
-    ("/settings", {"corpus_dir": "/pwned"}),
-    ("/run", {"cmd": "tree"}),
-    ("/diagnostics", {"out": "/tmp/pwned-diagnostics.jsonl"}),
-    # A cross-origin page must not be able to make the machine pop a file
-    # dialog, let alone act on what it returns.
-    ("/pick-export", {}),
-    ("/tab", {"tab": "settings"}),
-    ("/disclose", {"id": "kind:dashboard", "on": "1"}),
-]
-
-
-def test_the_cross_origin_test_covers_every_endpoint_the_server_has():
-    """The list above is derived, not remembered. A fifteenth entry in
-    ``ui.ACTIONS`` fails here until it is covered, which is the same
-    derive-do-not-hand-copy rule ``tests/fixtures/ci_checks.py`` exists for."""
-    assert {path for path, _form in ENDPOINT_FORMS} == set(POST_PATHS) == set(ACTIONS)
-
-
-@pytest.mark.parametrize("path,form", ENDPOINT_FORMS)
-def test_every_endpoint_refuses_a_cross_origin_post(server, path, form):
-    """A page on another origin must not be able to drive this one. The new
-    endpoints write files and read paths, so the rule matters more here than
-    it did when the page only saved settings."""
-    with pytest.raises(urllib.error.HTTPError) as e:
-        _post(server, path, form, headers={"Origin": "http://evil.example"})
-    assert e.value.code == 403
-    assert "cross-origin POST refused" in e.value.read().decode()
-
-
-def test_a_refused_cross_origin_build_writes_nothing(server, tmp_path):
-    out = tmp_path / "never.zip"
-    _post(server, "/select", {"key": DASH, "on": "1"})
-    with pytest.raises(urllib.error.HTTPError):
-        _post(server, "/build", {"out": str(out)}, headers={"Origin": "http://evil.example"})
-    assert not out.exists()
 
 
 def test_the_page_still_works_with_no_export_open(config_dir):

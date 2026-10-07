@@ -30,7 +30,7 @@ from ci_checks import python_floor, python_floor_text
 REPO = pathlib.Path(__file__).resolve().parent.parent
 # Everything this package ships or runs. ``build`` is a stale copy of the
 # tree and ``corpus`` is the admin's own data, which is never Python.
-ROOTS = ("src", "tools", "tests")
+ROOTS = ("src", "tools", "tests", "packaging")
 SKIP_PARTS = {".venv", "build", "corpus", ".pytest_cache", "__pycache__"}
 
 
