@@ -29,10 +29,12 @@ _BRIDGE_JS = """
     new FormData(form).forEach(function (value, key) { data[key] = value; });
     var action = form.getAttribute('action') || '/';
     if (!window.migratorActivity.start(action)) { return; }
+    if (action === '/connect') { form.reset(); }
     var navigation = window.migratorNavigation.capture(action);
     Promise.resolve().then(function () {
       return window.pywebview.api.act(action, data);
     }).then(function (res) {
+      data = null;
       var doc = new DOMParser().parseFromString(res.html, 'text/html');
       document.body.replaceWith(doc.body);
       if (doc.title) { document.title = doc.title; }
@@ -41,9 +43,10 @@ _BRIDGE_JS = """
       if (navigation) { window.migratorNavigation.restore(navigation); }
       else if (target) { target.scrollIntoView(); } else { window.scrollTo(0, 0); }
     }).catch(function (err) {
+      data = null;
       // Without this the window just stops responding to a button, with
       // nothing on screen and the reason on a stderr nobody launched it from.
-      banner('That action failed, and the page below may now be out of date: ' + err);
+      banner(action === '/connect' ? 'Connection failed. Check the source export job before retrying.' : 'That action failed, and the page below may now be out of date: ' + err);
     }).finally(function () { window.migratorActivity.finish(); });
   }, true);
 })();
@@ -208,6 +211,13 @@ def run(state: Any, title: str = "VCF content migrator", width: int = 1280,
     holder["window"] = webview.create_window(title, html=page_html(state, initial_zip),
                                              js_api=bridge, width=width,
                                              height=height)
+    def progress(stage):
+        try:
+            holder['window'].evaluate_js('window.migratorActivity.stage(' + json.dumps(stage) + ')')
+        except Exception:
+            pass
+
+    state.source_progress = progress
     import sys
 
     webview.start(gui="qt" if sys.platform.startswith("linux") else None, http_server=False)

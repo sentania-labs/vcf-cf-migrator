@@ -19,6 +19,7 @@ from vcfcf_migrator import graph as _graph
 from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator import settings as _settings
+from vcfcf_migrator import source as _source
 from vcfcf_migrator import uipage
 from vcfcf_migrator.export_reader import (
     NotAnExport,
@@ -96,6 +97,8 @@ class PageState:
         self.log_format_cli = log_format_cli
         # The native window supplies its file chooser before rendering.
         self.file_picker = None
+        self.source_snapshot = None
+        self.source_progress = lambda stage: None
         # Retain the selected panel across page redraws.
         self.tab = "preview"
         # Which disclosures the user has opened or closed, by id. A <details>
@@ -196,7 +199,7 @@ class PageState:
                         + _runlog.DIAGNOSTICS_CONTENTS)
 
     def default_diagnostics_out(self) -> str:
-        if not self.zip_path:
+        if not self.zip_path or self.source_snapshot is not None:
             return "vcfcf-migrator-diagnostics.jsonl"
         source = Path(self.zip_path)
         return str(source.with_name("vcfcf-migrator-diagnostics.jsonl"))
@@ -232,6 +235,8 @@ class PageState:
                 self.error += still
             return
 
+        if self.source_snapshot is None or Path(zip_path).resolve() != self.source_snapshot.path.resolve():
+            self.close_source()
         self.zip_path = zip_path
         self.members, self.graph = members, graph
         self.listing = self.command_output = self.build_report = ""
@@ -250,8 +255,40 @@ class PageState:
         self.message = (f"Opened {Path(zip_path).name}: {len(graph.nodes)} objects available"
                         if counts else f"{zip_path}: no content objects")
 
+    def close_source(self) -> None:
+        if self.source_snapshot is not None:
+            self.source_snapshot.close()
+            self.source_snapshot = None
+
+    @serialized
+    def connect_source(self, form: dict) -> None:
+        snapshot = None
+        try:
+            if not form.get('username') or not form.get('password') or not form.get('export_password'):
+                raise _source.SourceError('Enter your username, password, and an export encryption password.')
+            client = _source.Client(form.get('address', ''), ca_file=form.get('ca_file', '').strip(),
+                                    progress=self.source_progress)
+            snapshot = client.acquire(form['username'], form['password'],
+                                      form.get('auth_source', '').strip(), form['export_password'])
+            self.open_export(str(snapshot.path))
+            if self.zip_path != str(snapshot.path):
+                raise _source.SourceError('The downloaded export could not be read. The current inventory is unchanged.')
+            self.source_snapshot = snapshot
+            snapshot = None
+            self.message = ('Loaded Operations content. Keep the export encryption password for the target import. '
+                            'The downloaded source is temporary and is removed when replaced or the app closes.')
+        except _source.SourceError as exc:
+            self.error = str(exc)
+        except Exception:
+            # Never expose connection exceptions, which may contain request data.
+            self.error = 'The connection or content load failed. Check the source export job before retrying.'
+        finally:
+            form.clear()
+            if snapshot is not None:
+                snapshot.close()
+
     def default_out(self) -> str:
-        if not self.zip_path:
+        if not self.zip_path or self.source_snapshot is not None:
             return "bundle.zip"
         source = Path(self.zip_path)
         return str(source.with_name(source.stem + "-bundle.zip"))
@@ -575,7 +612,7 @@ def dispatch(state: "PageState", path: str, form: dict) -> str:
     # same exclusion rules as everything else.
     _runlog.set_current(state.log)
     _runlog.info("page.action", action=path,
-                 fields={k: v for k, v in form.items() if k != "lines"})
+                 fields={} if path == "/connect" else {k: v for k, v in form.items() if k != "lines"})
     with state.log.phase("page", action=path):
         return action(state, form) or ""
 
@@ -780,6 +817,7 @@ ACTIONS = {
     "/remove-pick": _act_remove_pick,
     "/settings": _act_settings,
     "/open": _act_open,
+    "/connect": lambda state, form: state.connect_source(form),
     "/pick-export": _act_pick_export,
     "/tab": _act_tab,
     "/disclose": _act_disclose,
@@ -810,6 +848,7 @@ def run_desktop(zip_path: Optional[str] = None, corpus_cli: Optional[str] = None
     try:
         desktop.run(state, initial_zip=zip_path)
     finally:
+        state.close_source()
         state.log.finish(what='page', failed=sys.exc_info()[1])
         state.log.close()
     return 0

@@ -57,6 +57,9 @@ header.top .ver { font-family:inherit }
 .review .err, .review .msg { margin:12px 0 }
 .review li { overflow-wrap:anywhere }
 .export-name { min-width:0; overflow-wrap:anywhere; flex:1 1 200px }
+.top form.connect-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px }
+.connect-form input { width:100%; box-sizing:border-box }
+.connect-form .note { grid-column:1/-1 }
 .top details { max-width:100%; min-width:0 }
 .top details[open] { flex-basis:100% }
 .top summary { cursor:pointer }
@@ -104,7 +107,24 @@ def header(state):
               + _button('Open export', primary=True) + '</form>')
     if state.file_picker is not None:
         change += action('/pick-export', 'Browse…')
-    title = e(Path(state.zip_path).name) if state.graph else 'Open a content export to begin'
+    change += ("<details class='source-connect'><summary>Connect to Operations</summary>"
+               "<p class='note'>Download custom content directly. Credentials are not saved. "
+               "Do not run another content export with this account while connecting.</p>"
+               "<form class='connect-form' method='post' action='/connect' autocomplete='off'>")
+    for name, label, kind, required in (
+            ('address', 'Operations HTTPS address', 'url', True),
+            ('username', 'Username', 'text', True),
+            ('password', 'Password', 'password', True),
+            ('auth_source', 'Authority source (optional)', 'text', False),
+            ('ca_file', 'Trusted CA PEM file path (optional)', 'text', False),
+            ('export_password', 'Export encryption password (keep for target import)', 'password', True)):
+        change += (f"<div class='field'><label for='source-{name}'>{label}</label>"
+                   f"<input id='source-{name}' name='{name}' type='{kind}' autocomplete='off'"
+                   + (' required' if required else '') + "></div>")
+    change += ("<p class='note'>Use an export password that meets Operations password requirements. "
+               "The source download is temporary; save your migration bundle before closing.</p>"
+               + _button('Connect and load', primary=True) + '</form></details>')
+    title = ('Operations snapshot' if state.source_snapshot is not None else e(Path(state.zip_path).name)) if state.graph else 'Open a content export to begin'
     return ("<header class='top'><h1>VCF content migrator</h1>"
             f"<span class='export-name'>{title}</span><span class='ver'>Local session</span>"
             + action('/tab', 'Inventory', {'tab': 'preview'})

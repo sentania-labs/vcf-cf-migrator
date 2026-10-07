@@ -85,6 +85,30 @@ export's names, layout, columns, and metric keys, but its values are invented.
 It cannot confirm that the target has the adapters or resources a dashboard
 needs.
 
+## Connect directly to Operations
+
+Instead of downloading an export yourself, expand **Open export > Connect to
+Operations**. Enter the HTTPS address, username, password, and an export
+encryption password. Add the authority source if your account requires one.
+For an internal certificate authority, provide the path to its trusted PEM CA
+file. Certificate verification is always enabled.
+
+Choose **Connect and load**. Operations exports the supported custom content;
+when the download finishes, select and build your bundle as usual. Keep the
+export encryption password for the target import. It must meet the source
+instance's password requirements.
+
+Credentials are not saved. The downloaded export is held in a private temporary
+folder until you replace it or close the app. Save your migration bundle before
+closing. After an abnormal shutdown, temporary files may remain on the workstation.
+
+Do not run another content export with the same account while connecting. The
+Operations API serves the account's latest export. The migrator checks the job
+identity before and after downloading, but cannot fully rule out a competing
+export started at the same time. If a connection fails or times out, check the
+source export job before trying again. Your existing inventory and selection
+remain available when the replacement cannot be loaded.
+
 ## What carries across
 
 Supported content includes dashboards, views, super metrics, custom groups,
