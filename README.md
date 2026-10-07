@@ -53,6 +53,13 @@ If your computer blocks the download, follow your organization's software
 approval process. Include the release version and the exact message when
 reporting a startup problem.
 
+When the app opens, it checks GitHub for a newer stable release in the
+background. If one is available, a small link beside the current version opens
+the release page in your default browser. You choose whether to download and
+install it. If you are offline or already up to date, no notice appears and
+you can keep working. The check sends no export content or Operations
+credentials. Command-line commands do not check for updates.
+
 ## Create a migration bundle
 
 1. **Export from the source.** In VCF Operations, go to **Administration >

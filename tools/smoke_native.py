@@ -51,6 +51,18 @@ def main():
         load_started = threading.Event()
         continue_load = threading.Event()
         original_open = state.open_export
+        check_started = threading.Event()
+        continue_check = threading.Event()
+        opened_releases = []
+
+        def delayed_release_check(version):
+            check_started.set()
+            if not continue_check.wait(30):
+                return None
+            return 'v99.0.0'
+
+        desktop.releases.newer_release = delayed_release_check
+        desktop.webbrowser.open = lambda url, new: opened_releases.append(url) or True
 
         def delayed_open(path):
             load_started.set()
@@ -70,12 +82,23 @@ def main():
             try:
                 window = webview.windows[0]
                 wait_for(load_started.is_set)
+                wait_for(check_started.is_set)
+                assert window.evaluate_js("document.getElementById('release-notice').hidden")
                 assert state.graph is None
                 wait_for(lambda: window.evaluate_js("document.body.getAttribute('aria-busy') === 'true' && document.getElementById('operation-progress').innerText.includes('Opening export')"))
                 wait_for(lambda: window.evaluate_js("document.getElementById('operation-progress').innerText.includes('(1 seconds)')"), timeout=3)
                 continue_load.set()
                 wait_for(lambda: state.graph is not None)
                 wait_for(lambda: window.evaluate_js("!document.body.hasAttribute('aria-busy') && Boolean(document.querySelector('form[action=\"/select\"]'))"))
+                # Content loading finishes while the update request is still
+                # deliberately stalled. Publishing the notice changes no form.
+                window.evaluate_js("document.querySelector('[name=filter]').value='unfinished search'")
+                continue_check.set()
+                wait_for(lambda: window.evaluate_js("document.getElementById('release-notice').textContent === 'v99.0.0 available ↗'"))
+                assert window.evaluate_js("document.querySelector('[name=filter]').value") == 'unfinished search'
+                window.evaluate_js("document.getElementById('release-notice').click()")
+                wait_for(lambda: len(opened_releases) == 1)
+                assert opened_releases == [desktop.releases.RELEASE_PAGE]
 
                 def submit(action, field=None, value=None):
                     selector = "f.getAttribute('action') === " + json.dumps(action)
@@ -88,6 +111,7 @@ def main():
                 wait_for(lambda: window.evaluate_js("!document.querySelector('form[action=\"/tab\"] button').disabled"))
                 submit('/tab', 'tab', 'review')
                 wait_for(lambda: window.evaluate_js("Boolean(document.getElementById('out'))"))
+                assert window.evaluate_js("!document.getElementById('release-notice').hidden")
                 output = scratch / 'bundle.zip'
                 window.evaluate_js("document.getElementById('out').value=" + json.dumps(str(output)))
                 submit('/build')
@@ -105,9 +129,10 @@ def main():
                 assert '[Fixture]' not in text
                 assert EMPTY_SM_ID not in text
                 assert json.loads(text.splitlines()[0])['kind'] == 'vcfcf-migrator-diagnostics'
-                print('Native delayed-load feedback, initial load, selection, build/readback, and anonymized diagnostics passed.', flush=True)
+                print('Native delayed-load feedback, update notice/browser link, initial load, selection, build/readback, and anonymized diagnostics passed.', flush=True)
             except Exception as exc:
                 continue_load.set()
+                continue_check.set()
                 failures.append(exc)
                 print(f'Native smoke failed: {exc}', file=sys.stderr, flush=True)
             finally:

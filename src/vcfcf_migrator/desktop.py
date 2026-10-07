@@ -1,13 +1,37 @@
 """Native webview window and action bridge. No local HTTP server is used."""
 
 import json
+import threading
+import webbrowser
 from typing import Any, Dict, Optional, Tuple
+
+from . import __version__, releases
 
 # Kept verbatim in one place so the test that proves the bridge carries a named
 # submit button has something to point at.
 _BRIDGE_JS = """
 <script>
 (function () {
+  var releaseTag = null;
+  function showRelease() {
+    var link = document.getElementById('release-notice');
+    if (link && releaseTag) {
+      link.textContent = releaseTag + ' available ↗';
+      link.hidden = false;
+    }
+  }
+  window.addEventListener('pywebviewready', function () {
+    window.pywebview.api.check_release().then(function (tag) {
+      releaseTag = tag;
+      showRelease();
+    }).catch(function () {});
+  }, {once: true});
+  document.addEventListener('click', function (ev) {
+    if (ev.target.closest && ev.target.closest('#release-notice')) {
+      ev.preventDefault();
+      window.pywebview.api.open_release().catch(function () {});
+    }
+  });
   function banner(text) {
     var bar = document.createElement('div');
     bar.setAttribute('role', 'alert');
@@ -37,6 +61,7 @@ _BRIDGE_JS = """
       data = null;
       var doc = new DOMParser().parseFromString(res.html, 'text/html');
       document.body.replaceWith(doc.body);
+      showRelease();
       if (doc.title) { document.title = doc.title; }
       // Keep the selected object in view after the page is redrawn.
       var target = res.anchor ? document.getElementById(res.anchor) : null;
@@ -138,6 +163,22 @@ class Bridge:
 
     def __init__(self, state: Any) -> None:
         self._state = state
+        self._release_lock = threading.Lock()
+        self._release_checked = False
+        self._release_tag = None
+
+    def check_release(self) -> Optional[str]:
+        # pywebview invokes bridge methods on worker threads. This lock is
+        # separate from content actions, so the network never holds them up.
+        with self._release_lock:
+            if not self._release_checked:
+                self._release_checked = True
+                self._release_tag = releases.newer_release(__version__)
+            return self._release_tag
+
+    def open_release(self) -> bool:
+        # Never accept a URL from the page or the release API.
+        return webbrowser.open(releases.RELEASE_PAGE, new=2)
 
     def act(self, path: str, form: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         from . import ui
