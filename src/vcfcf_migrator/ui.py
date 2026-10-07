@@ -199,7 +199,9 @@ class PageState:
                         + _runlog.DIAGNOSTICS_CONTENTS)
 
     def default_diagnostics_out(self) -> str:
-        if not self.zip_path or self.source_snapshot is not None:
+        if self.source_snapshot is not None:
+            return str(self.download_directory() / "vcfcf-migrator-diagnostics.jsonl")
+        if not self.zip_path:
             return "vcfcf-migrator-diagnostics.jsonl"
         source = Path(self.zip_path)
         return str(source.with_name("vcfcf-migrator-diagnostics.jsonl"))
@@ -287,8 +289,15 @@ class PageState:
             if snapshot is not None:
                 snapshot.close()
 
+    @staticmethod
+    def download_directory() -> Path:
+        downloads = Path.home() / 'Downloads'
+        return downloads if downloads.is_dir() else Path.home()
+
     def default_out(self) -> str:
-        if not self.zip_path or self.source_snapshot is not None:
+        if self.source_snapshot is not None:
+            return str(self.download_directory() / 'bundle.zip')
+        if not self.zip_path:
             return "bundle.zip"
         source = Path(self.zip_path)
         return str(source.with_name(source.stem + "-bundle.zip"))

@@ -90,6 +90,8 @@ class Client:
                  timeout=300, poll_interval=1):
         self.base = endpoint(address)
         self.token = None
+        self.auth_scheme = 'OpsToken'
+        self.try_legacy = True
         self.progress = progress or (lambda text: None)
         self.timeout = timeout
         self.poll_interval = poll_interval
@@ -103,7 +105,7 @@ class Client:
     def _request(self, path, data=None, extra_headers=None):
         headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
         if self.token:
-            headers['Authorization'] = 'vRealizeOpsToken ' + self.token
+            headers['Authorization'] = self.auth_scheme + ' ' + self.token
         headers.update(extra_headers or {})
         request = urllib.request.Request(self.base + path, headers=headers,
                                          data=json.dumps(data).encode() if data is not None else None)
@@ -112,6 +114,12 @@ class Client:
         except urllib.error.HTTPError as exc:
             code = exc.code
             exc.close()
+            if (code == 401 and self.token and self.try_legacy
+                    and path == '/content/operations/export' and data is None):
+                # Negotiate only on the first read, never retry an export POST.
+                self.try_legacy = False
+                self.auth_scheme = 'vRealizeOpsToken'
+                return self._request(path)
             messages = {
                 401: 'Authentication failed or the session expired. Check credentials and authority source.',
                 403: 'Operations refused the request. Check export permissions and whether another content job is running.',
@@ -166,7 +174,10 @@ class Client:
                 raise SourceError('Operations did not return a usable session token.')
             self.token = token
             result.clear()
-            previous = self._status()
+            try:
+                previous = self._status()
+            finally:
+                self.try_legacy = False
             if previous['state'] in ('INITIALIZED', 'RUNNING'):
                 raise SourceError('Another export is running. Let it finish before connecting.')
             previous_id = self._identity(previous) if previous['state'] != 'NOT_INITIALIZED' else None
@@ -234,4 +245,11 @@ class Client:
                 snapshot.close()
             raise
         finally:
+            if self.token:
+                try:
+                    with self._request('/auth/token/release', data={}):
+                        pass
+                except Exception:
+                    # Logout is best effort and must not replace the acquisition result.
+                    pass
             self.token = None

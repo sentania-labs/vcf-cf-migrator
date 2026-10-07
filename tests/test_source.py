@@ -25,6 +25,8 @@ class Opener:
 
     def open(self, request, timeout):
         self.requests.append(request)
+        if request.full_url.endswith('/auth/token/release'):
+            return Reply(b'')
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -58,7 +60,7 @@ def test_download_scope_auth_and_cleanup():
         assert c.token is None
         assert json.loads(opener.requests[0].data)['authSource'] == 'local'
         assert opener.requests[2].get_header('Encryptionpassword') == 'Export1!password'
-        assert all(r.get_header('Authorization') == 'vRealizeOpsToken test-token' for r in opener.requests[1:])
+        assert all(r.get_header('Authorization') == 'OpsToken test-token' for r in opener.requests[1:])
     finally:
         snapshot.close()
     assert not path.exists()
@@ -80,7 +82,7 @@ def test_running_export_is_not_replaced():
     c, opener = client([dict(token='test'), status(state='RUNNING')])
     with pytest.raises(source.SourceError, match='Another export is running'):
         c.acquire('user', 'pass')
-    assert len(opener.requests) == 2
+    assert len(opener.requests) == 3
     assert c.token is None
 
 
@@ -173,12 +175,12 @@ def test_snapshot_lifetime_and_output_location(monkeypatch, tmp_path):
     assert not state.error
     downloaded = Path(state.zip_path)
     assert downloaded.exists()
-    assert state.default_out() == 'bundle.zip'
-    assert state.default_diagnostics_out() == 'vcfcf-migrator-diagnostics.jsonl'
+    assert state.default_out() == str(state.download_directory() / 'bundle.zip')
+    assert state.default_diagnostics_out() == str(state.download_directory() / 'vcfcf-migrator-diagnostics.jsonl')
     state.open_export(str(downloaded.parent / '.' / downloaded.name))
     assert downloaded.exists()
     assert state.source_snapshot is not None
-    assert state.default_out() == 'bundle.zip'
+    assert state.default_out() == str(state.download_directory() / 'bundle.zip')
     state.open_export('missing.zip')
     assert downloaded.exists()
     export = tmp_path / 'fixture.zip'
@@ -199,3 +201,32 @@ def test_nested_export_budget_includes_dashboard_owner_containers(monkeypatch, t
     monkeypatch.setattr(source, 'MAX_EXPANDED', 1024)
     with pytest.raises(source.SourceError, match='expanded-size limit'):
         source.validate_size(outer)
+
+
+def test_legacy_negotiation_only_replays_the_initial_get():
+    values = replies()
+    values.insert(1, urllib.error.HTTPError('https://operations.example', 401, 'Unauthorized', {}, None))
+    c, opener = client(values)
+    snapshot = c.acquire('user', 'password')
+    snapshot.close()
+    assert opener.requests[1].get_header('Authorization') == 'OpsToken test-token'
+    assert opener.requests[2].get_header('Authorization') == 'vRealizeOpsToken test-token'
+    exports = [r for r in opener.requests if r.full_url.endswith('/content/operations/export') and r.data]
+    assert len(exports) == 1
+    assert opener.requests[-1].full_url.endswith('/auth/token/release')
+    assert opener.requests[-1].get_method() == 'POST'
+
+
+def test_release_failure_does_not_discard_successful_snapshot():
+    class FailedRelease(Opener):
+        def open(self, request, timeout):
+            if request.full_url.endswith('/auth/token/release'):
+                raise OSError('private response detail')
+            return super().open(request, timeout)
+    c = source.Client('https://operations.example', opener=FailedRelease(replies()), poll_interval=0)
+    snapshot = c.acquire('user', 'password')
+    try:
+        assert snapshot.path.exists()
+        assert c.token is None
+    finally:
+        snapshot.close()
