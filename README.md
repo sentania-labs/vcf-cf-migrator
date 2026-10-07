@@ -44,11 +44,10 @@ If the executable permission was lost when extracting, run
 All three platforms open a native window; the application does not start a
 local web server.
 
-Linux requires a graphical desktop and Qt's system libraries. On Ubuntu 24.04,
-the additional packages are `libxcb-cursor0`, `libxcb-icccm4`, `libxcb-image0`,
-`libxcb-keysyms1`, `libxcb-render-util0`, `libxkbcommon-x11-0`, `libegl1`,
-`libopengl0`, `libnss3`, and `libasound2t64`. Other distributions use different
-package names. The command-line tools also work without a graphical session.
+Linux requires a graphical desktop and Qt's system libraries. The
+[Ubuntu 24.04 package list](packaging/linux-runtime.txt) names the required
+runtime packages; other distributions use different package names. The
+command-line tools also work without a graphical session.
 
 If your computer blocks the download, follow your organization's software
 approval process. Include the release version and the exact message when

@@ -8,3 +8,12 @@ libegl1
 libopengl0
 libnss3
 libasound2t64
+libxcb-shape0
+libglib2.0-0t64
+libfontconfig1
+libdbus-1-3
+libxcomposite1
+libxdamage1
+libxfixes3
+libxtst6
+libgssapi-krb5-2

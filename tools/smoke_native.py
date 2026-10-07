@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -31,6 +32,14 @@ def wait_for(predicate, timeout=30):
 
 
 def main():
+    if sys.platform.startswith('linux'):
+        import PySide6
+        qt = Path(PySide6.__file__).parent / 'Qt'
+        for relative in ('plugins/platforms/libqxcb.so', 'libexec/QtWebEngineProcess'):
+            output = subprocess.check_output(['ldd', str(qt / relative)], text=True)
+            missing = [line.strip() for line in output.splitlines() if 'not found' in line]
+            if missing:
+                raise RuntimeError('Missing native runtime libraries: ' + '; '.join(missing))
     failures = []
     with tempfile.TemporaryDirectory(prefix='migrator-native-') as directory:
         scratch = Path(directory)
