@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import json
+from importlib.metadata import version
 from pathlib import Path
 import plistlib
 import socket
@@ -61,6 +62,8 @@ def main():
         info = plistlib.load(stream)
     assert info['CFBundleIdentifier'] == 'net.sentania.vcfcf-migrator'
     assert info['CFBundlePackageType'] == 'APPL'
+    expected_version = version('vcf-cf-migrator').split('+')[0].split('.dev')[0]
+    assert info['CFBundleVersion'] == info['CFBundleShortVersionString'] == expected_version
     executable = app / 'Contents' / 'MacOS' / info['CFBundleExecutable']
     assert executable.is_file()
     with tempfile.TemporaryDirectory(prefix='migrator-mac-') as directory:
@@ -133,8 +136,11 @@ def main():
                     def find():
                         point = button_point(label)
                         if point is None and scroll:
-                            Quartz.CGEventPost(Quartz.kCGHIDEventTap, Quartz.CGEventCreateScrollWheelEvent(
-                                None, Quartz.kCGScrollEventUnitLine, 1, -100000))
+                            # End scrolls the web document, even when the last
+                            # clicked control is in the fixed review footer.
+                            for down in (True, False):
+                                event = Quartz.CGEventCreateKeyboardEvent(None, 119, down)
+                                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
                         return point
                     point = wait_for(find)
                     print('Clicking visible native control:', label, flush=True)
@@ -176,7 +182,7 @@ def main():
                 log.seek(0)
                 print(log.read())
                 if events_path.exists():
-                    print(events_path.read_text())
+                    print('\n'.join(json.dumps(e) for e in events() if e.get('phase') in ('page', 'render')))
                 raise
             finally:
                 if running is not None:

@@ -12,12 +12,8 @@ def main():
         raise SystemExit('The Mac application must be built on macOS.')
     root = Path(__file__).resolve().parents[1]
     subprocess.run([
-        sys.executable, '-m', 'PyInstaller', '--onedir', '--windowed', '--clean', '--noconfirm',
-        '--name', APP_NAME, '--osx-bundle-identifier', 'net.sentania.vcfcf-migrator',
-        '--specpath', 'build/macos-spec', '--workpath', 'build/macos-app',
-        '--distpath', 'dist', '--collect-all', 'webview',
-        '--copy-metadata', 'vcf-cf-migrator', '--copy-metadata', 'vcf-cf-tooling-core',
-        'src/vcfcf_migrator/__main__.py',
+        sys.executable, '-m', 'PyInstaller', '--clean', '--noconfirm',
+        '--workpath', 'build/macos-app', '--distpath', 'dist', 'packaging/macos.spec',
     ], cwd=root, check=True)
     app = root / 'dist' / (APP_NAME + '.app')
     if not (app / 'Contents' / 'MacOS' / APP_NAME).is_file():

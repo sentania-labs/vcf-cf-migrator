@@ -5,6 +5,7 @@ dist/
 build/
 *.egg-info/
 *.spec
+!packaging/macos.spec
 corpus/
 .pytest_cache/
 .coverage
