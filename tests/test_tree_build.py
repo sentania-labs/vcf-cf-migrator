@@ -36,6 +36,7 @@ from make_export_fixture import (
     VIEW_IDS,
     build_export_zip,
 )
+from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator import graph as _graph
 from vcfcf_migrator import selection as _selection
@@ -460,7 +461,14 @@ def test_selecting_a_dashboard_pulls_in_its_view_and_super_metrics(graph):
 def test_closure_reports_a_dependency_the_export_does_not_carry(graph):
     picked = _selection.close(graph, [f"view:{VIEW_IDS[1]}"])
     assert [m.ident for m in picked.missing] == [ABSENT_SM_ID]
-    assert "it will be missing on import" in _selection.render(graph, picked)
+    # A super metric the export does not carry is a missing dependency: the
+    # report says so and says a build is refused, rather than hoping the
+    # target has it.
+    assert [m.ident for m in picked.missing_dependencies()] == [ABSENT_SM_ID]
+    assert picked.not_carried() == []
+    report = _selection.render(graph, picked)
+    assert "missing dependencies: 1; a build of this selection is refused" in report
+    assert "referenced but not carried" not in report
 
 
 def test_a_line_naming_nothing_is_refused(graph):
@@ -497,6 +505,7 @@ def test_comments_and_blank_lines_are_ignored(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _build(tmp_path, export_zip, lines=None, all_of_it=False):
+    """Build through the command line: the gate and the writer."""
     out = tmp_path / "bundle.zip"
     argv = ["build", str(export_zip), "--out", str(out)]
     if all_of_it:
@@ -508,15 +517,37 @@ def _build(tmp_path, export_zip, lines=None, all_of_it=False):
     return out, main(argv)
 
 
+def _write(tmp_path, export_zip, lines=None, all_of_it=False):
+    """Write a bundle through the writer the command calls after its gate.
+
+    The fixture leaves objects out on purpose, so most selections of it depend
+    on content it does not carry, and ``build`` refuses those (issue #31; the
+    refusal has its own tests in ``test_issue_31_missing_dependency.py``). The
+    pass-through contract the tests below hold the writer to is the writer's
+    own, so they reach it directly, with the same closure and the same
+    arguments the command passes it. ``test_a_build_through_the_page_is_the_
+    build_the_cli_writes`` holds the command to the same bytes.
+    """
+    members = read_members(export_zip)
+    graph = _graph.build_graph(members.data)
+    if all_of_it:
+        picked = _selection.select_all(graph)
+    else:
+        picked = _selection.close(graph, _selection.resolve(graph, list(lines or [])))
+    out = tmp_path / "bundle.zip"
+    _bundle._write_bundle(members.data, members.order, graph, picked, out,
+                         marker=members.marker, directories=members.directories,
+                         directory_order=members.directory_order)
+    return out
+
+
 def test_select_all_round_trips_every_item(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, all_of_it=True)
-    assert code == 0
+    out = _write(tmp_path, export_zip, all_of_it=True)
     assert read_export(out).counts() == read_export(export_zip).counts()
 
 
 def test_every_carried_document_is_byte_identical(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, all_of_it=True)
-    assert code == 0
+    out = _write(tmp_path, export_zip, all_of_it=True)
     source = _containers.documents(read_members(export_zip).data)
     built = _containers.documents(read_members(out).data)
     assert built.keys() == source.keys()
@@ -528,8 +559,7 @@ def test_select_all_leaves_every_container_structurally_identical(tmp_path, expo
     """Documents are copied, containers are rebuilt, so the container is the
     half that can drift. A select-all drops nothing, so nothing may change:
     this is the check that catches a rebuild quietly reshaping a member."""
-    out, code = _build(tmp_path, export_zip, all_of_it=True)
-    assert code == 0
+    out = _write(tmp_path, export_zip, all_of_it=True)
     source = _containers.container_shapes(read_members(export_zip).data)
     built = _containers.container_shapes(read_members(out).data)
     assert [k for k in source if k in built and built[k] != source[k]] == []
@@ -542,8 +572,7 @@ def test_select_all_preserves_both_name_map_shapes(tmp_path, export_zip):
     """8.x writes ruleNameToTemplateNameMap's entry as a single object, 9.x as
     a list. The fixture carries one block of each, and a select-all must
     reshape neither."""
-    out, code = _build(tmp_path, export_zip, all_of_it=True)
-    assert code == 0
+    out = _write(tmp_path, export_zip, all_of_it=True)
     source = json.loads(zipfile.ZipFile(export_zip).read("notificationrules.json"))
     built = json.loads(zipfile.ZipFile(out).read("notificationrules.json"))
     key = "ruleNameToTemplateNameMap"
@@ -558,8 +587,7 @@ def test_a_map_pair_is_judged_against_the_whole_bundle_not_one_member(tmp_path, 
     graph = _graph.build_graph(read_members(export_zip).data)
     rules = [n.key for n in graph.by_kind("notificationrule")]
     templates = [n.key for n in graph.by_kind("notificationtemplate")]
-    out, code = _build(tmp_path, export_zip, rules + templates)
-    assert code == 0
+    out = _write(tmp_path, export_zip, rules + templates)
     doc = json.loads(zipfile.ZipFile(out).read("notificationrules.json"))
     assert doc["NotificationRules"]["ruleNameToTemplateNameMap"] == json.loads(
         zipfile.ZipFile(export_zip).read("notificationrules.json")
@@ -593,8 +621,7 @@ def test_each_container_is_rebuilt_with_only_what_was_picked(tmp_path, export_zi
     readable with exactly that one document in it."""
     graph = _graph.build_graph(read_members(export_zip).data)
     node = graph.by_kind(kind)[0]
-    out, code = _build(tmp_path, export_zip, [node.key])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [node.key])
     # The closure decides how many of this kind ride along (one super metric
     # names another), and the rebuilt container must hold exactly those.
     closed = _selection.close(graph, [node.key])
@@ -617,8 +644,7 @@ def test_a_select_all_bundle_has_the_export_s_zip_entries(tmp_path, export_zip):
     INVALID_FILE_FORMAT before reading a document, because ``dashboards/`` and
     ``dashboardsharings/`` were not in it.
     """
-    out, code = _build(tmp_path, export_zip, all_of_it=True)
-    assert code == 0
+    out = _write(tmp_path, export_zip, all_of_it=True)
     source = zipfile.ZipFile(export_zip).namelist()
     bundle = zipfile.ZipFile(out).namelist()
     unknown = set(_graph.build_graph(read_members(export_zip).data).unknown_members)
@@ -628,8 +654,7 @@ def test_a_select_all_bundle_has_the_export_s_zip_entries(tmp_path, export_zip):
 
 
 def test_a_subset_bundle_carries_a_directory_entry_for_what_it_writes(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     names = zipfile.ZipFile(out).namelist()
     for name in names:
         if name.endswith("/"):
@@ -644,7 +669,7 @@ def test_a_subset_bundle_carries_a_directory_entry_for_what_it_writes(tmp_path, 
 
 def test_a_directory_entry_is_a_stored_empty_entry(tmp_path, export_zip):
     """The shape the factory's own packager writes, which imports."""
-    out, _code = _build(tmp_path, export_zip, all_of_it=True)
+    out = _write(tmp_path, export_zip, all_of_it=True)
     with zipfile.ZipFile(out) as z:
         entries = [i for i in z.infolist() if i.filename.endswith("/")]
     assert entries
@@ -660,8 +685,7 @@ def test_an_export_with_no_sharing_member_gets_one_synthesized(tmp_path):
     source = tmp_path / "no-sharing.zip"
     source.write_bytes(build_export_zip(
         without=[f"dashboardsharings/{OWNER}", f"dashboardsharings/{OWNER_2}"]))
-    out, code = _build(tmp_path, source, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
-    assert code == 0
+    out = _write(tmp_path, source, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     with zipfile.ZipFile(out) as z:
         assert f"dashboardsharings/{OWNER}" in z.namelist()
         assert z.read(f"dashboardsharings/{OWNER}") == b"[]"
@@ -694,8 +718,7 @@ def test_a_carried_owner_always_gets_a_sharing_member(tmp_path, sharing, why):
                 out.writestr(info, data)
         raw = rebuilt.getvalue()
     source.write_bytes(raw)
-    out_path, code = _build(tmp_path, source, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
-    assert code == 0, why
+    out_path = _write(tmp_path, source, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     with zipfile.ZipFile(out_path) as z:
         names = z.namelist()
         assert f"dashboards/{OWNER}" in names, why
@@ -708,8 +731,7 @@ def test_a_carried_owner_always_gets_a_sharing_member(tmp_path, sharing, why):
 
 def test_dashboards_are_rebuilt_per_owner_inner_zip(tmp_path, export_zip):
     node = f"dashboard:{DASHBOARD_ID}@{OWNER}"
-    out, code = _build(tmp_path, export_zip, [node])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [node])
     names = zipfile.ZipFile(out).namelist()
     assert f"dashboards/{OWNER}" in names
     assert f"dashboards/{OWNER_2}" not in names
@@ -722,11 +744,10 @@ def test_dashboards_are_rebuilt_per_owner_inner_zip(tmp_path, export_zip):
 
 
 def test_a_selection_crossing_two_owners_keeps_both_inner_zips(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, [
+    out = _write(tmp_path, export_zip, [
         f"dashboard:{DASHBOARD_ID}@{OWNER}",
         f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}",
     ])
-    assert code == 0
     names = zipfile.ZipFile(out).namelist()
     assert f"dashboards/{OWNER}" in names and f"dashboards/{OWNER_2}" in names
     listed = read_export(out)
@@ -737,8 +758,7 @@ def test_a_selection_crossing_two_owners_keeps_both_inner_zips(tmp_path, export_
 
 
 def test_the_same_uuid_under_two_owners_can_both_be_carried(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}"])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}"])
     assert read_export(out).counts()["dashboard"] == 2
     source = _containers.documents(read_members(export_zip).data)
     built = _containers.documents(read_members(out).data)
@@ -748,8 +768,7 @@ def test_the_same_uuid_under_two_owners_can_both_be_carried(tmp_path, export_zip
 
 
 def test_a_subset_bundle_carries_the_closure_and_nothing_more(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     assert read_export(out).counts() == {"dashboard": 1, "view": 2, "supermetric": 3,
                                         "customgroup": 2}
     names = zipfile.ZipFile(out).namelist()
@@ -757,8 +776,7 @@ def test_a_subset_bundle_carries_the_closure_and_nothing_more(tmp_path, export_z
 
 
 def test_the_manifest_counts_what_was_carried(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     manifest = json.loads(zipfile.ZipFile(out).read("configuration.json"))
     assert manifest["dashboards"] == 1 and manifest["views"] == 2 and manifest["superMetrics"] == 3
     assert manifest["type"] == "CUSTOM"
@@ -766,22 +784,19 @@ def test_the_manifest_counts_what_was_carried(tmp_path, export_zip):
 
 
 def test_the_marker_is_copied_byte_for_byte(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, all_of_it=True)
-    assert code == 0
+    out = _write(tmp_path, export_zip, all_of_it=True)
     source = zipfile.ZipFile(export_zip)
     marker = next(n for n in source.namelist() if n.endswith("L.v1"))
     assert zipfile.ZipFile(out).read(marker) == source.read(marker)
 
 
 def test_a_member_the_tool_does_not_understand_is_never_carried(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, all_of_it=True)
-    assert code == 0
+    out = _write(tmp_path, export_zip, all_of_it=True)
     assert "policies.xml" not in zipfile.ZipFile(out).namelist()
 
 
 def test_scaffolding_is_narrowed_to_what_the_bundle_holds(tmp_path, export_zip):
-    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"])
     zf = zipfile.ZipFile(out)
     users = json.loads(zf.read("usermappings.json"))["users"]
     assert [u["userId"] for u in users] == [OWNER_2]
@@ -916,8 +931,9 @@ def test_the_container_layer_reads_every_shape_inspect_claims(tmp_path, member, 
 def test_a_dashboard_only_ui_export_builds_and_round_trips(tmp_path):
     path = _one_member_export(tmp_path, "Dashboard-1757800000000.zip",
                               _ui_dashboard_archive(), "ui.zip")
-    out = tmp_path / "bundle.zip"
-    assert main(["build", str(path), "--select-all", "--out", str(out)]) == 0
+    # Its one dashboard names views and super metrics this one-member export
+    # does not carry, so the command refuses it; the round trip is the writer's.
+    out = _write(tmp_path, path, all_of_it=True)
     assert read_export(out).counts() == read_export(path).counts() == {"dashboard": 1}
     names = zipfile.ZipFile(out).namelist()
     assert "Dashboard-1757800000000.zip" in names
@@ -935,14 +951,12 @@ def test_an_inner_zip_keeps_its_siblings_through_a_rebuild(tmp_path, export_zip)
     rebuilt content.xml and drops everything else."""
     from make_export_fixture import VIEWS_SIBLING, VIEWS_SIBLING_BODY
 
-    out, code = _build(tmp_path, export_zip, all_of_it=True)
-    assert code == 0
+    out = _write(tmp_path, export_zip, all_of_it=True)
     inner = zipfile.ZipFile(io.BytesIO(zipfile.ZipFile(out).read("views.zip")))
     assert VIEWS_SIBLING in inner.namelist()
     assert inner.read(VIEWS_SIBLING).decode() == VIEWS_SIBLING_BODY
     # And on a subset, where only one view survives.
-    out, code = _build(tmp_path, export_zip, [f"view:{VIEW_IDS[1]}"])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [f"view:{VIEW_IDS[1]}"])
     inner = zipfile.ZipFile(io.BytesIO(zipfile.ZipFile(out).read("views.zip")))
     assert inner.read(VIEWS_SIBLING).decode() == VIEWS_SIBLING_BODY
 
@@ -1005,8 +1019,7 @@ def test_every_bundle_entry_carries_the_pinned_stamp(tmp_path, export_zip):
     """
     from vcfcf_migrator.containers import ZIP_EPOCH
 
-    out, code = _build(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
-    assert code == 0
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     checked = 0
     with zipfile.ZipFile(out) as bundle:
         for info in bundle.infolist():

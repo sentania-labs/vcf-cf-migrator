@@ -44,6 +44,17 @@ jobs:
           python -m pip install . pytest
           python -m pip show vcf-cf-tooling-core | head -3
 
+      - name: Install native Linux runtime
+        if: matrix.python == '3.12'
+        run: |
+          sudo apt-get update
+          mapfile -t runtime_packages < packaging/linux-runtime.txt
+          sudo apt-get install -y xvfb "${runtime_packages[@]}"
+
+      - name: Exercise the native Linux window
+        if: matrix.python == '3.12'
+        run: xvfb-run -a python tools/smoke_native.py
+
       - name: Run the suite
         run: python -m pytest -q
 
@@ -56,7 +67,7 @@ jobs:
         run: |
           python -m pip install vermin
           floor="$(python tests/fixtures/ci_checks.py python-floor)"
-          vermin --target="$floor-" --violations --no-tips src tools tests
+          vermin --target="$floor-" --violations --no-tips src tools tests packaging
 
       - name: Drive the installed console script over a generated fixture
         # This step owns no content number. The counts come from the fixture
@@ -79,11 +90,27 @@ jobs:
           vcfcf-migrator --log run.jsonl --log-level debug \
             preview fixture.zip "$(python "$checks" preview-object)" --out preview.html
           python "$checks" preview preview.html
+          # The fixture's select-all depends on content the fixture leaves
+          # out on purpose, so build refuses it (#31): no override, no file.
+          # The bundle this run checks is the fixture's clean selection, and
+          # its lines come from the fixture module, never from here.
+          python "$checks" clean-selection > picks.txt
           vcfcf-migrator --log run.jsonl --log-level debug \
-            build fixture.zip --select-all --out bundle.zip
+            build fixture.zip --select picks.txt --out bundle.zip
           vcfcf-migrator log-render run.jsonl > run.txt
           python "$checks" log run.jsonl
           vcfcf-migrator inspect --json bundle.zip > bundle.json
           python "$checks" listing bundle.json --bundle
+          # And the refusal itself, on the installed console script: a
+          # non-zero exit, no file, and every missing dependency in the log.
+          if vcfcf-migrator --log refused.jsonl build fixture.zip --select-all --out refused.zip; then
+            echo "::error::build wrote a bundle for a selection with missing dependencies"
+            exit 1
+          fi
+          if [ -e refused.zip ]; then
+            echo "::error::a refused build left refused.zip behind"
+            exit 1
+          fi
+          python "$checks" refusal refused.jsonl
           mkdir -p empty-corpus
           vcfcf-migrator corpus-check empty-corpus

@@ -119,7 +119,7 @@ def footer(state):
         return ''
     picked = len(state.picked)
     included = len(state.selection.keys) if state.selection else 0
-    missing = len(state.selection.missing) if state.selection else 0
+    missing = len(state.selection.missing_dependencies()) if state.selection else 0
     status = f'{missing} missing references' if missing else ('Ready to review' if included else 'Choose content')
     return ("<footer class='selection-bar'><div>"
             f"<strong>{picked} picked + {included - picked} required = {included} total objects</strong>"
@@ -247,11 +247,11 @@ def review(state):
     selection = state.selection
     if not selection or not selection.keys:
         return ''.join(out) + '<p>Pick at least one object before building.</p></div></main>'
-    if selection.missing:
+    if selection.missing_dependencies():
         out.append("<div class='err'><strong>Build is blocked by missing references</strong>"
                    '<p>Remove the affected picks or open an export that includes their dependencies. '
                    'A target instance might already have these objects, but this export cannot verify that.</p><ul>')
-        for gap in selection.missing:
+        for gap in selection.missing_dependencies():
             source = state.graph.nodes[gap.source_key]
             causes = ', '.join(display_name(state, n) for n in affected_picks(state, gap.source_key))
             out.append(f'<li>{e(display_name(state, source))} requires {e(gap.kind)} {e(gap.ident)} '
@@ -259,6 +259,11 @@ def review(state):
         out.append('</ul></div>')
     else:
         out.append("<p class='msg'>Ready to build. All recorded dependencies are included.</p>")
+    if selection.not_carried():
+        from vcfcf_migrator.graph import missing_line
+        out.append('<h3>Referenced but not carried</h3><ul>' + ''.join(
+            f'<li>{e(missing_line(state.graph, gap))}</li>'
+            for gap in selection.not_carried()) + '</ul>')
     for warnings, title in [(selection.ambiguous, 'Ambiguous references'),
                             (selection.unhandled, 'References not understood')]:
         if warnings:

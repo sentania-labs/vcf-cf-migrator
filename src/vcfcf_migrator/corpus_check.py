@@ -22,6 +22,16 @@ the admin's own data and a tool that writes there is a tool that can corrupt
 it. Every zip in the directory is checked the same way; nothing has to be
 declared about any of them.
 
+The select-all here goes to the writer without the missing-dependency gate
+that ``build`` and the page run (issue #31), and that is not an override of
+it: the gate protects a bundle an admin would import, and this bundle never
+leaves the scratch directory, which is deleted before the command returns.
+Real exports are full of references to management-pack content, so a gated
+select-all would refuse every one of them and the round trip, which is the
+only proof the container rebuild survives a real export, would never run.
+What a build would refuse is counted on the line instead, so the number is
+on the record rather than quiet.
+
 Exit status: non-zero only on an error.
 """
 from __future__ import annotations
@@ -82,7 +92,7 @@ def _check_one(path: Path, scratch: Path) -> str:
     try:
         picked = _selection.select_all(graph)
         out = scratch / (path.stem + "-bundle.zip")
-        result = _bundle.build_bundle(members.data, members.order, graph, picked,
+        result = _bundle._write_bundle(members.data, members.order, graph, picked,
                                       out, marker=members.marker,
                                       directories=members.directories,
                                       directory_order=members.directory_order)
@@ -125,9 +135,21 @@ def _check_one(path: Path, scratch: Path) -> str:
     if rebuilt.counts() != inspect_counts:
         return (f"error    {path.name}: the bundle does not carry what the export did: "
                 f"{_fmt(rebuilt.counts())} against {_fmt(inspect_counts)}")
-    missing = len(graph.missing)
-    tail = (f", {plural(missing, 'edge')} to objects a bundle cannot carry"
-            if missing else "")
+    blocking = sum(1 for gap in graph.missing if _graph.is_missing_dependency(gap))
+    not_carried = len(graph.missing) - blocking
+    tail = ""
+    if blocking:
+        # A build of this export's select-all would be refused for these; the
+        # scratch bundle above was written to check the containers, not to be
+        # imported, and it is gone by the time this line prints.
+        runlog.warn("corpus.missing_dependencies", zip=str(path), missing_dependencies=blocking,
+                    reason=runlog.prose("a build of this selection would be refused; the "
+                                        "scratch bundle checks the container rebuild only "
+                                        "and is deleted"))
+        tail += (f", {plural(blocking, 'missing dependency', 'missing dependencies')} "
+                 "a build would refuse")
+    if not_carried:
+        tail += f", {plural(not_carried, 'edge')} referenced but not carried"
     return (f"ok       {path.name}: {_fmt(inspect_counts)}; "
             f"{plural(rendered, 'object')} previewed; "
             f"select-all bundle round trips, {len(result.members)} members "

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Builds now refuse missing required dependencies in both the native window
+  and command line, before touching the output file. Policy references remain
+  visible but do not block a build. (#31)
+- Linux now uses a native Qt window. Removed the local web server, browser
+  fallback, and `--server`, `--port`, and `--no-browser` options.
+- The window opens before loading an initial export, so loading feedback is
+  visible instead of leaving the application apparently stuck at startup.
+- Platform downloads are archives that extract to `vcfcf-migrator` or
+  `vcfcf-migrator.exe`. Apple silicon and Intel Mac remain separate. (#16)
+- Rewrote the README around installation, migration steps, and troubleshooting.
+
 - **Inventory workspace and bundle review.** Browse one row per object with
   content-type and search filters, separate Select shown and Select all
   actions, and an inspector for previews, dependencies and details. Selection

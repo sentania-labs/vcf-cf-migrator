@@ -1,28 +1,6 @@
-"""The same page, in a window of its own, with no listener behind it.
+"""Native webview window and action bridge. No local HTTP server is used."""
 
-The browser mode in ``ui.py`` binds a loopback socket and points a browser at
-it. That works, but it puts a listening socket on an admin's workstation, and
-some sites will not have one, whatever the address it is bound to. Arguing
-about whether that policy is well founded does not help the admin standing in
-front of it.
-
-So this is the same page driven directly. The window is handed the rendered
-HTML rather than a URL, and a small script inside it hands form submissions
-back to Python through the webview's own bridge. Nothing binds a port, nothing
-listens, and no other process on the machine can reach it. That is a stronger
-position than the browser mode's same-origin check, which exists precisely
-because a bound socket is reachable by anything that can find it.
-
-What it is NOT is a second implementation of the page. It renders through
-``uipage`` and acts through ``ui.dispatch``, the same two calls the server
-makes, so a fix to either lands in both modes and the run log reads the same
-whichever window you opened.
-
-Not every machine can do this. It needs a system webview, which macOS and
-Windows have and a Linux box may not, so ``available()`` reports rather than
-assumes, and the CLI falls back to browser mode saying why.
-"""
-
+import json
 from typing import Any, Dict, Optional, Tuple
 
 # Kept verbatim in one place so the test that proves the bridge carries a named
@@ -45,9 +23,7 @@ _BRIDGE_JS = """
     ev.preventDefault();
     var data = {};
     // The submitting button goes in FIRST, so that a field of the same name
-    // wins over it. That is the order the server's parse uses, and the two
-    // modes have to agree about it or the same click does different things in
-    // each window.
+    // wins over it, including repeated fields in selection forms.
     var by = ev.submitter;
     if (by && by.name) { data[by.name] = by.value; }
     new FormData(form).forEach(function (value, key) { data[key] = value; });
@@ -60,9 +36,7 @@ _BRIDGE_JS = """
       var doc = new DOMParser().parseFromString(res.html, 'text/html');
       document.body.replaceWith(doc.body);
       if (doc.title) { document.title = doc.title; }
-      // The anchor is why selecting the twentieth object does not throw you
-      // back to the top of a four-hundred-row tree. The server gets this from
-      // a redirect; here it comes back beside the page.
+      // Keep the selected object in view after the page is redrawn.
       var target = res.anchor ? document.getElementById(res.anchor) : null;
       if (navigation) { window.migratorNavigation.restore(navigation); }
       else if (target) { target.scrollIntoView(); } else { window.scrollTo(0, 0); }
@@ -83,6 +57,7 @@ _BRIDGE_JS = """
 # exactly where it goes missing. Naming the backend here is what lets a build
 # that lost it fail in CI instead of on someone's desktop.
 _BACKENDS = {
+    "linux": ("webview.platforms.qt",),
     "darwin": ("webview.platforms.cocoa",),
     "win32": ("webview.platforms.edgechromium", "webview.platforms.winforms"),
 }
@@ -129,30 +104,34 @@ def short_reason(reason: str) -> str:
     """The reason, without the host paths an import error tends to carry.
 
     The long form is worth printing to someone's terminal when they are being
-    told why they got a browser. It is not worth baking into the page header,
+    told why their window cannot open. It is not worth baking into the page header,
     which ends up inside a diagnostics file an admin may hand to somebody else.
     """
     return (reason.split(":", 1)[0] or "unavailable").strip()
 
 
-def page_html(state: Any) -> str:
+def page_html(state: Any, initial_zip: Optional[str] = None) -> str:
     """The page as the window should receive it: rendered, plus the bridge."""
     html = state.render()
+    bridge_script = _BRIDGE_JS
+    if initial_zip:
+        path_json = json.dumps(str(initial_zip)).replace("<", "\\u003c")
+        bridge_script += """<script>
+window.addEventListener('pywebviewready', function () {
+  var input = document.getElementById('zip');
+  if (input) { input.value = PATH; input.form.requestSubmit(); }
+}, {once: true});
+</script>""".replace('PATH', path_json)
     # Before </body> so the document is parsed by the time it runs, and so a
     # page that somehow lacks the tag still gets the script rather than
     # silently losing every button on it.
     if "</body>" in html:
-        return html.replace("</body>", _BRIDGE_JS + "</body>", 1)
-    return html + _BRIDGE_JS
+        return html.replace("</body>", bridge_script + "</body>", 1)
+    return html + bridge_script
 
 
 class Bridge:
-    """What the page in the window is allowed to ask Python to do.
-
-    One method. It takes the same action path and form dict the POST handler
-    takes, and it refuses anything not in the same table, so the window cannot
-    reach further into the process than the browser mode can.
-    """
+    """Expose only the registered application actions to the native webview."""
 
     def __init__(self, state: Any) -> None:
         self._state = state
@@ -218,7 +197,7 @@ def _picker_for(holder: Dict[str, Any]) -> Any:
 
 
 def run(state: Any, title: str = "VCF content migrator", width: int = 1280,
-        height: int = 860) -> None:  # pragma: no cover - needs a display
+        height: int = 860, initial_zip: Optional[str] = None) -> None:  # pragma: no cover - needs a display
     """Open the window and block until the user closes it."""
     import webview
 
@@ -226,7 +205,9 @@ def run(state: Any, title: str = "VCF content migrator", width: int = 1280,
     holder: Dict[str, Any] = {}
     # Set before the first render, so the very first page carries the button.
     state.file_picker = _picker_for(holder)
-    holder["window"] = webview.create_window(title, html=page_html(state),
+    holder["window"] = webview.create_window(title, html=page_html(state, initial_zip),
                                              js_api=bridge, width=width,
                                              height=height)
-    webview.start()
+    import sys
+
+    webview.start(gui="qt" if sys.platform.startswith("linux") else None, http_server=False)

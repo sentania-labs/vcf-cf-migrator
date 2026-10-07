@@ -207,12 +207,18 @@ class Note:
 class MissingEdge:
     """An edge whose target is not in the export.
 
-    Information, not an error, and the wording matters: an export carries
-    custom content only, so an edge to anything that ships with the product
-    or inside a management pack lands here by construction and the target
-    instance is expected to have it already. Nothing in an export tells that
-    apart from an object that is genuinely gone, so this says what is not in
-    the export and leaves the judgement to the admin.
+    Two things can be true of one, and ``is_missing_dependency`` says which.
+    A *missing dependency* is content that would have to be in the bundle for
+    the carried object to work on the target: a view, a super metric, an
+    alert, a symptom. A bundle built without it breaks, so ``build`` refuses a
+    selection that depends on one (issue #31). The other case is content the
+    tool never carries and every VCF Operations instance has anyway, a custom
+    group's policy, which is listed as referenced but not carried and does not
+    stop a build. An export carries custom content only, so an edge to a view
+    or super metric that ships with the product or inside a management pack
+    lands here by construction too; nothing in an export tells that apart from
+    an object that is genuinely gone, and that is why it is refused rather
+    than guessed at. See ``NOT_A_DEPENDENCY`` for the whole table.
     """
     source_key: str
     kind: str
@@ -932,13 +938,15 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
         for node in orphans:
             lines.append("  " + node.label())
     if graph.missing:
+        blocking = [g for g in graph.missing if is_missing_dependency(g)]
         lines.append("")
-        lines.append(f"edges to objects a bundle cannot carry: {len(graph.missing)}")
+        lines.append(f"edges to objects a bundle cannot carry: {len(graph.missing)}"
+                     + (f", of which {len(blocking)} are missing dependencies: a build "
+                        "refuses any selection that depends on one" if blocking else ""))
         for gap in graph.missing:
-            source = graph.nodes.get(gap.source_key)
-            lines.append(f"  {gap.kind} [{gap.ident}] wanted by "
-                         f"{source.label() if source else gap.source_key} "
-                         f"(via {gap.via}); {missing_reason(gap)}")
+            lines.append("  " + ("MISSING DEPENDENCY " if is_missing_dependency(gap)
+                                 else "referenced but not carried: ")
+                         + missing_line(graph, gap))
     if graph.ambiguous:
         lines.append("")
         lines.append(f"references by name that several objects answer to: {len(graph.ambiguous)}")
@@ -956,19 +964,72 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
     return "\n".join(lines) + "\n"
 
 
-def missing_reason(gap: MissingEdge) -> str:
-    """Why the bundle will not hold this, in the words that are true of it.
+# Which target kinds a missing edge can point at without being a missing
+# dependency, each with why. Keyed by the kind the reference was parsed as,
+# which is decided by the field it was read from (a widget's
+# ``viewDefinitionId`` is a view, a group's ``policy`` is a policy), never by
+# the shape of the identifier: an id that looks built-in is a regex opinion,
+# and this table holds only what the parsed document itself says.
+#
+# Everything not in this table is a missing dependency and a build refuses
+# it. That covers the kinds the operator named (dashboard, view, super metric,
+# alert, symptom, recommendation, report) and the two a notification rule
+# needs (its outbound setting and its payload template), which are the admin's
+# own configuration rather than anything an instance ships with. For the
+# named kinds the honest position is that the classification cannot be made:
+# an export carries custom content only and names a view or a super metric by
+# identifier alone, so one that ships with the product or a management pack
+# and one left out of the export look the same from here. Refusing is the
+# safe default (Scott, 2026-10-05: "a missing dependency breaks the bundle").
+# On the committed fixture that refuses 2 super metrics, 2 views (one absent
+# view, once per owner's copy of the dashboard naming it), 1 alert and 1
+# outbound setting, and lets 1 policy through.
+NOT_A_DEPENDENCY: Dict[str, str] = {
+    "policy": ("policies.xml is in the export but is a member this tool never carries "
+               "into a bundle; check the group policy assignment on the target"),
+}
 
-    Most of these are objects the export itself does not carry, usually
-    out-of-the-box content the target already has. A policy is the other case:
-    ``policies.xml`` is right there in the export, and is a member this tool
-    does not understand and never carries into a bundle. Printing both under
-    "not in this export" would be wrong about the second.
+
+def is_missing_dependency(gap: MissingEdge) -> bool:
+    """Whether a bundle built without this target would break on the target,
+    which is what makes a build refuse the selection."""
+    return gap.kind not in NOT_A_DEPENDENCY
+
+
+def missing_reason(gap: MissingEdge) -> str:
+    """Why the bundle will not hold this, in the words that are true of it,
+    and what follows from that.
+
+    A policy is in the export; it is the bundle that will not hold it, and
+    every instance has policies, so that is information. Everything else is
+    not in this export, and nothing in an export says whether it ships with
+    the product or was left out, so the line says why the build refuses it
+    rather than printing "not in this export" and letting the admin guess.
     """
-    if gap.kind == "policy":
-        return runlog.prose("policies.xml is in the export but is a member this tool "
-                            "never carries into a bundle")
-    return runlog.prose("it is not in this export")
+    if gap.kind in NOT_A_DEPENDENCY:
+        return runlog.prose(NOT_A_DEPENDENCY[gap.kind])
+    if gap.kind in ("outboundsetting", "notificationtemplate"):
+        what = ("an outbound setting is the admin's own endpoint configuration"
+                if gap.kind == "outboundsetting"
+                else "a payload template is the admin's own")
+        return runlog.prose(f"it is not in this export; {what}, not something every "
+                            "instance ships with, so the rule that names it cannot be "
+                            "carried without it")
+    return runlog.prose(f"it is not in this export; an export carries custom content only "
+                        f"and names the {gap.kind} it needs by identifier alone, so nothing "
+                        "here tells one that ships with the product or a management pack "
+                        "apart from one left out of the export, and a bundle built without "
+                        "it is refused rather than guessed at")
+
+
+def missing_line(graph: "Graph", gap: MissingEdge) -> str:
+    """One line naming a missing edge: what, wanted by whom, via which field,
+    and why. The same line in ``tree``, in the build report and in a refusal,
+    so an admin can match them up."""
+    source = graph.nodes.get(gap.source_key)
+    return (f"{gap.kind} [{gap.ident}] wanted by "
+            f"{source.label() if source else gap.source_key} (via {gap.via}); "
+            f"{missing_reason(gap)}")
 
 
 def _reachable(graph: Graph, starts: Sequence[Node]) -> set:
@@ -990,7 +1051,9 @@ def as_dict(graph: Graph) -> dict:
         "nodes": [n.as_dict() for n in graph.ordered()],
         "edges": {k: v for k, v in sorted(graph.edges.items()) if v},
         "roots": [n.key for n in graph.roots()],
-        "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via}
+        "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via,
+                     "missing_dependency": is_missing_dependency(m),
+                     "reason": str(missing_reason(m))}
                     for m in graph.missing],
         "ambiguous": [n.text for n in graph.ambiguous],
         "unhandled_shapes": [n.text for n in graph.unhandled],

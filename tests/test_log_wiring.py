@@ -14,7 +14,9 @@ import zipfile
 import pytest
 
 from make_export_fixture import (
+    CLEAN_SELECTION,
     DASHBOARD_ID,
+    GROUP_NAME_2,
     OWNER,
     PERSON_DISPLAY_NAME,
     PERSON_MAIL,
@@ -66,12 +68,21 @@ def state(config_dir, export_zip):
     return PageState(str(export_zip))
 
 
+def _clean_picks(tmp_path):
+    """A selection file of the fixture that builds. The fixture's select-all
+    depends on content it leaves out on purpose, so ``build`` refuses it
+    (issue #31), and a log of a refused build has no output fingerprint."""
+    picks = tmp_path / "clean-picks.txt"
+    picks.write_text("".join(line + "\n" for line in CLEAN_SELECTION), encoding="utf-8")
+    return picks
+
+
 @pytest.fixture
 def built(tmp_path, export_zip, config_dir):
     log = tmp_path / "run.jsonl"
     out = tmp_path / "bundle.zip"
     code, events = run(["build", str(export_zip),
-                        "--select-all", "--out", str(out)], log)
+                        "--select", str(_clean_picks(tmp_path)), "--out", str(out)], log)
     assert code == 0, events[-3:]
     return events, out
 
@@ -85,7 +96,7 @@ def test_the_header_says_what_the_run_was_asked_to_do(built):
     assert codes(events)[0] == "log.contents"
     header = of(events, "run.start")[0]
     assert header["tool"] and header["core"] and header["python"] and header["platform"]
-    assert "build" in header["argv"] and "--select-all" in header["argv"]
+    assert "build" in header["argv"] and "--select" in header["argv"]
     assert "source_version" not in header
     assert header["corpus_dir"] and header["corpus_from"]
 
@@ -123,8 +134,10 @@ def test_every_decision_carries_the_object_it_concerns_and_why(built):
 
 
 def test_closure_says_what_it_added_and_what_needed_it(tmp_path, export_zip, config_dir):
+    # Web Tier's membership rule names Prod Clusters, whose only gap is its
+    # policy, so this closure adds something and still builds.
     picks = tmp_path / "picks.txt"
-    picks.write_text(f"dashboard:{DASHBOARD_ID}@{OWNER}\n", encoding="utf-8")
+    picks.write_text(f"customgroup:{GROUP_NAME_2}\n", encoding="utf-8")
     log = tmp_path / "closure.jsonl"
     code, events = run(["build", str(export_zip),
                         "--select", str(picks), "--out", str(tmp_path / "subset.zip")], log)
@@ -182,8 +195,8 @@ def test_an_unwritable_bundle_path_is_in_the_log(tmp_path, export_zip, config_di
     log = tmp_path / "unwritable.jsonl"
     blocked = tmp_path / "a-file"
     blocked.write_text("not a directory", encoding="utf-8")
-    code, events = run(["build", str(export_zip),
-                        "--select-all", "--out", str(blocked / "bundle.zip")], log)
+    code, events = run(["build", str(export_zip), "--select", str(_clean_picks(tmp_path)),
+                        "--out", str(blocked / "bundle.zip")], log)
     assert code == 1
     failure = of(events, "bundle.unwritable")[0]
     assert str(blocked) in failure["path"] and failure["reason"]
@@ -249,8 +262,8 @@ def test_a_document_that_does_not_parse_is_logged_before_the_refusal(tmp_path, c
 def test_no_excluded_value_from_the_fixture_reaches_any_event(tmp_path, export_zip,
                                                               config_dir):
     log = tmp_path / "everything.jsonl"
-    code, _events = run(["build", str(export_zip),
-                         "--select-all", "--out", str(tmp_path / "bundle.zip")], log,
+    code, _events = run(["build", str(export_zip), "--select", str(_clean_picks(tmp_path)),
+                         "--out", str(tmp_path / "bundle.zip")], log,
                         level="debug")
     assert code == 0
     body = log.read_text(encoding="utf-8")
@@ -366,19 +379,16 @@ def test_the_ui_command_writes_the_log_the_flag_asks_for(tmp_path, export_zip,
     README's one instruction for reporting a problem, and wrote four lines with
     nothing the page did in them. Two review rounds proved logging through
     preview and build and never through the page."""
-    from vcfcf_migrator.ui import make_server
 
     target = tmp_path / "ui.jsonl"
-    server = make_server(zip_path=str(export_zip), port=0, log_cli=str(target),
+    state = PageState(zip_path=str(export_zip), log_cli=str(target),
                          log_level_cli="debug")
-    state = server.page_state
     try:
         state.select_all()
         state.run_tree()
         state.render()
     finally:
         state.log.close()
-        server.server_close()
     events = [json.loads(line) for line in
               target.read_text(encoding="utf-8").splitlines() if line]
     codes = {e["event"] for e in events}

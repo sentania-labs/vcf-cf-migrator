@@ -186,7 +186,7 @@ def full_run(path: Path, out_dir: Path) -> list:
             except _preview.PreviewError:
                 continue
         picked = _selection.select_all(graph)
-        _bundle.build_bundle(members.data, members.order, graph, picked,
+        _bundle._write_bundle(members.data, members.order, graph, picked,
                              out_dir / (path.stem + "-bundle.zip"),
                              marker=members.marker, directories=members.directories,
                              directory_order=members.directory_order)

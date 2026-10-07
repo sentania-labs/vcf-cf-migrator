@@ -35,7 +35,7 @@ def test_missing_dependency_build_cannot_be_bypassed_by_post(page, tmp_path):
     page.toggle(broken.key, True)
     out = tmp_path / 'blocked.zip'
     dispatch(page, '/build', {'out': str(out)})
-    assert 'blocked' in page.error
+    assert 'refused' in page.error
     assert not out.exists()
     assert 'Build is blocked' in page.render()
     assert "class='primary' disabled>Build the bundle" in page.render()

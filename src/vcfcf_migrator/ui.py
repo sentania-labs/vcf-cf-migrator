@@ -1,35 +1,4 @@
-"""``vcfcf-migrator ui``: the selection page, standard library only.
-
-Serves on 127.0.0.1 on a free port (or ``--port``), opens the browser, and
-shows the thing the milestone is for: the export's dependency tree with a
-checkbox per object, dependencies pulled in automatically and labelled with
-what needs them, a refusal with the reason when something still needed is
-unchecked, the preview of the selected object in place, the counts of what a
-build would carry, and a Build button that writes the bundle and says where it
-went. Every command the CLI has, and every setting it takes, has a control
-here (house rule: every setting has a GUI option).
-
-**All state lives in ``PageState``, and every action is a method on it.** The
-handler's job is to check the origin, read the form and call one method; the
-page is rendered from the state afterwards. That is what lets the tests drive
-the page's behaviour in process, without a browser, and it keeps the two ways
-in (the CLI and the page) over one set of rules rather than two.
-
-Nothing here listens on any other interface, and a POST is accepted only when
-its Origin (or Host, when the browser sends no Origin) is this server's own
-http://127.0.0.1:<port> or http://localhost:<port> (admins type localhost):
-any other web page the admin has open could otherwise post to the loopback
-port and rewrite settings, read a local path, or write a file. Such a request
-gets 403.
-
-**That check is a CSRF control, not an access control.** It stops another web
-page in the admin's browser from driving this port. It cannot stop a process
-on the same machine, which can set any header it likes, and the page reads
-and writes whatever paths the admin gives it (`/open`, `/build`, `/settings`,
-`/corpus-check`) with the admin's own rights. On the single-user workstation
-this tool ships for, that is the model: the page is the admin, for as long as
-the process runs.
-"""
+"""Native-window state and actions for content selection and bundle building."""
 from __future__ import annotations
 
 import io
@@ -39,9 +8,6 @@ import os
 import shlex
 import sys
 import threading
-import urllib.parse
-import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Optional
 
@@ -108,7 +74,7 @@ def serialized(method):
 
 
 class PageState:
-    """What the page shows, and every action it can take. One per server."""
+    """What the page shows, and every action it can take. One per window."""
 
     def __init__(self, zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,
                  log_cli: Optional[str] = None,
@@ -128,17 +94,9 @@ class PageState:
         self.log_cli = log_cli
         self.log_level_cli = log_level_cli
         self.log_format_cli = log_format_cli
-        self.origins = ()  # set once the server is bound: 127.0.0.1 and localhost on this port
-        # Ask the machine for a file, if the machine can be asked. The desktop
-        # window sets this to its own dialog; browser mode leaves it None,
-        # because a page served over HTTP cannot read a path off the machine
-        # it is served from and an <input type=file> would upload a copy
-        # rather than name the file. The page shows the Browse button only
-        # when there is something behind it.
+        # The native window supplies its file chooser before rendering.
         self.file_picker = None
-        # Which of the right-hand panels is showing. Server-side, because every
-        # action re-renders the whole page: a tab remembered only in the
-        # browser would snap back to the first one on every click.
+        # Retain the selected panel across page redraws.
         self.tab = "preview"
         # Which disclosures the user has opened or closed, by id. A <details>
         # element toggles in the browser and tells the server nothing, so with
@@ -490,8 +448,13 @@ class PageState:
         if not (self.selection and self.selection.keys):
             self.error = "the selection is empty, no bundle written"
             return
-        if self.selection.missing:
-            self.error = "build blocked: missing references in this export; no bundle written"
+        try:
+            _selection.refuse_missing_dependencies(self.graph, self.selection)
+        except _selection.MissingDependency as exc:
+            self.message = ""
+            self.error = f"refused: {exc}; no bundle written"
+            self.build_report = "Build refused. No bundle written.\n" + "\n".join(exc.lines)
+            self.tab = "review"
             return
         out = (out_path or "").strip() or self.default_out()
         self.build_out = out
@@ -597,24 +560,13 @@ class PageState:
 
 
 # ---------------------------------------------------------------------------
-# What a POST can ask for: one table, read by the handler and by the test that
-# proves every one of these refuses a cross-origin post. A fourteenth entry
-# added here is guarded by that test the moment it exists, which a
-# hand-maintained list in the test could not promise.
-# ---------------------------------------------------------------------------
+# Registered actions are the only entry points exposed by the native bridge.
 
 @serialized
 def dispatch(state: "PageState", path: str, form: dict) -> str:
-    """Run one page action and return the anchor to land on.
+    """Run a registered native-window action and return its scroll anchor.
 
-    Both ways into the page go through here: the local server's POST handler
-    and the desktop window's bridge. They used to be able to drift, and a page
-    action that logged differently depending on which window you opened would
-    be a miserable thing to debug from a run log alone. One function, one
-    story, and a test asserts both callers use it.
-
-    Raises KeyError for an action that does not exist, which is the caller's
-    to turn into a 404 or an error line.
+    Raises KeyError for an action that does not exist.
     """
     action = ACTIONS[path]
     state.message, state.error = "", ""
@@ -741,11 +693,7 @@ def _act_preview(state: "PageState", form: dict) -> str:
 
 
 def _act_filter(state: "PageState", form: dict) -> str:
-    # Clear has its own field name. It used to be a second control named
-    # "filter", and since a form posts both, the server's first-wins parse took
-    # the text box and threw the button away: Clear did nothing at all. It also
-    # made the two window modes disagree, because a browser and the desktop
-    # bridge collapse duplicate names from opposite ends.
+    # Keep the clear button distinct from the text field in form data.
     if form.get("clear-filter"):
         state.set_filter("")
         return ""
@@ -851,122 +799,17 @@ ACTIONS = {
 POST_PATHS = tuple(sorted(ACTIONS))
 
 
-def _handler_for(state: PageState):
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):  # keep the terminal quiet
-            pass
-
-        def _send_page(self, code: int = 200) -> None:
-            body = state.render().encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _redirect_home(self, anchor: str = "") -> None:
-            self.send_response(303)
-            self.send_header("Location", "/" + (f"#{anchor}" if anchor else ""))
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def _form(self) -> dict:
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length).decode("utf-8") if length else ""
-            return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
-
-        def do_GET(self):  # noqa: N802
-            if urllib.parse.urlsplit(self.path).path != "/":
-                self.send_response(404)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            self._send_page()
-
-        def _same_origin(self) -> bool:
-            origin = self.headers.get("Origin")
-            if origin is not None:
-                return origin.rstrip("/") in state.origins
-            host = self.headers.get("Host") or ""
-            return f"http://{host}" in state.origins
-
-        def do_POST(self):  # noqa: N802
-            if not self._same_origin():
-                body = ("403: cross-origin POST refused; only this page may post here "
-                        f"(accepted origins: {', '.join(state.origins)})\n").encode("utf-8")
-                self.send_response(403)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            path = urllib.parse.urlsplit(self.path).path
-            if path not in ACTIONS:
-                self.send_response(404)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            self._redirect_home(dispatch(state, path, self._form()))
-
-    return Handler
-
-
-def make_server(zip_path: Optional[str] = None, port: int = 0, corpus_cli: Optional[str] = None,
-                log_cli: Optional[str] = None,
-                log_level_cli: Optional[str] = None,
-                log_format_cli: Optional[str] = None) -> ThreadingHTTPServer:
-    """A bound server on 127.0.0.1; the caller runs it. Tests use this."""
-    state = PageState(zip_path, corpus_cli,
-                      log_cli, log_level_cli, log_format_cli)
-    server = ThreadingHTTPServer(("127.0.0.1", port), _handler_for(state))
-    server.daemon_threads = True
-    port = server.server_address[1]
-    state.origins = (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
-    server.page_state = state
-    return server
-
-
 def run_desktop(zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,
                 log_cli: Optional[str] = None, log_level_cli: Optional[str] = None,
                 log_format_cli: Optional[str] = None) -> int:
-    """The page in a native window, with nothing bound and nothing listening.
-
-    The state is built by the same constructor the server uses, so the two
-    modes cannot drift in what the page knows about.
-
-    ``state.origins`` stays empty on purpose. It is the set of origins the
-    server accepts a POST from, and it exists because a bound socket can be
-    reached by anything on the machine that finds the port. Here there is no
-    socket, so there is no origin to check and nothing to check it against.
-    """
+    """Open the native window without a local HTTP server."""
     from . import desktop
 
-    state = PageState(zip_path, corpus_cli, log_cli, log_level_cli, log_format_cli)
+    state = PageState(None, corpus_cli, log_cli, log_level_cli, log_format_cli)
     print("vcfcf-migrator ui: opening a window (close it to stop)", flush=True)
     try:
-        desktop.run(state)
+        desktop.run(state, initial_zip=zip_path)
     finally:
         state.log.finish(what='page', failed=sys.exc_info()[1])
         state.log.close()
-    return 0
-
-
-def serve(zip_path: Optional[str] = None, port: int = 0, open_browser: bool = True,
-          corpus_cli: Optional[str] = None,
-          log_cli: Optional[str] = None, log_level_cli: Optional[str] = None,
-          log_format_cli: Optional[str] = None) -> int:
-    server = make_server(zip_path, port, corpus_cli,
-                         log_cli, log_level_cli, log_format_cli)
-    url = f"http://127.0.0.1:{server.server_address[1]}/"
-    print(f"vcfcf-migrator ui: {url} (Ctrl-C to stop)", flush=True)
-    if open_browser:
-        threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nvcfcf-migrator ui: stopped", file=sys.stderr)
-    finally:
-        server.server_close()
-        server.page_state.log.finish(what='page', failed=sys.exc_info()[1])
-        server.page_state.log.close()
     return 0

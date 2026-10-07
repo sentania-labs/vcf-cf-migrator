@@ -37,6 +37,7 @@ Interview on 2026-09-14. Each answer is quoted as given.
 | Version handling | 2026-09-15, after the evidence came in: "But those could be settings from the export and not necessarily be version artifacts. Until we have proof drop all version stuff" | **No version handling at all.** No declared source version, no floor, no refusal, no version language in the interface. The tool reads an export and works on it. |
 | Outbound settings | "I believe the secrets are encrypted, so we should just pass them along." then "Yes, endpoints and rules, as exported" | Notification rules and outbound endpoint definitions ride in the bundle exactly as the export carries them, encrypted values included. The tool does not decrypt, edit, or strip them. M4 acceptance includes a real import proving the target accepts the values; if it does not, that is a finding, not a silent drop. |
 | Operator | "Customer-run, no LLM (Recommended)" | Deterministic. No API key, no outbound calls. Shippable as a per-OS binary. |
+| Missing dependencies | 2026-10-05, issue #31: "there should be no override - a missing dependency breaks the bundle - it's something we need to guard against." | **A build refuses a selection that depends on content the export does not carry.** `build` and the page exit non-zero, write nothing and name every missing dependency with its reason; there is no flag and no checkbox past it. A missing dependency is a dashboard, view, super metric, alert, symptom, recommendation or report the export does not hold, or the outbound setting or payload template a rule names. A custom group's policy is referenced but not carried, not a missing dependency: the tool never carries `policies.xml` and every instance has policies of its own. For every other kind nothing in an export tells built-in or management-pack content apart from custom content left out of it (an export carries custom content only and names what it needs by identifier alone), so refusing is the default rather than a guess by identifier shape. On the fixture: 2 super metrics, 2 views, 1 alert and 1 outbound setting refused, 1 policy let through. `corpus-check` keeps its scratch select-all, which is deleted, so the container round trip still runs on real exports; its line counts what a build would refuse. |
 
 ## Scope
 
@@ -55,7 +56,9 @@ In v1:
   these edges since PR #156.
 - Selection: pick any node; dependencies are pulled in automatically
   and shown as "required by". Deselecting a dependency that something
-  selected still needs is refused with the reason.
+  selected still needs is refused with the reason. A selection that
+  depends on content the export does not carry cannot be built at all
+  (#31, see the decisions table).
 - Preview: each dashboard and view rendered with mock data, the same
   renderer the factory uses (`vcfcf_core.dashboards.render`) fed by a
   mock metric provider. Super metrics show the formula and its

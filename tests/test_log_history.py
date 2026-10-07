@@ -126,7 +126,7 @@ def test_native_session_ends_only_after_window_closes(config_dir, monkeypatch):
     from vcfcf_migrator import desktop, ui
     seen = []
 
-    def window(state):
+    def window(state, **kwargs):
         state.render()
         assert not any(e['event'] == 'run.end' for e in state.log.events)
         seen.append(state)
