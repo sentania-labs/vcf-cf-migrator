@@ -134,11 +134,13 @@ jobs:
       - name: Build the application
         run: python packaging/build_macos.py
       - name: Exercise the packaged native window
-        run: python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app'
+        run: |
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app'
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --objects 9000 --identities 113 --screenshot macos-app-large.png
       - name: Save the synthetic-content screenshot
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: macos-app-smoke-${{ matrix.os }}
-          path: macos-app-smoke.png
+          path: macos-app-*.png
           if-no-files-found: ignore

@@ -10,6 +10,7 @@ import atexit
 import json
 from pathlib import Path
 import plistlib
+import socket
 import subprocess
 import tempfile
 import time
@@ -36,8 +37,12 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('app', type=Path)
+    parser.add_argument('--objects', type=int, default=1)
+    parser.add_argument('--identities', type=int, default=0)
     parser.add_argument('--screenshot', type=Path, default=Path('macos-app-smoke.png'))
     args = parser.parse_args()
+    if args.objects < 1 or args.identities < 0:
+        parser.error('objects must be positive and identities nonnegative')
     # Hosted Mac runners start at 1024x768, smaller than this app's default.
     # Select a real supported mode and restore it when this check exits.
     display = Quartz.CGMainDisplayID()
@@ -61,7 +66,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='migrator-mac-') as directory:
         scratch = Path(directory)
         source = scratch / 'source.zip'
-        make_export(source, 1, 0)
+        make_export(source, args.objects, args.identities)
         events_path = scratch / 'events.jsonl'
         before = {a.processIdentifier() for a in NSRunningApplication.runningApplicationsWithBundleIdentifier_(info['CFBundleIdentifier'])}
         running = None
@@ -83,8 +88,8 @@ def main():
                             pass  # The current line may still be being written.
                     return parsed
 
-                def rendered_after(action):
-                    records = events()
+                def rendered_after(action, since=0):
+                    records = events()[since:]
                     completed = [i for i, e in enumerate(records) if e.get('event') == 'phase.end'
                                  and e.get('phase') == 'page' and e.get('action') == action
                                  and not e.get('failed')]
@@ -123,25 +128,49 @@ def main():
                     return (screen.origin.x + (rect.origin.x + rect.size.width / 2) * screen.size.width,
                             screen.origin.y + (1 - rect.origin.y - rect.size.height / 2) * screen.size.height)
 
-                wait_for(lambda: rendered_after('/open'))
-                for label, action in [('Select all', '/select-all'), ('Review bundle', '/tab'),
-                                      ('Build the bundle', '/build')]:
-                    point = wait_for(lambda: button_point(label))
+                def click(label, action, scroll=False):
+                    offset = len(events())
+                    def find():
+                        point = button_point(label)
+                        if point is None and scroll:
+                            Quartz.CGEventPost(Quartz.kCGHIDEventTap, Quartz.CGEventCreateScrollWheelEvent(
+                                None, Quartz.kCGScrollEventUnitLine, 1, -100000))
+                        return point
+                    point = wait_for(find)
                     print('Clicking visible native control:', label, flush=True)
                     for event_type in (Quartz.kCGEventMouseMoved, Quartz.kCGEventLeftMouseDown,
                                        Quartz.kCGEventLeftMouseUp):
                         event = Quartz.CGEventCreateMouseEvent(None, event_type, point, Quartz.kCGMouseButtonLeft)
                         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
                         time.sleep(.1)
-                    wait_for(lambda: rendered_after(action))
+                    wait_for(lambda: rendered_after(action, offset))
+
+                wait_for(lambda: rendered_after('/open'))
+                click('Select all', '/select-all')
+                click('Review bundle', '/tab')
+                click('Build the bundle', '/build', scroll=True)
                 output = scratch / 'source-bundle.zip'
                 wait_for(output.exists, timeout=20)
                 with zipfile.ZipFile(output) as bundle:
                     metrics = json.loads(bundle.read('supermetrics.json'))
-                    assert len(metrics) == 1
-                    assert next(iter(metrics.values()))['name'] == 'Synthetic capacity metric 00000'
+                    assert len(metrics) == args.objects
+                    with zipfile.ZipFile(source) as original:
+                        assert metrics == json.loads(original.read('supermetrics.json'))
                 subprocess.run(['screencapture', '-x', str(args.screenshot)], check=True)
-                print('Packaged Mac native initial load, selection, and bundle readback passed.')
+                click('Help & diagnostics', '/tab')
+                click('Save anonymized diagnostics', '/diagnostics')
+                report = (scratch / 'vcfcf-migrator-diagnostics.jsonl').read_text()
+                assert json.loads(report.splitlines()[0])['kind'] == 'vcfcf-migrator-diagnostics'
+                for private in (str(scratch), str(Path.home()), Path.home().name, socket.gethostname(),
+                                'Synthetic capacity metric', 'synthetic-login-', 'Invented Person', '@example.invalid'):
+                    assert private not in report, 'Private identity remained in diagnostics'
+                assert not any(ident in report for ident in metrics)
+                subprocess.run(['screencapture', '-x', str(args.screenshot.with_name(args.screenshot.stem + '-diagnostics.png'))], check=True)
+                timings = {e['action']: e['ms'] for e in events() if e.get('event') == 'phase.end'
+                           and e.get('phase') == 'page' and e.get('action') in ('/open', '/select-all')}
+                print(json.dumps(dict(objects=args.objects, identities=args.identities, page_ms=timings,
+                                      bundle_readback='passed', diagnostics_privacy='passed')))
+                print('Packaged Mac native load, selection, bundle readback, and saved diagnostics passed.')
             except Exception:
                 subprocess.run(['screencapture', '-x', str(args.screenshot)], check=False)
                 log.seek(0)
