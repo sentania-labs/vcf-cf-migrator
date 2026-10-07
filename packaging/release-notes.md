@@ -1,4 +1,6 @@
-The app now shows a small link beside its version when a newer stable release is available. The check runs quietly in the background; clicking the link opens the release page in your browser. You choose when to download and install an update.
+Dashboard navigation now includes linked dashboards automatically. Missing destination dashboards or referenced widgets block bundle creation, including links in built-in content. Include the missing dashboards in the source export, repair broken widget links in Operations, or remove affected selections. There is no override.
+
+The app shows a small link beside its version when a newer stable release is available. The check runs quietly in the background; clicking the link opens the release page in your browser. You choose when to download and install an update.
 
 Download the archive for your computer and extract it. On Mac, move **VCF Content Migrator.app** to Applications and open it. On Windows, open `vcfcf-migrator.exe`; on Linux, run `./vcfcf-migrator`.
 

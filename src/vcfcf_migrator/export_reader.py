@@ -48,7 +48,7 @@ from vcfcf_core.extractor.extractor import (
     _supermetrics_from_export_zip,
 )
 
-from vcfcf_migrator import runlog
+from vcfcf_migrator import runlog, navigation
 
 # Listing order for inspect output.
 KIND_ORDER = [
@@ -340,30 +340,8 @@ def _dashboard_items(dashes: List[dict], source: str) -> List[Item]:
 
 
 def navigation_gaps(dashes: List[dict]) -> int:
-    """How many dashboard navigation targets are not a widget of the document
-    that names them.
-
-    A navigation is a link: click a row here, land on a dashboard there. Every
-    target in the corpus resolves to nothing in any of the five exports, which
-    means those links point at dashboards that live on the source instance and
-    were not exported, and after an import they will not land. That is worth
-    saying in the listing and not only in a preview, since it is the listing
-    an admin reads before deciding what to carry. Whether a target is a
-    dependency the bundle should chase is M5's question (migrator issue #3):
-    nothing in the corpus resolves, so nothing here can name what it would be.
-    """
-    gaps = 0
-    for dash in dashes:
-        navigations = dash.get("dashboardNavigations")
-        if not isinstance(navigations, dict):
-            continue
-        widget_ids = {str(w.get("id") or "") for w in dash.get("widgets") or []
-                      if isinstance(w, dict)}
-        for targets in navigations.values():
-            for target in targets if isinstance(targets, list) else []:
-                if isinstance(target, dict) and str(target.get("id") or "") not in widget_ids:
-                    gaps += 1
-    return gaps
+    """Navigation destinations absent from all dashboard owner containers."""
+    return navigation.missing_targets(dashes)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +371,7 @@ def _read_export(path) -> Export:
         raise NotAnExport(f"{path} is not a zip file")
 
     export = Export(path=str(path))
+    all_dashboards = []
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/") and not n.startswith("__MACOSX/")]
         if runlog.current().on:
@@ -441,7 +420,7 @@ def _read_export(path) -> Export:
                 try:
                     dashes = _dashboards_from_inner_zip(zf.read(name))
                     export.items.extend(_dashboard_items(dashes, name))
-                    export.navigation_gaps += navigation_gaps(dashes)
+                    all_dashboards.extend(dashes)
                 except ValueError as e:
                     runlog.warn("member.unreadable", member=name, kind="dashboard",
                                 reason=f"the nested dashboard zip did not open: {e}")
@@ -461,7 +440,7 @@ def _read_export(path) -> Export:
             if name == "dashboard/dashboard.json":
                 dashes = _dashboards_from_inner_zip(_wrap_dashboard_json(member))
                 export.items.extend(_dashboard_items(dashes, name))
-                export.navigation_gaps += navigation_gaps(dashes)
+                all_dashboards.extend(dashes)
                 continue
 
             if lower.endswith(".zip"):
@@ -477,7 +456,7 @@ def _read_export(path) -> Export:
                     dashes = []
                 if dashes:
                     export.items.extend(_dashboard_items(dashes, name))
-                    export.navigation_gaps += navigation_gaps(dashes)
+                    all_dashboards.extend(dashes)
                     continue
                 export.carried.append(name)
                 continue
@@ -536,6 +515,7 @@ def _read_export(path) -> Export:
             seen.add(key)
         unique.append(it)
     export.items = unique
+    export.navigation_gaps = navigation_gaps(all_dashboards)
     teach_content(export.items)
     counts = export.counts()
     for item in export.sorted_items():
@@ -667,8 +647,8 @@ def render_text(export: Export) -> str:
         lines.append(f"  {it.kind:<21} {it.uuid or '(no uuid)':<40} {it.name}")
     if export.navigation_gaps:
         lines.append(f"dashboard navigation links pointing outside this export: "
-                     f"{export.navigation_gaps} (they will not land on the target unless it "
-                     "already has what they point at)")
+                     f"{export.navigation_gaps} (selecting an affected dashboard blocks bundle "
+                     "creation; include the destinations in the export or remove the affected picks)")
     if export.carried:
         lines.append(f"carried, not inspected: {len(export.carried)}")
         for name in export.carried:

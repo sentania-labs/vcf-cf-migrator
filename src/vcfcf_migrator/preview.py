@@ -47,6 +47,8 @@ script, no image. It opens on a workstation with no route to anything.
 """
 from __future__ import annotations
 
+from vcfcf_migrator import navigation
+
 import html
 import json
 import re
@@ -1408,12 +1410,6 @@ def read_wiring(doc: dict, widgets: Sequence[dict]) -> Wiring:
         if (receiver, kind) not in wiring.receivers.setdefault(provider, []):
             wiring.receivers[provider].append((receiver, kind))
 
-    navigations = doc.get("dashboardNavigations")
-    if isinstance(navigations, dict):
-        for targets in navigations.values():
-            for target in targets if isinstance(targets, list) else []:
-                if isinstance(target, dict) and str(target.get("id") or "") not in known:
-                    wiring.foreign_navigations += 1
     return wiring
 
 
@@ -1482,6 +1478,9 @@ def _dashboard_preview(graph: Graph, node: Node, preview: Preview) -> str:
             f"them, so the grid is drawn {columns} columns wide rather than squashing it")
 
     wiring = read_wiring(doc, widgets)
+    dashboard_ids = {n.uuid for n in graph.nodes.values() if n.kind == "dashboard"}
+    wiring.foreign_navigations = sum(target not in dashboard_ids
+                                     for _, target, _ in navigation.links(doc)[0])
     keys = widget_keys(widgets)
     preview.receivers = sum(1 for w in widgets
                             if wiring.is_receiver(str(w.get("id") or "")))
@@ -1521,8 +1520,8 @@ def _dashboard_preview(graph: Graph, node: Node, preview: Preview) -> str:
     if wiring.foreign_navigations:
         preview.notes.append(
             f"{_plural(wiring.foreign_navigations, 'dashboard navigation target')} are "
-            "not in this export, so those links will not land unless the target instance "
-            "already has what they point at")
+            "not in this export. Selecting this dashboard blocks bundle creation; "
+            "include the destination dashboards in the source export.")
 
     description = str(doc.get("description") or "").strip()
     head = f"<p class='pv-sub'>{_e(description)}</p>" if description else ""

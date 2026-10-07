@@ -311,7 +311,8 @@ def test_widgets_are_walked_wherever_the_key_appears():
                    "resource": {"resourceName": "G"}}}]}]}}
     notes = []
     refs = _graph._dashboard_refs(json.dumps(doc).encode(), notes)
-    assert sorted((r.kind, r.ident) for r in refs) == [("customgroup", "G"), ("view", "V1")]
+    assert sorted((r.kind, r.ident) for r in refs) == [
+        ("customgroup", "G"), ("dashboard", "n1"), ("view", "V1")]
     assert notes == []
 
 

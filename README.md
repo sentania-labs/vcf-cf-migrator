@@ -128,9 +128,12 @@ unsupported export members are not included in the new bundle. Review warnings
 before importing; this is a content selection tool, not a backup or a check of
 the target's configuration.
 
-Dashboard navigation links still need checking on the target. Their dependency
-handling remains under investigation in
-[#3](https://github.com/sentania-labs/vcf-cf-migrator/issues/3).
+Linked dashboards are included automatically, including their dependencies.
+If a destination dashboard is missing from the export, bundle creation stops.
+Include it in a new export or remove the dashboard that needs it from your
+selection. Navigation links that name a missing widget also block the build;
+repair those links in Operations and export again. This applies to built-in
+dashboards too. After import, check the links on the target instance.
 
 ## If something goes wrong
 

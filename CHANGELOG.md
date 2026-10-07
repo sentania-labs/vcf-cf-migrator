@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Dashboard navigation now includes linked dashboards automatically. Missing
+  dashboards, missing navigation widgets, and unreadable navigation references
+  block bundle creation. Navigation gap counts use the complete export. (#3)
+
+## 0.5.2
+
 - A small link beside the app version appears when a newer stable release is
   available. The startup check runs in the background and stays quiet offline.
 
