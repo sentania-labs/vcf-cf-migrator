@@ -47,11 +47,13 @@ def client(responses):
 
 
 def test_download_scope_auth_and_cleanup():
-    c, opener = client(replies())
+    responses = replies()
+    expected = responses[4]
+    c, opener = client(responses)
     snapshot = c.acquire('user', 'private-password', 'local', 'Export1!password')
     path = snapshot.path
     try:
-        assert path.read_bytes() == build_export_zip()
+        assert path.read_bytes() == expected
         assert path.stat().st_mode & 0o777 == 0o600
         assert c.token is None
         assert json.loads(opener.requests[0].data)['authSource'] == 'local'
