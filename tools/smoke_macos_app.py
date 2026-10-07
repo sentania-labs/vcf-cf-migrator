@@ -6,6 +6,7 @@ Only invented content is used. A missing GUI or input permission fails the check
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 from pathlib import Path
 import plistlib
@@ -35,6 +36,19 @@ def main():
     parser.add_argument('app', type=Path)
     parser.add_argument('--screenshot', type=Path, default=Path('macos-app-smoke.png'))
     args = parser.parse_args()
+    # Hosted Mac runners start at 1024x768, smaller than this app's default.
+    # Select a real supported mode and restore it when this check exits.
+    display = Quartz.CGMainDisplayID()
+    original_mode = Quartz.CGDisplayCopyDisplayMode(display)
+    if Quartz.CGDisplayModeGetWidth(original_mode) < 1280 or Quartz.CGDisplayModeGetHeight(original_mode) < 1000:
+        modes = [mode for mode in Quartz.CGDisplayCopyAllDisplayModes(display, None)
+                 if Quartz.CGDisplayModeGetWidth(mode) >= 1280 and Quartz.CGDisplayModeGetHeight(mode) >= 1000]
+        if not modes:
+            raise AssertionError('The Mac test display has no supported mode of at least 1280x1000.')
+        mode = min(modes, key=lambda m: Quartz.CGDisplayModeGetWidth(m) * Quartz.CGDisplayModeGetHeight(m))
+        if Quartz.CGDisplaySetDisplayMode(display, mode, None) != Quartz.kCGErrorSuccess:
+            raise AssertionError('Could not select the native smoke display size.')
+        atexit.register(Quartz.CGDisplaySetDisplayMode, display, original_mode, None)
     app = args.app.resolve()
     with (app / 'Contents' / 'Info.plist').open('rb') as stream:
         info = plistlib.load(stream)
