@@ -232,7 +232,7 @@ body {{ margin:0; padding:18px; background:var(--bg); font:13px/1.45 system-ui,"
 {css}
 </style>
 </head>
-<body>
+<body data-theme="dark">
 {body}
 </body>
 </html>

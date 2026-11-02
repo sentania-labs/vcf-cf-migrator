@@ -1,7 +1,5 @@
-"""Refresh the bundled Lattice color contract from its generated distribution."""
-import json
+"""Refresh the bundled Lattice color tokens from its generated distribution."""
 from pathlib import Path
-import pprint
 import re
 import sys
 
@@ -38,13 +36,11 @@ def heatmap_css(tokens):
 def main():
     dist = Path(sys.argv[1])
     target = Path(__file__).resolve().parents[1] / 'src/vcfcf_migrator/theme.py'
-    palette = json.loads((dist / 'lattice-palette.json').read_text())
     tokens = (dist / 'tokens.css').read_text().split(':root {')[0]
     current = target.read_text()
-    prefix = current[:current.index('PALETTE = ')]
+    prefix = current[:current.index('TOKENS_CSS = ')]
     aliases = current[current.index('ALIASES = '):]
-    target.write_text(prefix + 'PALETTE = ' + pprint.pformat(palette, sort_dicts=False)
-                      + '\n\nTOKENS_CSS = ' + repr(tokens)
+    target.write_text(prefix + 'TOKENS_CSS = ' + repr(tokens)
                       + '\n\nHEATMAP_CSS = ' + repr(heatmap_css(tokens)) + '\n\n' + aliases)
 
 
