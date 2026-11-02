@@ -153,6 +153,7 @@ _BRIDGE_JS = """
       if (!res) return;
       var doc = new DOMParser().parseFromString(res.html, 'text/html');
       document.body.replaceWith(doc.body);
+      document.documentElement.dataset.theme = document.body.dataset.theme;
       showRelease();
       if (doc.title) { document.title = doc.title; }
       // Keep the selected object in view after the page is redrawn.

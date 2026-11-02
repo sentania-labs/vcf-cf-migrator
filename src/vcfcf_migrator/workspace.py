@@ -38,7 +38,7 @@ header.top .ver { font-family:inherit }
   border-bottom:1px solid var(--line2); align-items:center; scroll-margin-top:100px }
 .inventory .row form { display:block; min-width:0 }
 .inventory .name-button { text-align:left; background:none; border:0; padding:0; width:100%;
-  color:var(--accent); font-weight:600; overflow-wrap:anywhere }
+  color:var(--accent-ink); font-weight:600; overflow-wrap:anywhere }
 .inventory .kindtag { display:block; overflow-wrap:anywhere; font-size:12px; color:var(--ink2) }
 .inventory .status { font-size:11px; color:var(--ink2); max-width:110px; overflow-wrap:anywhere }
 .inventory .status.warn { color:var(--warn) }

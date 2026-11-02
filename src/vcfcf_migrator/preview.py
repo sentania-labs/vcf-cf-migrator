@@ -163,7 +163,7 @@ PREVIEW_CSS = """
 .pv .pv-wiring b { color:var(--pv-ink); font-weight:600 }
 .pv .pv-wiring ul { margin:5px 0 0; padding-left:18px }
 .pv .pv-wiring li { margin:1px 0 }
-.pv .pv-wiring .arrow { color:var(--pv-accent); font-weight:600 }
+.pv .pv-wiring .arrow { color:var(--accent-ink); font-weight:600 }
 .pv .pv-lbl { font-size:11px; color:var(--pv-ink2); margin-bottom:2px; }
 .pv .pv-key { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px; color:var(--pv-ink3);
   word-break:break-all }
@@ -190,7 +190,7 @@ PREVIEW_CSS = """
   letter-spacing:.06em; margin-bottom:3px }
 .pv .pv-elsewhere { border:1px dashed var(--pv-accent); border-radius:3px;
   background:var(--accent-soft); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
-.pv .pv-elsewhere b { color:var(--pv-accent); display:block; font-size:10px;
+.pv .pv-elsewhere b { color:var(--accent-ink); display:block; font-size:10px;
   text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px }
 .pv .pv-section { grid-column:1 / -1; border-bottom:1px solid var(--pv-line); color:var(--pv-ink2);
   font-size:12px; font-weight:600; padding:4px 2px; min-height:0 }
@@ -200,7 +200,7 @@ PREVIEW_CSS = """
 .pv pre.pv-code { background:var(--pv-panel2); border:1px solid var(--pv-line); border-radius:4px;
   padding:9px 11px; overflow-x:auto; font-family:ui-monospace,Menlo,Consolas,monospace;
   font-size:11.5px; color:var(--pv-ink); white-space:pre-wrap; word-break:break-word; margin:0 0 10px }
-.pv pre.pv-code .ref { color:var(--pv-accent) }
+.pv pre.pv-code .ref { color:var(--accent-ink) }
 .pv pre.pv-code .unres { color:var(--pv-warn) }
 .pv h4.pv-h { font-size:12px; margin:14px 0 6px; color:var(--pv-ink2); text-transform:uppercase;
   letter-spacing:.05em; font-weight:600 }

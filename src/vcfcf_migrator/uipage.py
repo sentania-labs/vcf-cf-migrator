@@ -37,6 +37,8 @@ button.ghost:hover { border-color:var(--line); background:var(--card) }
 input:not([type=checkbox]):not([type=hidden]), select, textarea { font:inherit; font-size:13px; padding:6px 9px; width:100%;
   border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--ink) }
 textarea { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px }
+input::placeholder, textarea::placeholder { color:var(--ink-muted); opacity:1 }
+button:disabled, input:disabled { opacity:.6; cursor:not-allowed }
 label { display:block; font-size:12px; color:var(--ink2); margin-bottom:3px }
 /* Keep focus visible after native dialogs and full-body redraws as well as Tab. */
 :focus { outline:2px solid var(--focus); outline-offset:1px }
@@ -57,6 +59,8 @@ header.top form .grow { flex:1 1 auto }
   white-space:pre-wrap }
 .err { background:var(--bad-soft); border-left:3px solid var(--bad); color:var(--bad-ink);
   white-space:pre-wrap }
+/* Lattice's dark danger color is a status accent; use body ink for long text. */
+[data-theme="dark"] .err { color:var(--ink) }
 
 .card { background:var(--card); border:1px solid var(--line); border-radius:9px;
   padding:14px 16px; margin-bottom:16px; min-width:0 }
@@ -149,7 +153,7 @@ ACTIVITY_JS = """
 """
 
 PAGE = """<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{theme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

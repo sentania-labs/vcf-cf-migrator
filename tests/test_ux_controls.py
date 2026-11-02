@@ -10,7 +10,7 @@ import pytest
 
 from vcfcf_migrator import desktop, settings, source
 from vcfcf_migrator.ui import PageState, dispatch
-from make_export_fixture import EMPTY_SM_ID
+from make_export_fixture import EMPTY_SM_ID, build_export_zip
 
 
 @pytest.fixture
@@ -40,10 +40,18 @@ def tls_server(tmp_path):
             response = {'sources': [{'name': 'Directory A'}, {'name': 'SSO / B'}]}
             if self.path.endswith('/acquire'):
                 response = {'token': 'synthetic-session'}
+            if self.path.endswith('/content/operations/export'):
+                if self.command == 'POST':
+                    response = {'scope': 'CUSTOM', 'contentTypes': list(source.CONTENT_TYPES)}
+                elif any(method == 'POST' and path == self.path for method, path, _ in requests):
+                    response = {'state': 'FINISHED', 'id': 'synthetic-export', 'startTime': 1}
+                else:
+                    response = {'state': 'NOT_INITIALIZED'}
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps(response).encode())
+            self.wfile.write(build_export_zip() if self.path.endswith('/export/zip')
+                             else json.dumps(response).encode())
 
         do_GET = do_POST = answer
 
@@ -99,6 +107,24 @@ def test_bridge_test_clears_fields_without_persisting_or_logging(state, tls_serv
     assert not settings.settings_path().exists()
 
 
+@pytest.mark.parametrize('policy', ['trusted-ca', 'ignore', 'ignore-with-unreadable-ca'])
+def test_tls_policy_used_through_complete_export(tls_server, tmp_path, policy):
+    address, cert, requests = tls_server
+    ca = str(cert) if policy == 'trusted-ca' else (
+        str(tmp_path / 'unreadable.pem') if policy == 'ignore-with-unreadable-ca' else '')
+    client = source.Client(address, ca_file=ca, ignore_ssl=policy != 'trusted-ca')
+    snapshot = client.acquire('synthetic-user', 'synthetic-password', 'SSO / B', 'synthetic-export-password')
+    try:
+        assert snapshot.path.read_bytes() == build_export_zip()
+        assert requests[0][2]['authSource'] == 'SSO / B'
+        assert sum(method == 'POST' and path.endswith('/content/operations/export')
+                   for method, path, _ in requests) == 1
+        assert requests[-1][1].endswith('/release')
+        assert client.token is None
+    finally:
+        snapshot.close()
+
+
 def test_source_replacement_confirmed_only_after_valid_load(state, export_zip, tmp_path):
     state.toggle('supermetric:' + EMPTY_SM_ID, True)
     graph, picked = state.graph, list(state.picked)
@@ -146,6 +172,22 @@ def test_picker_failure_is_actionable_and_ca_path_retains_extension(state):
     assert bridge.pick_path('unknown')['error']
     bridge._window.create_file_dialog = lambda *a, **k: (_ for _ in ()).throw(OSError('private path'))
     assert bridge.pick_path('bundle') == {'error': 'The file picker could not open. Enter the path manually.'}
+
+
+def test_show_in_folder_receives_only_the_completed_destination(state, tmp_path):
+    calls = []
+    state.show_in_folder = lambda path: calls.append(path) or True
+    bridge = desktop.Bridge(state)
+    bridge.act('/show-in-folder', {'path': '/unrelated/file'})
+    assert not calls
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    state.build(str(tmp_path / 'chosen bundle'))
+    bridge.act('/show-in-folder', {'path': '/unrelated/file'})
+    assert calls == [str(tmp_path / 'chosen bundle.zip')]
+    state.show_in_folder = lambda path: False
+    bridge.act('/show-in-folder')
+    assert 'folder could not be opened' in state.error
+    assert state.built_path == calls[0]
 
 
 def test_save_path_extension_full_destination_and_overwrite(state, tmp_path, export_zip):

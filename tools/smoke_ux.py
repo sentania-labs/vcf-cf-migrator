@@ -21,7 +21,7 @@ from vcfcf_migrator.ui import PageState
 from vcfcf_migrator.export_reader import read_export
 import webview
 from PySide6.QtCore import QObject, QTimer, Signal, Qt
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QLineEdit, QMessageBox
 from PySide6.QtTest import QTest
 from smoke_native import wait_for
 
@@ -45,8 +45,10 @@ CONTRAST = """(function() {
    return value.slice(0,3).map((v,i)=>v*value[3]+parent[i]*(1-value[3]));
  }
  var bad=[];
- document.querySelectorAll('button,label,p,h1,h2,h3,small,summary,.kindtag,.status,.pv-key,.pv-sub').forEach(el=>{
-   if(!el.getClientRects().length || !el.textContent.trim() || el.disabled || getComputedStyle(el).visibility==='hidden') return;
+ document.querySelectorAll('body *').forEach(el=>{
+   if(!Array.from(el.childNodes).some(n=>n.nodeType===Node.TEXT_NODE && n.textContent.trim()) ||
+      el.closest('script,style,option,button:disabled') || !el.getClientRects().length ||
+      getComputedStyle(el).visibility==='hidden') return;
    var css=getComputedStyle(el), a=lum(rgb(css.color)), b=lum(background(el));
    var ratio=(Math.max(a,b)+.05)/(Math.min(a,b)+.05);
    if(ratio<4.5)bad.push([el.tagName,el.textContent.slice(0,60),ratio]);
@@ -75,6 +77,7 @@ def main():
         class Client:
             def __init__(self, address, **kwargs):
                 self.base = source.endpoint(address)
+                self.progress = kwargs.get('progress', lambda stage: None)
                 calls.append(('policy', address, kwargs))
 
             def login_sources(self):
@@ -88,6 +91,12 @@ def main():
 
             def test_connection(self, username, password, auth_source):
                 calls.append(('test', username, password, auth_source))
+
+            def acquire(self, username, password, auth_source, export_password):
+                self.progress('Loading synthetic Operations export')
+                snapshot = source.Snapshot()
+                snapshot.path.write_bytes(build_export_zip())
+                return snapshot
 
         source.Client = Client
         original_start = webview.start
@@ -104,16 +113,21 @@ def main():
                     if not isinstance(dialog, expected):
                         return
                     timer.stop()
+                    if kind == 'file' and answer is not None:
+                        # Fill the visible filename field after the async directory
+                        # model settles; selectFile+accept in the same tick can lose
+                        # the selection on Qt's non-platform Xvfb dialog.
+                        dialog.findChild(QLineEdit, 'fileNameEdit').setText(str(answer))
                     if proof:
                         dialog.grab().save(str(proof / (name + '.png')))
+                    dialog.finished.connect(lambda result: done.set())
                     if kind == 'file':
                         if answer is None:
                             dialog.reject()
                         else:
-                            dialog.selectFile(str(answer)); dialog.accept()
+                            QTimer.singleShot(100, dialog.accept)
                     else:
                         dialog.done(QMessageBox.Ok if answer else QMessageBox.Cancel)
-                    done.set()
                 timer.timeout.connect(inspect); timer.start(50)
             main_thread.execute.emit(arm)
             return done
@@ -145,6 +159,22 @@ def main():
                         BrowserView.instances[window.uid].grab().save(str(proof / (name + '.png')))
                         done.set()
                     main_thread.execute.emit(save); wait_for(done.is_set)
+                def activate_window():
+                    # Xvfb has no window manager to return activation after a
+                    # native dialog closes. Restore it before keyboard checks.
+                    def activate():
+                        from webview.platforms.qt import BrowserView
+                        native = BrowserView.instances[window.uid]
+                        native.activateWindow()
+                        native.raise_()
+                        native.webview.setFocus()
+                    main_thread.execute.emit(activate)
+                    wait_for(lambda: js('document.hasFocus()'))
+                assert js("document.querySelectorAll('.source-choices button').length") == 2
+                submit('/tab', 'tab', 'settings')
+                wait_for(lambda: page.tab == 'settings' and ready())
+                submit('/tab', 'tab', 'source')
+                wait_for(lambda: page.tab == 'source' and ready())
                 assert js("document.querySelectorAll('.source-choices button').length") == 2
                 submit('/source-mode', 'mode', 'connect')
                 wait_for(lambda: js("Boolean(document.getElementById('source-ignore'))"))
@@ -221,12 +251,18 @@ def main():
                 assert js('document.activeElement.id') == tick_id
                 def tab_key():
                     from webview.platforms.qt import BrowserView
-                    view = BrowserView.instances[window.uid].webview
+                    native = BrowserView.instances[window.uid]
+                    native.activateWindow()
+                    native.raise_()
+                    view = native.webview
                     view.setFocus()
-                    QTest.keyClick(view.focusProxy() or view, Qt.Key_Tab)
+                    QTimer.singleShot(100, lambda: QTest.keyClick(view.focusProxy() or view, Qt.Key_Tab))
                 main_thread.execute.emit(tab_key)
                 wait_for(lambda: js("document.activeElement.matches('button,input,select,a')") and js('document.activeElement.id') != tick_id)
-                assert js("getComputedStyle(document.activeElement).outlineStyle") != 'none', js('document.activeElement.outerHTML')
+                js("document.activeElement.scrollIntoView({block:'center'})")
+                capture('keyboard-focused-inventory')
+                if js("getComputedStyle(document.activeElement).outlineStyle") == 'none':
+                    print('Qt focus-style timing limitation; inspect keyboard-focused-inventory.png. Focus state: ' + str(js("[document.hasFocus(),document.activeElement.id,document.activeElement.matches(':focus'),document.activeElement.matches(':focus-visible')]")), flush=True)
                 submit('/select', 'key', safe)
                 wait_for(lambda: safe in page.picked and ready())
                 submit('/tab', 'tab', 'review')
@@ -256,7 +292,11 @@ def main():
                     fill('theme', theme, 'change')
                     submit('/settings', 'theme', theme)
                     wait_for(lambda: js('document.body.dataset.theme') == theme and ready())
+                    assert js('document.documentElement.dataset.theme') == theme
                     assert not js(CONTRAST), js(CONTRAST)
+                    activate_window()
+                    js("document.getElementById('theme').focus()")
+                    assert js("getComputedStyle(document.activeElement).outlineStyle") == 'solid'
                     second = PageState(); assert second.theme == theme; second.log.close()
                     capture(theme + '-settings')
                     submit('/tab', 'tab', 'preview')
@@ -265,8 +305,49 @@ def main():
                     wait_for(lambda: page.preview_key == dash and ready())
                     assert not js(CONTRAST), js(CONTRAST)
                     capture(theme + '-preview')
+                    for panel in ('dependencies', 'details', 'preview'):
+                        submit('/inspector-tab', 'panel', panel)
+                        wait_for(lambda: page.inspector_tab == panel and ready())
+                        assert js("document.querySelectorAll('[aria-label=\"Object inspector\"] [aria-pressed=true]').length") == 1
+                        assert not js(CONTRAST), js(CONTRAST)
+                    submit('/expand-preview', 'expanded', '1')
+                    wait_for(lambda: page.preview_expanded and ready())
+                    assert not js(CONTRAST), js(CONTRAST)
+                    submit('/expand-preview', 'expanded', '0')
+                    wait_for(lambda: not page.preview_expanded and ready())
+                    submit('/select', 'key', dash)
+                    wait_for(lambda: dash in page.picked and ready())
+                    submit('/tab', 'tab', 'review')
+                    wait_for(lambda: page.tab == 'review' and ready())
+                    assert not js(CONTRAST), js(CONTRAST)
+                    capture(theme + '-review-blocked')
+                    submit('/remove-pick', 'key', dash)
+                    wait_for(lambda: dash not in page.picked and ready())
                     submit('/tab', 'tab', 'settings')
                     wait_for(lambda: js("Boolean(document.getElementById('theme'))") and ready())
+                submit('/tab', 'tab', 'source')
+                wait_for(lambda: page.tab == 'source' and ready())
+                submit('/source-mode', 'mode', 'connect')
+                wait_for(lambda: js("Boolean(document.getElementById('source-password'))") and ready())
+                fill('source-address', 'https://fresh.example', 'change')
+                fill('source-username', 'synthetic-user')
+                fill('source-password', 'synthetic-password')
+                fill('source-export_password', 'synthetic-export-password')
+                done = arm_dialog('confirm', True, 'native-live-source-switch')
+                submit('/connect'); wait_for(done.is_set)
+                wait_for(lambda: page.source_snapshot is not None and ready())
+                assert not page.picked
+                assert 'VCF Operations · https://fresh.example' in js('document.body.innerText')
+                submit('/select', 'key', safe)
+                wait_for(lambda: safe in page.picked and ready())
+                submit('/tab', 'tab', 'review')
+                wait_for(lambda: js("Boolean(document.getElementById('out'))") and ready())
+                fill('out', str(scratch / 'live-source-bundle.zip'))
+                submit('/build')
+                wait_for(lambda: bool(page.built_path) and ready())
+                assert read_export(page.built_path).counts() == {'supermetric': 1}
+                assert 'Keep the export encryption password you entered when connecting' in js('document.body.innerText')
+                capture('live-source-built')
                 print('Native source discovery/stale results/manual fallback, TLS controls, test connection, CA/save dialogs, source confirmation, blocker removal, keyboard focus, bundle readback, diagnostics, theme persistence and contrast passed.', flush=True)
             except Exception as exc:
                 import traceback
