@@ -130,16 +130,34 @@ def main():
                     ok, error = handler.performRequests_error_([request], None)
                     if not ok:
                         raise AssertionError('Could not read native control labels: ' + str(error))
-                    matches = [item for item in request.results() or []
-                               if str(item.topCandidates_(1)[0].string()).lower().startswith(label.lower())]
-                    if len(matches) != 1:
-                        return None
-                    rect = matches[0].boundingBox()
-                    screen = Quartz.CGDisplayBounds(display)
-                    return (screen.origin.x + (rect.origin.x + rect.size.width / 2) * screen.size.width,
-                            screen.origin.y + (1 - rect.origin.y - rect.size.height / 2) * screen.size.height)
+                    # Prefer an exact line, then a line that starts with the label,
+                    # then a label inside a longer line: Vision may read adjacent
+                    # header buttons as one line. Ambiguity at a tier is a miss.
+                    def plain(text):
+                        return text.lower().replace('…', '').replace('.', '').strip()
+                    wanted = plain(label)
+                    items = [(item, str(item.topCandidates_(1)[0].string())) for item in request.results() or []]
+                    for matches in ([p for p in items if plain(p[1]) == wanted],
+                                    [p for p in items if p[1].lower().startswith(label.lower())],
+                                    [p for p in items if label.lower() in p[1].lower()]):
+                        if not matches:
+                            continue
+                        if len(matches) != 1:
+                            return None
+                        item, text = matches[0]
+                        start = text.lower().find(label.lower())
+                        rect = item.boundingBox()
+                        if plain(text) != wanted:
+                            found, _ = item.topCandidates_(1)[0].boundingBoxForRange_error_((start, len(label)), None)
+                            if found is None:
+                                return None
+                            rect = found.boundingBox()
+                        screen = Quartz.CGDisplayBounds(display)
+                        return (screen.origin.x + (rect.origin.x + rect.size.width / 2) * screen.size.width,
+                                screen.origin.y + (1 - rect.origin.y - rect.size.height / 2) * screen.size.height)
+                    return None
 
-                def click(label, action, scroll=False):
+                def click(label, action, scroll=False, save_dialog=False):
                     offset = len(events())
                     def find():
                         point = button_point(label)
@@ -157,6 +175,13 @@ def main():
                         event = Quartz.CGEventCreateMouseEvent(None, event_type, point, Quartz.kCGMouseButtonLeft)
                         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
                         time.sleep(.1)
+                    if save_dialog:
+                        # The app opens its native Save panel, already pointed at the
+                        # real default folder and file name. Accept it as a user would.
+                        wait_for(lambda: button_point('Cancel'))
+                        for down in (True, False):
+                            event = Quartz.CGEventCreateKeyboardEvent(None, 36, down)
+                            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
                     wait_for(lambda: rendered_after(action, offset))
 
                 wait_for(lambda: rendered_after('/open'))
@@ -172,7 +197,7 @@ def main():
                         assert metrics == json.loads(original.read('supermetrics.json'))
                 subprocess.run(['screencapture', '-x', str(args.screenshot)], check=True)
                 click('Help & diagnostics', '/tab')
-                click('Save anonymized diagnostics', '/diagnostics')
+                click('Save diagnostics…', '/diagnostics', save_dialog=True)
                 report = (scratch / 'vcfcf-migrator-diagnostics.jsonl').read_text()
                 assert json.loads(report.splitlines()[0])['kind'] == 'vcfcf-migrator-diagnostics'
                 for private in (str(scratch), str(Path.home()), Path.home().name, socket.gethostname(),

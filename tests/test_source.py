@@ -58,7 +58,7 @@ def test_download_scope_auth_and_cleanup():
         assert path.read_bytes() == expected
         assert path.stat().st_mode & 0o777 == 0o600
         assert c.token is None
-        assert json.loads(opener.requests[0].data)['authSource'] == 'local'
+        assert 'authSource' not in json.loads(opener.requests[0].data)
         assert opener.requests[2].get_header('Encryptionpassword') == 'Export1!password'
         assert all(r.get_header('Authorization') == 'OpsToken test-token' for r in opener.requests[1:])
     finally:

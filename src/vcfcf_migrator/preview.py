@@ -128,10 +128,12 @@ DEFAULT_GRID_COLUMNS = 12
 # clamped and named instead.
 MAX_GRID_COLUMNS = 48
 
+from . import theme
+
 PREVIEW_CSS = """
-.pv { --pv-bg:#1b1f24; --pv-panel:#23282f; --pv-panel2:#2a3038; --pv-line:#363d47;
-  --pv-ink:#f2f4f7; --pv-ink2:#b7bfca; --pv-ink3:#7f8896; --pv-accent:#3987e5;
-  --pv-warn:#e0a400; --pv-ok:#199e70; --pv-bad:#d95926;
+ .pv { --pv-bg:var(--bg); --pv-panel:var(--surface); --pv-panel2:var(--surface-sunken); --pv-line:var(--line);
+  --pv-ink:var(--ink); --pv-ink2:var(--ink-muted); --pv-ink3:var(--ink-muted); --pv-accent:var(--accent);
+  --pv-warn:var(--warn); --pv-ok:var(--ok); --pv-bad:var(--bad);
   background:var(--pv-bg); color:var(--pv-ink); border-radius:6px; padding:14px 16px 18px;
   font:13px/1.45 system-ui,"Segoe UI",sans-serif; }
 .pv * { box-sizing:border-box }
@@ -151,8 +153,8 @@ PREVIEW_CSS = """
   text-transform:uppercase; letter-spacing:.04em; white-space:nowrap }
 .pv .pv-flow { font-size:10px; font-weight:500; padding:1px 6px; border-radius:9px;
   white-space:nowrap; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis }
-.pv .pv-flow.driven { background:rgba(57,135,229,0.16); color:#8fbcf5 }
-.pv .pv-flow.drives { background:rgba(25,158,112,0.16); color:#67c9a2 }
+.pv .pv-flow.driven { background:var(--accent-soft); color:var(--accent-ink) }
+.pv .pv-flow.drives { background:var(--ok-soft); color:var(--ok-ink) }
 .pv .pv-w.is-receiver { border-left:3px solid var(--pv-accent) }
 .pv .pv-w.is-provider { border-left:3px solid var(--pv-ok) }
 .pv .pv-drivenby { font-size:10.5px; color:var(--pv-ink3); margin:0 0 6px }
@@ -161,7 +163,7 @@ PREVIEW_CSS = """
 .pv .pv-wiring b { color:var(--pv-ink); font-weight:600 }
 .pv .pv-wiring ul { margin:5px 0 0; padding-left:18px }
 .pv .pv-wiring li { margin:1px 0 }
-.pv .pv-wiring .arrow { color:var(--pv-accent); font-weight:600 }
+.pv .pv-wiring .arrow { color:var(--accent-ink); font-weight:600 }
 .pv .pv-lbl { font-size:11px; color:var(--pv-ink2); margin-bottom:2px; }
 .pv .pv-key { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px; color:var(--pv-ink3);
   word-break:break-all }
@@ -183,12 +185,12 @@ PREVIEW_CSS = """
 .pv .pv-placeholder { border:1px dashed var(--pv-line); border-radius:3px; color:var(--pv-ink3);
   font-size:11px; padding:10px; text-align:center }
 .pv .pv-nothing { border:1px solid var(--pv-warn); border-left-width:3px; border-radius:3px;
-  background:rgba(224,164,0,0.09); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
+  background:var(--warn-soft); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
 .pv .pv-nothing b { color:var(--pv-warn); display:block; font-size:10px; text-transform:uppercase;
   letter-spacing:.06em; margin-bottom:3px }
 .pv .pv-elsewhere { border:1px dashed var(--pv-accent); border-radius:3px;
-  background:rgba(57,135,229,0.07); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
-.pv .pv-elsewhere b { color:var(--pv-accent); display:block; font-size:10px;
+  background:var(--accent-soft); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
+.pv .pv-elsewhere b { color:var(--accent-ink); display:block; font-size:10px;
   text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px }
 .pv .pv-section { grid-column:1 / -1; border-bottom:1px solid var(--pv-line); color:var(--pv-ink2);
   font-size:12px; font-weight:600; padding:4px 2px; min-height:0 }
@@ -198,7 +200,7 @@ PREVIEW_CSS = """
 .pv pre.pv-code { background:var(--pv-panel2); border:1px solid var(--pv-line); border-radius:4px;
   padding:9px 11px; overflow-x:auto; font-family:ui-monospace,Menlo,Consolas,monospace;
   font-size:11.5px; color:var(--pv-ink); white-space:pre-wrap; word-break:break-word; margin:0 0 10px }
-.pv pre.pv-code .ref { color:var(--pv-accent) }
+.pv pre.pv-code .ref { color:var(--accent-ink) }
 .pv pre.pv-code .unres { color:var(--pv-warn) }
 .pv h4.pv-h { font-size:12px; margin:14px 0 6px; color:var(--pv-ink2); text-transform:uppercase;
   letter-spacing:.05em; font-weight:600 }
@@ -226,11 +228,11 @@ _PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <style>
-body {{ margin:0; padding:18px; background:#11151a; font:13px/1.45 system-ui,"Segoe UI",sans-serif; }}
+body {{ margin:0; padding:18px; background:var(--bg); font:13px/1.45 system-ui,"Segoe UI",sans-serif; }}
 {css}
 </style>
 </head>
-<body>
+<body data-theme="dark">
 {body}
 </body>
 </html>
@@ -836,18 +838,13 @@ def heatmap_metrics(cfg: dict) -> List[Tuple[str, str]]:
     return out
 
 
-# VCF Operations' heat colours, green at the good end and red at the bad end.
-# Not invented here and not the page's own chrome: these are the hex values the
-# corpus's own heatmaps carry in ``config.configs[].color.thresholds.colors``
-# (the shape documented in the factory's
-# knowledge/context/api-surface/widget_types_survey.md, "Heatmap"), and they are
-# the product's badge scale. The page's blue accent is chart ink and says
-# nothing about a value, so it never appears in a heat scale: a VCF Operations
-# heatmap runs red to green and never shows blue.
-HEAT_GOOD = "#74B43B"    # green, the good end
-HEAT_FAIR = "#ECC33E"    # yellow
-HEAT_POOR = "#E07720"    # orange
-HEAT_BAD = "#DE3F30"     # red, the bad end
+# The fallback keeps green-to-red heat semantics using generated Lattice data
+# tokens, with four distinct bands in each theme. Blue remains chart ink, not
+# a heat level. Explicit colors carried by an export are preserved below.
+HEAT_GOOD = "var(--heat-good)"
+HEAT_FAIR = "var(--heat-fair)"
+HEAT_POOR = "var(--heat-poor)"
+HEAT_BAD = "var(--heat-bad)"
 HEAT_RAMP = (HEAT_GOOD, HEAT_GOOD, HEAT_FAIR, HEAT_POOR, HEAT_BAD)
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -861,8 +858,8 @@ def heatmap_palette(cfg: dict) -> Tuple[str, ...]:
     high free capacity is good). Twenty of the corpus's heatmap layers carry a
     green-to-red list and several carry the reverse, so taking the widget's own
     list keeps each one pointing the way its author meant. Anything not a plain
-    hex colour is ignored, and a widget that declares none gets the product
-    ramp, good to bad.
+    hex colour is ignored, and a widget that declares none gets the themed
+    fallback ramp, good to bad.
     """
     configs = cfg.get("configs")
     if isinstance(configs, list):
@@ -2418,4 +2415,4 @@ def render_page(graph: Graph, node: Node) -> str:
     """The preview as one standalone HTML file: inline CSS, inline SVG, no
     network of any kind."""
     return _PAGE.format(title=_e(f"{node.name} ({node.kind}) preview"),
-                        css=PREVIEW_CSS, body=fragment(graph, node))
+                        css=theme.CSS + PREVIEW_CSS, body=fragment(graph, node))

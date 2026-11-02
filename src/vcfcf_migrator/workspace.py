@@ -38,7 +38,7 @@ header.top .ver { font-family:inherit }
   border-bottom:1px solid var(--line2); align-items:center; scroll-margin-top:100px }
 .inventory .row form { display:block; min-width:0 }
 .inventory .name-button { text-align:left; background:none; border:0; padding:0; width:100%;
-  color:var(--accent); font-weight:600; overflow-wrap:anywhere }
+  color:var(--accent-ink); font-weight:600; overflow-wrap:anywhere }
 .inventory .kindtag { display:block; overflow-wrap:anywhere; font-size:12px; color:var(--ink2) }
 .inventory .status { font-size:11px; color:var(--ink2); max-width:110px; overflow-wrap:anywhere }
 .inventory .status.warn { color:var(--warn) }
@@ -62,8 +62,19 @@ header.top .ver { font-family:inherit }
 .review .err, .review .msg { margin:12px 0 }
 .review li { overflow-wrap:anywhere }
 .export-name { min-width:0; overflow-wrap:anywhere; flex:1 1 200px }
-.top form.connect-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px }
-.connect-form input { width:100%; box-sizing:border-box }
+.connect-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px }
+.connect-form input:not([type=checkbox]) { width:100%; box-sizing:border-box }
+.connect-form input[type=checkbox] { width:auto }
+.connect-form fieldset { border:1px solid var(--line); border-radius:6px; padding:16px; min-width:0 }
+.connect-form legend { font-weight:600; padding:0 5px }
+.connect-form label { margin-top:8px }
+.source-page { max-width:1000px; margin:24px auto 120px; padding:0 20px }
+.source-choices { display:grid; grid-template-columns:1fr 1fr; gap:16px }
+.source-choices button { width:100%; padding:14px; font-size:16px }
+.source-form { margin-top:20px }
+.required-help { grid-column:2 / -1; font-size:12px; color:var(--ink2) }
+.required-help form { display:inline-block!important; margin:3px }
+.blocker-actions { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 }
 .connect-form .note { grid-column:1/-1 }
 .top details { max-width:100%; min-width:0 }
 .top details[open] { flex-basis:100% }
@@ -73,6 +84,7 @@ header.top .ver { font-family:inherit }
   .workspace .card { padding:12px }
 }
 @media(max-width:800px) {
+  .source-choices,.connect-form { grid-template-columns:1fr }
   .workspace { grid-template-columns:minmax(0,1fr); padding-bottom:170px }
   .rail,.inspector { position:static; max-height:none }
   .rail { display:flex; gap:5px; flex-wrap:wrap }
@@ -84,10 +96,13 @@ header.top .ver { font-family:inherit }
 """
 
 
-def action(path, label, fields=None, primary=False):
+def action(path, label, fields=None, primary=False, pressed=None):
     hidden = ''.join(f"<input type='hidden' name='{e(k)}' value='{e(v)}'>"
                      for k, v in (fields or {}).items())
-    return f"<form method='post' action='{path}'>{hidden}{_button(label, primary=primary)}</form>"
+    button = _button(label, primary=primary)
+    if pressed is not None:
+        button = button.replace("<button ", f"<button aria-pressed='{str(pressed).lower()}' ", 1)
+    return f"<form method='post' action='{path}'>{hidden}{button}</form>"
 
 
 def identity(state, node):
@@ -106,42 +121,69 @@ def display_name(state, node):
 
 
 def header(state):
-    change = ("<form method='post' action='/open'><div class='grow'>"
-              "<label for='zip'>Export zip path</label>"
-              f"<input type='text' id='zip' name='zip' value='{e(state.zip_path)}'></div>"
-              + _button('Open export', primary=True) + '</form>'
-              + f"<p class='note'>{wording.SOURCE_SWITCH_HELP}</p>")
-    if state.file_picker is not None:
-        change += action('/pick-export', 'Browse…')
-    change += ("<details class='source-connect'><summary>Connect to Operations</summary>"
-               "<p class='note'>Download custom content directly. Credentials are not saved. "
-               "Do not run another content export with this account while connecting.</p>"
-               "<form class='connect-form' method='post' action='/connect' autocomplete='off'>")
-    for name, label, kind, required in (
-            ('address', 'VCF Operations URL', 'url', True),
-            ('username', 'Username', 'text', True),
-            ('password', 'Login password', 'password', True),
-            ('auth_source', 'Login source (optional)', 'text', False),
-            ('ca_file', 'Trusted CA certificate file path (optional)', 'text', False),
-            ('export_password', 'Export encryption password', 'password', True)):
-        change += (f"<div class='field'><label for='source-{name}'>{label}</label>"
-                   f"<input id='source-{name}' name='{name}' type='{kind}' autocomplete='off'"
-                   + (' required' if required else '') + ">"
-                   + (f"<p class='note'>{wording.LOGIN_SOURCE_HELP}</p>" if name == 'auth_source' else '')
-                   + (f"<p class='note'>{wording.EXPORT_PASSWORD_HELP}</p>" if name == 'export_password' else '') + '</div>')
-    change += ("<p class='note'>Use an export password that meets Operations password requirements. "
-               "The source download is temporary; save your migration bundle before closing.</p>"
-               + _button('Connect and load', primary=True) + '</form></details>')
-    title = ('Operations snapshot' if state.source_snapshot is not None else e(Path(state.zip_path).name)) if state.graph else 'Open a content export to begin'
+    title = ('VCF Operations · ' + state.source_address if state.source_snapshot is not None
+             else 'Export zip · ' + Path(state.zip_path).name) if state.graph else 'Choose your content source'
     return ("<header class='top'><h1>VCF content migrator</h1>"
-            f"<span class='export-name'>{title}</span><span class='ver'>v{e(__version__)}</span>"
-            f"<a id='release-notice' href='{RELEASE_PAGE}' hidden "
-            "title='View the latest release on GitHub'></a>"
-            + action('/tab', 'Inventory', {'tab': 'preview'})
-            + action('/tab', 'Help & diagnostics', {'tab': 'settings'})
-            + f"<details{' open' if not state.graph else ''}><summary>"
-            + ('Change export' if state.graph else 'Open export')
-            + '</summary>' + change + '</details></header>')
+            + f"<span class='ver'>{e(__version__)}</span>"
+            + f"<a id='release-notice' href='{RELEASE_PAGE}' hidden></a>"
+            + f"<span class='export-name'>{e(title)}</span>"
+            + (action('/tab', 'Inventory', {'tab': 'preview'})
+               + action('/tab', 'Change source', {'tab': 'source'}) if state.graph else
+               action('/tab', 'Choose source', {'tab': 'source'}) if state.tab == 'settings' else '')
+            + action('/tab', 'Help & diagnostics', {'tab': 'settings'}) + '</header>')
+
+
+def connection_form():
+    return ("<h2>Connect to VCF Operations</h2>"
+               "<p class='note'>Credentials are never saved. Download an export from VCF Operations. Do not run another export with this account while connecting.</p>"
+               "<form class='connect-form' method='post' action='/connect' autocomplete='off'>"
+               "<fieldset><legend>Connection</legend><label for='source-address'>VCF Operations URL</label>"
+               "<input id='source-address' name='address' type='url' placeholder='https://operations.example.com' required></fieldset>"
+               "<fieldset><legend>Sign in</legend><label for='source-username'>Username</label>"
+               "<input id='source-username' name='username' type='text' required><label for='source-password'>Login password</label>"
+               "<input id='source-password' name='password' type='password' required>"
+               "<label for='source-auth_source'>Login source</label>"
+               "<input id='source-auth_source' name='auth_source' type='text' list='login-sources' value='Local'>"
+               "<datalist id='login-sources'><option value='Local'></datalist>"
+               f"<p class='note'>{wording.LOGIN_SOURCE_HELP}</p><p id='source-status' role='status'></p></fieldset>"
+               "<fieldset><legend>Connection security</legend>"
+               "<label for='source-ca_file'>Trusted CA certificate bundle (PEM, optional)</label>"
+               "<input id='source-ca_file' name='ca_file' type='text'><button type='button' data-pick='ca' data-target='source-ca_file'>Browse…</button>"
+               "<p class='note'>The system trust store is used unless you choose a PEM bundle for a private CA.</p>"
+               "<label><input id='source-ignore' type='checkbox' name='ignore_ssl' value='1'> Ignore SSL validation</label>"
+               "<p id='ssl-warning' role='status' hidden>The server's identity will not be verified.</p></fieldset>"
+               "<fieldset><legend>Export password</legend><label for='source-export_password'>Export encryption password</label>"
+               "<input id='source-export_password' name='export_password' type='password' required>"
+               f"<p class='note'>{wording.EXPORT_PASSWORD_HELP}</p></fieldset>"
+               "<button type='button' id='test-connection'>Test connection</button>"
+               "<p id='test-status' role='status'></p>"
+               + _button('Connect and load', primary=True) + '</form>')
+
+
+def source_page(state):
+    choices = "<div class='source-choices'>"
+    for mode, title, help_text in (
+            ('zip', 'Open an export zip', 'Choose an existing content export stored on this computer.'),
+            ('connect', 'Connect to VCF Operations', 'Sign in to download a fresh content export from your server.')):
+        choices += ("<section class='card'>" + action('/source-mode', title, {'mode': mode}, True)
+                    + f"<p>{help_text}</p></section>")
+    choices += '</div>'
+    out = "<main class='source-page'><h2>Choose a source</h2>" + choices
+    if state.graph:
+        out += action('/tab', 'Keep current source', {'tab': 'preview'})
+        out += f"<p class='note'>{wording.SOURCE_SWITCH_HELP} You will be asked to confirm before your selection is discarded.</p>"
+    if state.source_mode == 'connect':
+        out += "<section class='card source-form'>" + connection_form() + '</section>'
+    elif state.source_mode == 'zip':
+        out += ("<section class='card source-form'><h2>Open an export zip</h2>"
+                "<form method='post' action='/open'><div class='field'>"
+                "<label for='zip'>Export zip path</label>"
+                "<input type='text' id='zip' name='zip' required></div>"
+                + _button('Open export', primary=True) + '</form>')
+        if state.file_picker is not None:
+            out += action('/pick-export', 'Browse…')
+        out += '<p class="note">Processing stays on this computer. The source export is unchanged.</p></section>'
+    return out + '</main>'
 
 
 def footer(state):
@@ -189,6 +231,7 @@ def inventory(state):
     for node in nodes:
         detail = identity(state, node)
         checked = node.key in included
+        required = checked and node.key not in picked
         gaps = state.graph.missing_for(node.key)
         status = 'You selected' if node.key in picked else ('Automatically required' if checked else 'Available')
         if gaps:
@@ -198,14 +241,18 @@ def inventory(state):
                    f"<input type='hidden' name='key' value='{e(node.key)}'>"
                    f"<input type='hidden' name='on' value='{'0' if checked else '1'}'>"
                    f"<input type='checkbox' id='tick-{e(anchor(node.key))}' class='tick' name='tick'{' checked' if checked else ''} "
-                   f"aria-label='{e(('deselect ' if checked else 'select ') + node.name)}' "
+                   f"aria-label='{e(('Automatically required: ' if required else 'deselect ' if checked else 'select ') + node.name)}' "
+                   + (f"disabled aria-describedby='required-{e(anchor(node.key))}' " if required else '') +
                    "onchange='this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()'>"
                    f"<noscript>{_button('Remove' if checked else 'Add')}</noscript></form>"
                    "<form method='post' action='/preview'>"
                    f"<input type='hidden' name='key' value='{e(node.key)}'>"
                    f"<button class='name-button' id='inspect-{e(anchor(node.key))}'>{e(node.name)}</button>"
                    f"<span class='kindtag'>{e(detail)}</span></form>"
-                   f"<span class='status{' warn' if gaps else ''}'>{e(status)}</span></div>")
+                   f"<span class='status{' warn' if gaps else ''}'>{e(status)}</span>"
+                   + (f"<div class='required-help' id='required-{e(anchor(node.key))}'>Required by your selections: "
+                      + ''.join(action('/preview', display_name(state, n), {'key': n.key, 'panel': 'dependencies'})
+                                for n in affected_picks(state, node.key)) + '</div>' if required else '') + '</div>')
     if not nodes:
         out.append("<p>No matching content. Change the type or clear your search.</p>")
     return ''.join(out) + '</section>'
@@ -219,7 +266,7 @@ def inspector(state):
     out.append(f'<h3>{e(node.name)}</h3>')
     out.append("<nav class='toolbar' aria-label='Object inspector'>")
     for key, label in [('preview', 'Preview'), ('dependencies', 'Dependencies'), ('details', 'Details')]:
-        out.append(action('/inspector-tab', label, {'panel': key}, state.inspector_tab == key))
+        out.append(action('/inspector-tab', label, {'panel': key}, state.inspector_tab == key, pressed=state.inspector_tab == key))
     out.append('</nav>')
     if state.inspector_tab == 'preview':
         out.append(action('/expand-preview', 'Return to workspace' if state.preview_expanded else 'Expand preview',
@@ -232,7 +279,7 @@ def inspector(state):
     elif state.inspector_tab == 'dependencies':
         if state.preview_expanded:
             out.append(action('/expand-preview', 'Return to workspace', {'expanded': '0'}))
-        out.append('<h3>Depends on</h3>')
+        out.append('<h3>Requires</h3>')
         targets = state.graph.edges.get(node.key, [])
         gaps = state.graph.missing_for(node.key)
         for target in targets:
@@ -245,7 +292,7 @@ def inspector(state):
             out.append('<p>No dependencies recorded in this export.</p>')
         required = state.required_by(node.key)
         if required:
-            out.append('<h3>Required by:</h3>')
+            out.append('<h3>Required by these selected or included objects</h3>')
             for key in required:
                 parent = state.graph.nodes[key]
                 out.append(action('/preview', display_name(state, parent), {'key': key, 'panel': 'dependencies'}))
@@ -284,9 +331,13 @@ def review(state):
                    'A target instance might already have these objects, but this export cannot verify that.</p><ul>')
         for gap in selection.missing_dependencies():
             source = state.graph.nodes[gap.source_key]
-            causes = ', '.join(display_name(state, n) for n in affected_picks(state, gap.source_key))
-            out.append(f'<li>{e(display_name(state, source))} requires {e(gap.kind)} {e(gap.ident)} '
-                       f'(via {e(gap.via)}). Affected selections: {e(causes)}.</li>')
+            out.append(f'<li>{e(display_name(state, source))} requires {e(gap.kind)} {e(gap.ident)}. '
+                       'This reference is missing from the export. Affected selections:')
+            for pick in affected_picks(state, gap.source_key):
+                out.append("<div class='blocker-actions'>"
+                           + action('/preview', display_name(state, pick), {'key': pick.key, 'panel': 'dependencies'})
+                           + action('/remove-pick', 'Remove affected selection', {'key': pick.key}) + '</div>')
+            out.append('</li>')
         out.append('</ul></div>')
     else:
         out.append("<p class='msg'>Ready to build. All recorded dependencies are included.</p>")
@@ -310,6 +361,10 @@ def review(state):
     out.append('</ul></details>')
     from vcfcf_migrator.uipage import _build_form
     out.append(_build_form(state))
+    if state.built_path:
+        out.append(f"<p class='msg'>Saved to {e(state.built_path)}</p>")
+        if state.show_in_folder:
+            out.append(action('/show-in-folder', 'Show in folder'))
     if state.build_report:
         out.append("<h2>Last build</h2><details><summary>Bundle report</summary>"
                    f'<pre>{e(state.build_report)}</pre></details>')
@@ -317,20 +372,17 @@ def review(state):
 
 
 def body(state):
-    from vcfcf_migrator.uipage import _messages, _settings_panel, _commands_panel
+    from vcfcf_migrator.uipage import _messages, _settings_panel
     out = [header(state), _messages(state)]
-    if state.tab == 'review':
+    if state.tab == 'source' or (state.graph is None and state.tab != 'settings'):
+        out.append(source_page(state))
+    elif state.tab == 'review':
         out.append(review(state))
-    elif state.tab in ('settings', 'commands'):
+    elif state.tab == 'settings':
         out.append("<main class='support'><div class='stack'>"
-                   + action('/tab', 'Settings', {'tab': 'settings'})
-                   + action('/tab', 'Commands', {'tab': 'commands'}) + '</div>')
-        out.append(_settings_panel(state) if state.tab == 'settings' else _commands_panel(state))
+                   + '</div>')
+        out.append(_settings_panel(state))
         out.append('<details><summary>Versions</summary><pre>' + e('\n'.join(version_lines())) + '</pre></details></main>')
-    elif state.graph is None:
-        out.append("<main class='welcome card'><h2>Start here</h2><p>Open a content export zip, "
-                   'choose the content to carry, then review and build a bundle.</p>'
-                   '<p>Processing stays on this machine. The source export is unchanged.</p></main>')
     elif state.preview_expanded:
         out.append("<main class='preview-page'>" + inspector(state) + "</main>")
     else:

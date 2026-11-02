@@ -34,7 +34,7 @@ def test_the_page_opens_on_inventory_with_an_inspector(state):
 
 def test_only_one_panel_is_on_the_page_at_a_time(state):
     headings = {"preview": ("Preview", "Start here"),
-                "commands": ("Commands",),
+                "source": ("Choose a source",),
                 "settings": ("Settings",), "review": ("Review bundle",)}
     for tab in TABS:
         dispatch(state, "/tab", {"tab": tab})
@@ -59,9 +59,6 @@ def test_a_panel_that_does_not_exist_is_refused(state):
 # was being built: inspect sent you to Commands and left the listing behind on
 # Preview.
 @pytest.mark.parametrize("path,form,marker", [
-    ("/inspect", {"zip": "FIXTURE"}, "Listing</h2>"),
-    ("/tree", {}, "Command output</h2>"),
-    ("/corpus-check", {"dir": "TMP"}, "Command output</h2>"),
     ("/preview", {"key": DASH}, "class='pv-grid'"),
     # The one control outside the tabbed column, so it can be pressed from any
     # panel while its report renders on only one.

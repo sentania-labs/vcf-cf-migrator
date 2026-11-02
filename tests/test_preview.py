@@ -255,7 +255,7 @@ def test_a_health_chart_does_not_claim_health_it_has_not_read(built):
     would be a verdict this page cannot reach."""
     _members, graph = built
     page = page_for(graph, f"dashboard:{DASHBOARD_ID}@{OWNER}")
-    body = page.split("<body>")[1]
+    body = page.split("<body", 1)[1]
     cell = body.split("HealthChart</span></h3>")[1][:900]
     assert "polyline" in cell
     assert "--pv-ok" not in cell
@@ -328,6 +328,22 @@ def test_the_renderer_and_the_emptiness_rule_read_the_text_the_same_way():
     code, _sentence = _preview._widget_nothing("TextDisplay", cfg, {"type": "TextDisplay"})
     assert code == "widget-no-text"
     assert _preview.text_widget_words(cfg) == ""
+
+
+def test_standalone_preview_page_renders_in_the_dark_theme(built):
+    from html.parser import HTMLParser
+
+    class Body(HTMLParser):
+        theme = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "body":
+                self.theme = dict(attrs).get("data-theme")
+
+    _members, graph = built
+    parser = Body()
+    parser.feed(page_for(graph, f"view:{VIEW_IDS[0]}"))
+    assert parser.theme == "dark"
 
 
 def test_view_preview_shows_its_columns_with_mock_rows(built):

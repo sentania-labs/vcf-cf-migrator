@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The desktop window is reorganized around a start page where you choose to open
+  an export zip or connect to VCF Operations. Connecting adds a Browse control
+  for a trusted PEM CA file, an opt-in **Ignore SSL validation** switch with a
+  warning, an editable login-source picker (Local by default, populated from the
+  server), and **Test connection**. Bundles and diagnostics are saved through
+  native Save As dialogs, an existing destination is confirmed once, and
+  replacing a loaded source asks before discarding your selection. Light and
+  dark themes (light by default) are under Help & diagnostics > Settings.
+  Inspect, tree/JSON, selection-file and corpus-check controls are removed from
+  the desktop window and remain command-line only.
 - Dashboard navigation now includes linked dashboards automatically. Missing
   dashboards, missing navigation widgets, and unreadable navigation references
   block bundle creation. Navigation gap counts use the complete export. (#3)

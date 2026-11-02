@@ -79,7 +79,7 @@ def test_inspector_shows_dependencies(state):
     state.inspector_tab = "dependencies"
     page = state.render()
     inspector = page.split("id='inspector'", 1)[1]
-    assert "Depends on</h3>" in inspector
+    assert "Requires</h3>" in inspector
     assert f"value='{VIEW}'" in inspector
 
 
@@ -120,7 +120,7 @@ def test_a_pulled_in_object_says_what_needs_it(state):
     state.set_preview(VIEW)
     state.inspector_tab = "dependencies"
     page = state.render()
-    assert "Required by:" in page
+    assert "Required by these selected or included objects" in page
 
 
 def test_unchecking_something_still_needed_is_refused_with_the_reason(state):
@@ -159,19 +159,8 @@ def test_select_all_and_clear(state):
     assert state.selection_keys() == set()
 
 
-def test_a_selection_can_be_given_as_the_lines_build_select_takes(state):
-    state.apply_lines(f"# a comment\n{DASHBOARD_ID_2}\n\n")
-    assert DASH_2 in state.selected_keys()
-    assert VIEW_IDS[1] in " ".join(state.selection_keys())
-    assert state.selection_lines().strip() == DASH_2
 
 
-def test_lines_naming_something_absent_are_refused_and_change_nothing(state):
-    state.toggle(DASH, on=True)
-    before = state.selection_keys()
-    state.apply_lines("not-a-real-object")
-    assert "does not carry" in state.error
-    assert state.selection_keys() == before
 
 
 def test_opening_another_export_drops_the_old_selection(state, tmp_path):
@@ -255,7 +244,7 @@ def test_the_only_script_on_the_page_is_the_checkbox_submit(state):
         }, f"unexpected inline handler on the {tab} panel: {other}"
     state.tab = "preview"
     page = state.render()
-    assert "Browse" in page
+    assert "Change source" in page
     # Single quoted, double quoted and unquoted, because this file writes both
     # quotings and a guard that sees one of them is not a guard: a reviewer
     # added onclick="..." to every button and this test stayed green.
@@ -293,7 +282,7 @@ def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip,
     assert "bundle built and saved to" in state.message
 
     picks = tmp_path / "picks.txt"
-    picks.write_text("\n".join(state.selection_lines().splitlines()) + "\n")
+    picks.write_text("\n".join(state.picked) + "\n")
     from_cli = tmp_path / "cli.zip"
     assert main(["build", str(export_zip),
                  "--select", str(picks), "--out", str(from_cli)]) == 0
@@ -337,8 +326,6 @@ def test_endpoints_drive_the_same_actions(server, export_zip, tmp_path):
     assert "class='pv-grid'" in body
     _, body = _post(server, "/filter", {"filter": "cluster overview"})
     assert "shown /" in body
-    _, body = _post(server, "/tree", {})
-    assert "items: " in body
     _, body = _post(server, "/select-all", {})
     assert "selected every object" in body
     _, body = _post(server, "/clear", {})
@@ -363,8 +350,8 @@ def test_opening_an_export_that_is_not_one_says_so(server, tmp_path):
 
 def test_the_page_still_works_with_no_export_open(config_dir):
     page = PageState().render()
-    assert "Open a content export zip" in page
-    assert "Start here" in page
+    assert "Open an export zip" in page
+    assert "Connect to VCF Operations" in page
 
 
 # ---------------------------------------------------------------------------
@@ -432,53 +419,3 @@ def test_a_successful_open_still_resets_the_selection(state, tmp_path):
 # ---------------------------------------------------------------------------
 # The command line is quoted for the shell it will be pasted into
 # ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("path", [
-    "/tmp/plain.zip",
-    "/tmp/My Export.zip",
-    "/tmp/$(whoami).zip",
-    "/tmp/`id`.zip",
-    '/tmp/a"b.zip',
-    "/tmp/a'b.zip",
-    r"C:\Users\a b\export.zip",
-])
-def test_the_posix_form_is_one_argument_and_substitutes_nothing(path):
-    """Inside double quotes a POSIX shell still expands ``$name`` and
-    ``` `command` ``` , so the double-quoted form produced a line that could
-    write somewhere else or run substituted text."""
-    import shlex
-
-    from vcfcf_migrator.ui import _shell_quote
-
-    quoted = _shell_quote(path, windows=False)
-    assert shlex.split(f"vcfcf-migrator inspect {quoted}")[-1] == path
-    if any(ch in path for ch in "$`"):
-        # The metacharacters survive as characters, not as a substitution.
-        assert quoted.startswith("'") and quoted.endswith("'")
-
-
-@pytest.mark.parametrize("path,expected", [
-    ("C:\\exports\\plain.zip", "C:\\exports\\plain.zip"),
-    ("C:\\Users\\a b\\export.zip", '"C:\\Users\\a b\\export.zip"'),
-    ("C:\\x\\$(whoami).zip", '"C:\\x\\$(whoami).zip"'),
-    ('C:\\x\\a"b.zip', '"C:\\x\\a""b.zip"'),
-])
-def test_the_windows_form_keeps_double_quotes(path, expected):
-    """Single quotes are literal characters to cmd.exe, which is why the
-    double-quoted form was chosen; an embedded double quote is doubled, which
-    is what cmd.exe, PowerShell and the C runtime parser all take."""
-    from vcfcf_migrator.ui import _shell_quote
-
-    assert _shell_quote(path, windows=True) == expected
-
-
-def test_the_platform_decides_the_quoting(monkeypatch):
-    """The command is pasted into the shell of the machine the page runs on."""
-    import os as _os
-
-    from vcfcf_migrator.ui import _shell_quote
-
-    monkeypatch.setattr(_os, "name", "posix")
-    assert _shell_quote("/tmp/My Export.zip") == "'/tmp/My Export.zip'"
-    monkeypatch.setattr(_os, "name", "nt")
-    assert _shell_quote("/tmp/My Export.zip") == '"/tmp/My Export.zip"'

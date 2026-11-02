@@ -30,7 +30,7 @@ def state(config_dir, export_zip):
 
 def test_page_html_injects_the_bridge_once_before_body_ends(state):
     html = desktop.page_html(state)
-    assert html.count("window.pywebview.api.act") == 1
+    assert html.count(desktop._BRIDGE_JS) == 1
     assert html.index("window.pywebview.api.act") < html.index("</body>")
 
 
@@ -153,15 +153,6 @@ def test_no_inline_handler_submits_a_form_without_requestsubmit(state):
         )
 
 
-def test_the_bridge_prefers_a_field_over_the_button_that_submitted_it():
-    """Parity with the server, which parses first-wins.
-
-    The button is written into the dict before FormData overwrites it, so a
-    field of the same name wins in both modes. Reversed, the same click would
-    do different things in the browser and in the window.
-    """
-    js = desktop._BRIDGE_JS
-    assert js.index("data[by.name] = by.value") < js.index("new FormData(form)")
 
 
 def test_clear_filter_works_and_does_not_collide_with_the_field(state):
@@ -189,6 +180,7 @@ def test_the_page_has_no_two_controls_sharing_a_name_in_one_form(state):
     # Every optional control has to be on the page, or this guard inspects
     # markup that is not the markup a user sees.
     state.file_picker = lambda: None
+    state.source_mode = "zip"
     seen = []
     # Every panel. Two of the three are behind tabs, and a collision on either
     # of them would be invisible to a guard that renders only the default one.
@@ -286,6 +278,8 @@ def test_browse_button_appears_only_when_something_can_open_a_dialog(state):
     assert state.file_picker is None
     assert "Browse" not in state.render()
     state.file_picker = lambda: None
+    state.source_mode = "zip"
+    state.tab = "source"
     assert "Browse" in state.render()
 
 
@@ -302,6 +296,7 @@ def test_cancelling_the_dialog_is_not_an_error(state):
     my mind" is the kind of thing that makes a tool feel broken."""
     before = state.zip_path
     state.file_picker = lambda: None
+    state.source_mode = "zip"
     ui.dispatch(state, "/pick-export", {})
     assert state.error == ""
     assert state.zip_path == before

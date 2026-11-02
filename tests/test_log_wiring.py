@@ -351,7 +351,7 @@ def test_a_log_setting_change_keeps_what_the_page_learned_about_people(
     target = tmp_path / "after-change.jsonl"
     state.save_setting({"log_file": str(target)})
     state.save_setting({"log_level": "debug"})
-    state.run_tree()
+    state.render()
     state.select_all()
     out = tmp_path / "diag.jsonl"
     state.save_diagnostics(str(out))
@@ -366,7 +366,7 @@ def test_the_page_logs_render_completion_without_ending_the_session(
         tmp_path, export_zip, config_dir):
     state = PageState(str(export_zip))
     state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
-    state.run_tree()
+    state.render()
     state.render()
     assert not of(state.log.events, "run.end")
     assert any(e["phase"] == "render" for e in of(state.log.events, "phase.end"))
@@ -385,7 +385,7 @@ def test_the_ui_command_writes_the_log_the_flag_asks_for(tmp_path, export_zip,
                          log_level_cli="debug")
     try:
         state.select_all()
-        state.run_tree()
+        state.render()
         state.render()
     finally:
         state.log.close()
@@ -430,7 +430,7 @@ def test_the_header_the_page_keeps_is_the_one_the_run_is_using(tmp_path, export_
     state = PageState(str(export_zip))
     state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
     state.save_setting({"log_level": "debug"})       # a second open_log
-    state.run_tree()
+    state.render()
     state.log.event_cap = 5                          # force the truncation
     for index in range(40):
         state.log.detail("noise", index=index)
@@ -458,7 +458,7 @@ def test_the_page_has_a_control_for_the_log_file_and_the_level(state):
     # These live on the Settings panel, which is one of three tabs now.
     state.tab = "settings"
     page = state.render()
-    assert "Run log file" in page and "Log level" in page
+    assert "Log file path" in page and "Amount of detail" in page
     for level in runlog.LEVEL_NAMES:
         assert f"<option value='{level}'" in page
     assert "never records credentials" in page
@@ -467,7 +467,7 @@ def test_the_page_has_a_control_for_the_log_file_and_the_level(state):
 def test_the_diagnostics_button_names_what_the_file_holds(state):
     state.tab = "settings"
     page = state.render()
-    assert "Save anonymized diagnostics" in page
+    assert "Save diagnostics" in page
     assert "No reverse mapping is included" in page
     assert "Local logs are private" in page
 
@@ -477,7 +477,7 @@ def test_saving_a_log_file_setting_turns_the_log_on(tmp_path, export_zip, config
     target = tmp_path / "page.jsonl"
     state.save_setting({"log_file": str(target)})
     assert state.error == ""
-    state.run_tree()
+    state.render()
     state.log.close()
     assert target.exists() and target.read_text(encoding="utf-8").strip()
 

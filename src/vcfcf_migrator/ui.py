@@ -1,11 +1,7 @@
 """Native-window state and actions for content selection and bundle building."""
 from __future__ import annotations
 
-import io
 from functools import wraps
-import json
-import os
-import shlex
 import sys
 import threading
 from pathlib import Path
@@ -23,47 +19,10 @@ from vcfcf_migrator import source as _source
 from vcfcf_migrator import uipage
 from vcfcf_migrator.export_reader import (
     NotAnExport,
-    read_export,
     read_members,
-    render_text,
 )
 from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator.wording import BUILD_PASSWORD_REMINDER, plural
-
-# The commands whose exact command line the page can hand back, so an admin
-# can script what they just did by hand.
-COMMANDS = ("tree", "preview", "build", "corpus-check")
-
-
-def _shell_quote(value: str, windows: Optional[bool] = None) -> str:
-    """Quote a value so the command line reads as one argument, on the shell
-    it is going to be pasted into.
-
-    Double quotes were chosen here to be Windows-safe, since the single quotes
-    ``shlex.quote`` emits are literal characters to cmd.exe and the command
-    then fails in exactly the case the quoting exists for. That reasoning
-    holds, and it is only half the problem: inside double quotes a POSIX shell
-    still substitutes ``$name`` and ``` `command` ```, so a path carrying
-    either produced a line that writes somewhere else or runs substituted
-    text. So the quoting follows the platform the page is running on, which is
-    the machine whose shell the admin will paste into: ``shlex.quote`` there,
-    and the double-quoted form on Windows.
-
-    *windows* overrides the platform, for the tests that check both forms.
-    """
-    text = str(value)
-    on_windows = os.name == "nt" if windows is None else windows
-    if not on_windows:
-        return shlex.quote(text)
-    # A backslash is an ordinary path character on Windows, so it does not
-    # force quoting there; the rest are cmd.exe metacharacters or whitespace.
-    if text and not any(ch in text for ch in ' \t"\'&|<>^()$`'):
-        return text
-    # cmd.exe cannot express an embedded double quote inside a quoted
-    # argument, so it is doubled, which is what PowerShell and the C runtime
-    # parser both take.
-    return '"' + text.replace('"', '""') + '"'
-
 
 def serialized(method):
     """One state mutation or snapshot at a time, including direct callers."""
@@ -97,6 +56,14 @@ class PageState:
         self.log_format_cli = log_format_cli
         # The native window supplies its file chooser before rendering.
         self.file_picker = None
+        self.confirm = lambda title, message: True
+        self.show_in_folder = None
+        self.built_path = ''
+        self.source_address = ''
+        self.source_mode = ''
+        self.theme = _settings.load_settings().get('theme', 'light')
+        if self.theme not in ('light', 'dark'):
+            self.theme = 'light'
         self.source_snapshot = None
         self.source_progress = lambda stage: None
         # Retain the selected panel across page redraws.
@@ -111,9 +78,6 @@ class PageState:
         self.disclosure = {}
         self.message = ""
         self.error = ""
-        self.listing = ""
-        self.command_output = ""
-        self.as_json = False
         self.filter_text = ""
         self.inventory_kind = "all"
         self.preview_key = ""
@@ -173,10 +137,12 @@ class PageState:
                 return event
         return None
 
-    def save_diagnostics(self, out_path: str) -> None:
+    def save_diagnostics(self, out_path: str, from_dialog: bool = False) -> None:
         """One file holding the run header, the input fingerprint, every log
         event and the bundle's manifest, ready to attach to a mail."""
-        out = (out_path or "").strip() or self.default_diagnostics_out()
+        out = self.output_path(out_path, '.jsonl', self.default_diagnostics_out())
+        if not self.allow_output(out, from_dialog):
+            return
         header = self._last_event("run.start")
         source = self._last_event("input.fingerprint")
         bundle = self._last_event("output.fingerprint")
@@ -209,7 +175,7 @@ class PageState:
     # -- loading -----------------------------------------------------------
 
     @serialized
-    def open_export(self, zip_path: str) -> None:
+    def open_export(self, zip_path: str) -> Optional[bool]:
         """Read the export and build the graph, then swap.
 
         Nothing is cleared until the replacement parses. A mistyped path used
@@ -237,11 +203,18 @@ class PageState:
                 self.error += still
             return
 
+        if self.picked and not self.confirm('Change source?',
+                'The new export is ready. Replace the current source and discard your selection?'):
+            self.message = 'Source change cancelled. Your current selection is unchanged.'
+            return False
         if self.source_snapshot is None or Path(zip_path).resolve() != self.source_snapshot.path.resolve():
             self.close_source()
+        self.built_path = ''
+        if self.source_snapshot is None:
+            self.source_address = ''
         self.zip_path = zip_path
         self.members, self.graph = members, graph
-        self.listing = self.command_output = self.build_report = ""
+        self.build_report = ""
         self.preview_key = self.filter_text = self.build_out = ""
         # Which groups are open belongs to the export being looked at: a
         # small one opens its groups by default, and carrying that into a
@@ -256,6 +229,7 @@ class PageState:
         counts = graph.counts()
         self.message = (f"Opened {Path(zip_path).name}: {len(graph.nodes)} objects available"
                         if counts else f"{zip_path}: no content objects")
+        return True
 
     def close_source(self) -> None:
         if self.source_snapshot is not None:
@@ -269,12 +243,15 @@ class PageState:
             if not form.get('username') or not form.get('password') or not form.get('export_password'):
                 raise _source.SourceError('Enter your username, login password, and an export encryption password.')
             client = _source.Client(form.get('address', ''), ca_file=form.get('ca_file', '').strip(),
-                                    progress=self.source_progress)
+                                    progress=self.source_progress, ignore_ssl=bool(form.get('ignore_ssl')))
             snapshot = client.acquire(form['username'], form['password'],
-                                      form.get('auth_source', '').strip(), form['export_password'])
-            self.open_export(str(snapshot.path))
+                                      form.get('auth_source', ''), form['export_password'])
+            opened = self.open_export(str(snapshot.path))
+            if opened is False:
+                return
             if self.zip_path != str(snapshot.path):
                 raise _source.SourceError('The downloaded export could not be read. The current inventory is unchanged.')
+            self.source_address = client.base.removesuffix("/suite-api/api")
             self.source_snapshot = snapshot
             snapshot = None
             self.message = ('Loaded Operations content. Keep the export encryption password for the target import. '
@@ -301,6 +278,25 @@ class PageState:
             return "bundle.zip"
         source = Path(self.zip_path)
         return str(source.with_name(source.stem + "-bundle.zip"))
+
+    @staticmethod
+    def output_path(value: str, extension: str, default: str = '') -> str:
+        path = Path((value or '').strip() or default).expanduser()
+        if not path.name:
+            path = Path(default).expanduser()
+        if path.suffix.lower() != extension:
+            path = path.with_name(path.name + extension)
+        return str(path.resolve())
+
+    def allow_output(self, out: str, from_dialog: bool = False) -> bool:
+        target = Path(out)
+        if self.zip_path and target == Path(self.zip_path).resolve():
+            self.error = 'Choose a different destination. The source export cannot be overwritten.'
+            return False
+        if target.exists() and not from_dialog and not self.confirm('Replace file?', f'Replace the existing file at {target}?'):
+            self.message = 'Save cancelled. The existing file is unchanged.'
+            return False
+        return True
 
     # -- the selection -----------------------------------------------------
 
@@ -413,31 +409,6 @@ class PageState:
         self._set_picked([])
         self.message = "cleared the selection"
 
-    @serialized
-    def apply_lines(self, text: str) -> None:
-        """Take a selection the way ``build --select`` takes a file: one object
-        per line, ``#`` comments allowed. The page's equivalent of the flag."""
-        if self.graph is None:
-            self.error = "open an export first"
-            return
-        lines = [line.split("#", 1)[0].strip() for line in (text or "").splitlines()]
-        lines = [line for line in lines if line]
-        if not lines:
-            self._set_picked([])
-            self.message = "cleared the selection (no lines given)"
-            return
-        try:
-            keys = _selection.resolve(self.graph, lines)
-        except _selection.BadSelection as e:
-            self.error = str(e)
-            return
-        self._set_picked(keys)
-        self.message = (f"applied {plural(len(lines), 'line')}: {len(self.picked)} selected, "
-                        f"{len(self.selection.keys)} included with required items")
-
-    def selection_lines(self) -> str:
-        """The current picks as the lines a selection file would hold."""
-        return "\n".join(self.picked)
 
     def set_preview(self, key: str) -> None:
         if not key:
@@ -482,7 +453,7 @@ class PageState:
     # -- the commands ------------------------------------------------------
 
     @serialized
-    def build(self, out_path: str) -> None:
+    def build(self, out_path: str, from_dialog: bool = False) -> None:
         """Write the bundle for the closed selection, exactly as the CLI does.
 
         The UI refuses missing references before calling the shared writer.
@@ -502,7 +473,9 @@ class PageState:
             self.build_report = "Build refused. No bundle written.\n" + "\n".join(exc.lines)
             self.tab = "review"
             return
-        out = (out_path or "").strip() or self.default_out()
+        out = self.output_path(out_path, '.zip', self.default_out())
+        if not self.allow_output(out, from_dialog):
+            return
         self.build_out = out
         try:
             result = _bundle.build_bundle(self.members.data, self.members.order, self.graph,
@@ -515,53 +488,21 @@ class PageState:
         self.tab = "review"
         self.build_report = (_selection.render(self.graph, self.selection)
                              + _bundle.render(result))
-        self.message = f"bundle built and saved to {result.path}"
+        self.built_path = str(Path(result.path).resolve())
+        self.message = f"bundle built and saved to {self.built_path}"
         if self.source_snapshot is not None:
             self.message += f". {BUILD_PASSWORD_REMINDER}"
 
-    def run_inspect(self, zip_path: str, as_json: bool = False) -> None:
-        self.as_json = as_json
-        self.listing = ""
-        target = (zip_path or self.zip_path or "").strip()
-        if not target:
-            self.error = "no export zip given"
-            return
-        try:
-            export = read_export(target)
-        except NotAnExport as e:
-            self.error = str(e)
-            return
-        self.listing = (json.dumps(export.as_dict(), indent=2) if as_json
-                        else render_text(export))
-
-    def run_tree(self, as_json: bool = False) -> None:
-        if self.graph is None:
-            self.error = "open an export first"
-            return
-        self.command_output = (json.dumps(_graph.as_dict(self.graph), indent=2) if as_json
-                               else _graph.render_tree(self.graph))
-
-    def run_corpus_check(self, directory: str) -> None:
-        from vcfcf_migrator.corpus_check import run
-
-        target, source = _settings.corpus_dir(directory or self.corpus_cli)
-        buffer = io.StringIO()
-        code = run(target, source, buffer)
-        self.command_output = buffer.getvalue()
-        if not Path(target).is_dir():
-            self.error = f"regression test export folder {target} does not exist"
-            return
-        self.message = (f"compatibility check finished for {target}; see the results below" if code == 0
-                        else f"compatibility check found problems in {target}; see the results below")
 
     def save_setting(self, form: dict) -> None:
-        if "corpus_dir" in form:
-            value = form.get("corpus_dir", "").strip()
-            if not value:
-                self.error = "Regression test export folder cannot be empty"
+        if 'theme' in form:
+            value = form['theme']
+            if value not in ('light', 'dark'):
+                self.error = 'Choose Light or Dark.'
                 return
-            saved = _settings.save_settings({"corpus_dir": value})
-            self.message = f"Regression test export folder saved to {saved}"
+            _settings.save_settings({'theme': value})
+            self.theme = value
+            self.message = f'{value.capitalize()} theme saved.'
             return
         if "log_file" in form:
             value = form.get("log_file", "").strip()
@@ -583,26 +524,6 @@ class PageState:
             return
         self.error = "nothing to save"
 
-    def command_line(self, cmd: str) -> str:
-        """The exact command for *cmd*, with whatever the page is set to.
-
-        The page does these itself now; the line is for the admin who wants to
-        script what they just did, and it has to be a command that runs, so a
-        path with a space in it (ordinary on every OS this ships for) is
-        quoted rather than left as two arguments.
-        """
-        corpus, _src = _settings.corpus_dir(self.corpus_cli)
-        head = "vcfcf-migrator"
-        if cmd == "corpus-check":
-            return f"{head} corpus-check {_shell_quote(str(corpus))}"
-        target = _shell_quote(self.zip_path) if self.zip_path else "<export.zip>"
-        if cmd == "preview":
-            what = _shell_quote(self.preview_key) if self.preview_key else "<uuid>"
-            return f"{head} preview {target} {what}"
-        if cmd == "build":
-            out = _shell_quote(self.build_out or self.default_out())
-            return f"{head} build {target} --select <picks.txt> --out {out}"
-        return f"{head} {cmd} {target}"
 
     @serialized
     def render(self) -> str:
@@ -622,9 +543,7 @@ def dispatch(state: "PageState", path: str, form: dict) -> str:
     """
     action = ACTIONS[path]
     state.message, state.error = "", ""
-    # The page is a second way in to the same commands, so what it was asked to
-    # do belongs in the same log the CLI writes. Form values go through the
-    # same exclusion rules as everything else.
+    # Content actions share the CLI event log. Never log connection fields.
     _runlog.set_current(state.log)
     _runlog.info("page.action", action=path,
                  fields={} if path == "/connect" else {k: v for k, v in form.items() if k != "lines"})
@@ -645,7 +564,7 @@ def _act_open(state: "PageState", form: dict) -> str:
 # The right-hand panels, and which action lands you on which. An action whose
 # output appears on a panel has to move you to that panel, or the button
 # appears to do nothing at all.
-TABS = ("preview", "commands", "settings", "review")
+TABS = ("preview", "settings", "review", "source")
 
 
 def _act_disclose(state: "PageState", form: dict) -> str:
@@ -702,18 +621,6 @@ def _act_pick_export(state: "PageState", _form: dict) -> str:
     return ""
 
 
-def _act_inspect(state: "PageState", form: dict) -> str:
-    state.tab = "commands"
-    state.run_inspect(form.get("zip", "").strip(), as_json=form.get("json") == "1")
-    return ""
-
-
-def _act_tree(state: "PageState", form: dict) -> str:
-    state.tab = "commands"
-    state.run_tree(as_json=form.get("json") == "1")
-    return ""
-
-
 def _act_select(state: "PageState", form: dict) -> str:
     key = form.get("key", "")
     state.toggle(key, on=form.get("on", "1") == "1")
@@ -729,11 +636,6 @@ def _act_select_all(state: "PageState", _form: dict) -> str:
 
 def _act_clear(state: "PageState", _form: dict) -> str:
     state.clear()
-    return ""
-
-
-def _act_apply_lines(state: "PageState", form: dict) -> str:
-    state.apply_lines(form.get("lines", ""))
     return ""
 
 
@@ -756,13 +658,7 @@ def _act_filter(state: "PageState", form: dict) -> str:
 def _act_build(state: "PageState", form: dict) -> str:
     # Keep readiness and the written bundle report on the review screen.
     state.tab = "review"
-    state.build(form.get("out", ""))
-    return ""
-
-
-def _act_corpus_check(state: "PageState", form: dict) -> str:
-    state.tab = "commands"
-    state.run_corpus_check(form.get("dir", "").strip())
+    state.build(form.get("out", ""), form.get("picked") == "1")
     return ""
 
 
@@ -771,17 +667,7 @@ def _act_diagnostics(state: "PageState", form: dict) -> str:
     # and the banner renders above the panels, so there is nothing on any one
     # panel to land on. Moving someone here anyway would be a rule invented to
     # match the shape of the other actions rather than to help anyone.
-    state.save_diagnostics(form.get("out", ""))
-    return ""
-
-
-def _act_run(state: "PageState", form: dict) -> str:
-    state.tab = "commands"
-    cmd = form.get("cmd", "")
-    if cmd in COMMANDS:
-        state.message = state.command_line(cmd)
-    else:
-        state.error = f"unknown command {cmd}"
+    state.save_diagnostics(form.get("out", ""), form.get("picked") == "1")
     return ""
 
 
@@ -824,7 +710,23 @@ def _act_remove_pick(state: "PageState", form: dict) -> str:
     return ""
 
 
+def _act_source_mode(state: "PageState", form: dict) -> str:
+    if form.get('mode') in ('zip', 'connect'):
+        state.source_mode = form['mode']
+        state.tab = 'source'
+    return ''
+
+
+def _act_show_in_folder(state: "PageState", form: dict) -> str:
+    if state.built_path and state.show_in_folder:
+        if not state.show_in_folder(state.built_path):
+            state.error = 'The folder could not be opened. Use the saved destination shown below.'
+    return ''
+
+
 ACTIONS = {
+    '/source-mode': _act_source_mode,
+    '/show-in-folder': _act_show_in_folder,
     "/inspector-tab": _act_inspector_tab,
     "/expand-preview": _act_expand_preview,
     "/category": _act_category,
@@ -836,18 +738,13 @@ ACTIONS = {
     "/pick-export": _act_pick_export,
     "/tab": _act_tab,
     "/disclose": _act_disclose,
-    "/inspect": _act_inspect,
-    "/tree": _act_tree,
     "/select": _act_select,
     "/select-all": _act_select_all,
     "/clear": _act_clear,
-    "/apply-lines": _act_apply_lines,
     "/preview": _act_preview,
     "/filter": _act_filter,
     "/build": _act_build,
-    "/corpus-check": _act_corpus_check,
     "/diagnostics": _act_diagnostics,
-    "/run": _act_run,
 }
 POST_PATHS = tuple(sorted(ACTIONS))
 
