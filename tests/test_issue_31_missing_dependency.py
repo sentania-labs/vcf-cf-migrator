@@ -252,7 +252,7 @@ def test_the_page_build_form_has_no_checkbox_or_setting_past_the_gate(config_dir
         page = state.render()
         form = re.search(r"<form method='post' action='/build'>.*?</form>", page, re.S).group(0)
         assert "type='checkbox'" not in form and "type=\"checkbox\"" not in form
-        assert "disabled" in form.split("Build the bundle")[0]
+        assert "disabled" in form.split("Build bundle")[0]
         assert "resolve the missing references" in form
         for word in ("override", "force", "ignore", "anyway"):
             assert word not in form.lower(), (tab, word)
@@ -352,7 +352,7 @@ def test_the_page_refuses_a_build_with_a_missing_dependency_and_writes_nothing(
     for ident in (ABSENT_VIEW_ID, ABSENT_SM_NAME):
         assert ident in page, ident
     assert GROUP_POLICY_ID not in state.build_report
-    assert "<button type='submit' class='primary' disabled>Build the bundle" in page
+    assert "<button type='submit' class='primary' disabled>Build bundle" in page
 
 
 def test_the_page_says_so_before_build_is_pressed(config_dir, export_zip):
@@ -376,11 +376,11 @@ def test_the_page_builds_a_clean_selection_and_lists_the_policy(config_dir, expo
     state.tab = "review"
     page = state.render()
     assert "A build is refused" not in page
-    assert "<button type='submit' class='primary'>Build the bundle" in page
+    assert "<button type='submit' class='primary'>Build bundle" in page
     out = tmp_path / "clean.zip"
     state.build(str(out))
     assert not state.error, state.error
-    assert f"bundle written to {out}" in state.message
+    assert f"Bundle built and saved to {out}" in state.message
     assert "referenced but not carried: 1" in state.build_report
     assert zipfile.ZipFile(out).namelist()
 

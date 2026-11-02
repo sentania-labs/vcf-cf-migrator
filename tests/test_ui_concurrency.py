@@ -80,8 +80,8 @@ def test_selection_failure_preserves_previous_committed_state(monkeypatch):
 def test_counts_include_dependencies_and_explicit_zero():
     page = state()
     page.toggle('report:report', True)
-    assert '1 picked + 4 required = 5 total objects' in workspace.footer(page)
+    assert '1 you selected + 4 automatically required = 5 included' in workspace.footer(page)
     page.clear()
-    assert '0 picked + 0 required = 0 total objects' in workspace.footer(page)
+    assert '0 you selected + 0 automatically required = 0 included' in workspace.footer(page)
     page.select_all()
-    assert '79 picked + 0 required = 79 total objects' in workspace.footer(page)
+    assert '79 you selected + 0 automatically required = 79 included' in workspace.footer(page)

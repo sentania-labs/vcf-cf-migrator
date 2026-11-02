@@ -5,6 +5,7 @@ from pathlib import Path
 
 from vcfcf_migrator import __version__
 from vcfcf_migrator import preview
+from vcfcf_migrator import wording
 from vcfcf_migrator.releases import RELEASE_PAGE
 from vcfcf_migrator.cli import version_lines
 from vcfcf_migrator.graph import KIND_ORDER
@@ -108,7 +109,8 @@ def header(state):
     change = ("<form method='post' action='/open'><div class='grow'>"
               "<label for='zip'>Export zip path</label>"
               f"<input type='text' id='zip' name='zip' value='{e(state.zip_path)}'></div>"
-              + _button('Open export', primary=True) + '</form>')
+              + _button('Open export', primary=True) + '</form>'
+              + f"<p class='note'>{wording.SOURCE_SWITCH_HELP}</p>")
     if state.file_picker is not None:
         change += action('/pick-export', 'Browse…')
     change += ("<details class='source-connect'><summary>Connect to Operations</summary>"
@@ -116,15 +118,17 @@ def header(state):
                "Do not run another content export with this account while connecting.</p>"
                "<form class='connect-form' method='post' action='/connect' autocomplete='off'>")
     for name, label, kind, required in (
-            ('address', 'Operations HTTPS address', 'url', True),
+            ('address', 'VCF Operations URL', 'url', True),
             ('username', 'Username', 'text', True),
-            ('password', 'Password', 'password', True),
-            ('auth_source', 'Authority source (optional)', 'text', False),
-            ('ca_file', 'Trusted CA PEM file path (optional)', 'text', False),
-            ('export_password', 'Export encryption password (keep for target import)', 'password', True)):
+            ('password', 'Login password', 'password', True),
+            ('auth_source', 'Login source', 'text', False),
+            ('ca_file', 'Trusted CA certificate bundle', 'text', False),
+            ('export_password', 'Export encryption password', 'password', True)):
         change += (f"<div class='field'><label for='source-{name}'>{label}</label>"
                    f"<input id='source-{name}' name='{name}' type='{kind}' autocomplete='off'"
-                   + (' required' if required else '') + "></div>")
+                   + (' required' if required else '') + ">"
+                   + (f"<p class='note'>{wording.LOGIN_SOURCE_HELP}</p>" if name == 'auth_source' else '')
+                   + (f"<p class='note'>{wording.EXPORT_PASSWORD_HELP}</p>" if name == 'export_password' else '') + '</div>')
     change += ("<p class='note'>Use an export password that meets Operations password requirements. "
                "The source download is temporary; save your migration bundle before closing.</p>"
                + _button('Connect and load', primary=True) + '</form></details>')
@@ -148,7 +152,7 @@ def footer(state):
     missing = len(state.selection.missing_dependencies()) if state.selection else 0
     status = f'{missing} missing references' if missing else ('Ready to review' if included else 'Choose content')
     return ("<footer class='selection-bar'><div>"
-            f"<strong>{picked} picked + {included - picked} required = {included} total objects</strong>"
+            f"<strong>{picked} you selected + {included - picked} automatically required = {included} included</strong>"
             f"<p class='note'>{e(status)}. Dependencies are included automatically.</p></div>"
             + action('/tab', f'Review bundle · {included}', {'tab': 'review'}, True) + '</footer>')
 
@@ -156,7 +160,7 @@ def footer(state):
 def rail(state):
     counts = state.graph.counts()
     types = [('all', 'All content', len(state.graph.nodes)),
-             ('selected', 'Selected', len(state.selection_keys()))]
+             ('selected', 'Included', len(state.selection_keys()))]
     types += [(kind, KIND_LABELS.get(kind, kind), counts[kind])
               for kind in KIND_ORDER + sorted(set(counts) - set(KIND_ORDER)) if counts.get(kind)]
     out = ["<nav class='rail' aria-label='Content types'><h2>Inventory</h2>"]
@@ -179,13 +183,14 @@ def inventory(state):
            f"<p class='note'>{len(nodes)} shown / {len(state.graph.nodes)} in export</p>",
            "<div class='toolbar'>" + action('/select-shown', f'Select shown ({len(nodes)})')
            + action('/select-all', f'Select all {len(state.graph.nodes)} objects')
-           + action('/clear', 'Clear selection') + '</div>']
+           + action('/clear', 'Clear selection') + '</div>'
+           + "<p class='note'>Adds shown items to your current selection. Select the checkbox to include; select the name to preview.</p>"]
     picked, included = state.selected_keys(), state.selection_keys()
     for node in nodes:
         detail = identity(state, node)
         checked = node.key in included
         gaps = state.graph.missing_for(node.key)
-        status = 'Picked' if node.key in picked else ('Required' if checked else 'Available')
+        status = 'You selected' if node.key in picked else ('Automatically required' if checked else 'Available')
         if gaps:
             status += f' · {len(gaps)} missing'
         out.append(f"<div class='row{' sel' if checked else ''}{' preview-on' if state.preview_key == node.key else ''}' id='{e(anchor(node.key))}'>"
@@ -275,7 +280,7 @@ def review(state):
         return ''.join(out) + '<p>Pick at least one object before building.</p></div></main>'
     if selection.missing_dependencies():
         out.append("<div class='err'><strong>Build is blocked by missing references</strong>"
-                   '<p>Remove the affected picks or open an export that includes their dependencies. '
+                   '<p>Remove the affected selections or open an export that includes their dependencies. '
                    'A target instance might already have these objects, but this export cannot verify that.</p><ul>')
         for gap in selection.missing_dependencies():
             source = state.graph.nodes[gap.source_key]
@@ -294,7 +299,7 @@ def review(state):
                             (selection.unhandled, 'References not understood')]:
         if warnings:
             out.append(f'<h3>{title}</h3><ul>' + ''.join(f'<li>{e(w)}</li>' for w in warnings) + '</ul>')
-    out.append('<p class="note">This checks the export, not whether the target will accept the bundle.</p><h3>Your picks</h3>')
+    out.append('<p class="note">This checks the export, not whether the target will accept the bundle.</p><h3>You selected</h3>')
     for key in state.picked:
         node = state.graph.nodes[key]
         out.append(f"<div class='review-row'><span>{e(node.name)} <small>{e(identity(state, node))}</small></span>"

@@ -28,7 +28,7 @@ from vcfcf_migrator.export_reader import (
     render_text,
 )
 from vcfcf_migrator.rawdoc import RawDocError
-from vcfcf_migrator.wording import plural
+from vcfcf_migrator.wording import EXPORT_PASSWORD_HELP, plural
 
 # The commands whose exact command line the page can hand back, so an admin
 # can script what they just did by hand.
@@ -433,7 +433,7 @@ class PageState:
             return
         self._set_picked(keys)
         self.message = (f"applied {plural(len(lines), 'line')}: {len(self.picked)} picked, "
-                        f"{len(self.selection.keys)} after closure")
+                        f"{len(self.selection.keys)} included with required items")
 
     def selection_lines(self) -> str:
         """The current picks as the lines a selection file would hold."""
@@ -515,7 +515,9 @@ class PageState:
         self.tab = "review"
         self.build_report = (_selection.render(self.graph, self.selection)
                              + _bundle.render(result))
-        self.message = f"bundle written to {result.path}"
+        self.message = f"Bundle built and saved to {result.path}."
+        if self.source_snapshot is not None:
+            self.message += f" {EXPORT_PASSWORD_HELP}"
 
     def run_inspect(self, zip_path: str, as_json: bool = False) -> None:
         self.as_json = as_json
@@ -546,16 +548,17 @@ class PageState:
         buffer = io.StringIO()
         code = run(target, source, buffer)
         self.command_output = buffer.getvalue()
-        self.message = f"corpus-check over {target} finished with exit code {code}"
+        self.message = (f"Compatibility check completed for {target}." if code == 0
+                        else f"Compatibility check found problems in {target}; see the results below.")
 
     def save_setting(self, form: dict) -> None:
         if "corpus_dir" in form:
             value = form.get("corpus_dir", "").strip()
             if not value:
-                self.error = "corpus directory cannot be empty"
+                self.error = "Regression test export folder cannot be empty"
                 return
             saved = _settings.save_settings({"corpus_dir": value})
-            self.message = f"corpus directory saved to {saved}"
+            self.message = f"Regression test export folder saved to {saved}"
             return
         if "log_file" in form:
             value = form.get("log_file", "").strip()

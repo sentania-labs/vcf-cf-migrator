@@ -60,11 +60,11 @@ def test_saving_corpus_dir_persists_to_the_settings_file(server, config_dir):
     _post(server, "/tab", {"tab": "settings"})
     status, body = _post(server, "/settings", {"corpus_dir": "/data/exports"})
     assert status == "rendered"
-    assert "corpus directory saved to" in body
+    assert "Regression test export folder saved to" in body
     saved = json.loads((config_dir / "settings.json").read_text())
     assert saved == {"corpus_dir": "/data/exports"}
     assert "value='/data/exports'" in body
-    assert "current value from: settings file" in body
+    assert "Current value from: settings file" in body
     assert settings.corpus_dir()[0].as_posix() == "/data/exports"
 
 
