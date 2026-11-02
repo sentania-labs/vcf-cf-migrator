@@ -141,9 +141,9 @@ def test_source_replacement_confirmed_only_after_valid_load(state, export_zip, t
 
 
 @pytest.mark.parametrize('current,chosen,expected', [
-    ('suggested.zip', ('/tmp/chosen file',), '/tmp/chosen file.zip'),
-    ('suggested.zip', '/tmp/chosen.ZIP', '/tmp/chosen.ZIP'),
-    ('suggested.zip', None, ''), ('suggested.zip', (), ''),
+    ('suggested.zip', ('/tmp/chosen file',), {'path': '/tmp/chosen file.zip', 'confirmed': False}),
+    ('suggested.zip', '/tmp/chosen.ZIP', {'path': '/tmp/chosen.ZIP', 'confirmed': True}),
+    ('suggested.zip', None, {'path': ''}), ('suggested.zip', (), {'path': ''}),
 ])
 def test_native_save_as_normalizes_platform_returns(state, current, chosen, expected):
     import webview
@@ -154,7 +154,7 @@ def test_native_save_as_normalizes_platform_returns(state, current, chosen, expe
             return chosen
     bridge = desktop.Bridge(state)
     bridge._window = Window()
-    assert bridge.pick_path('bundle', current) == {'path': expected}
+    assert bridge.pick_path('bundle', current) == expected
     args, kwargs = calls[0]
     assert args == (webview.SAVE_DIALOG,)
     assert kwargs['save_filename'] == 'suggested.zip'
@@ -243,3 +243,67 @@ def test_replace_confirmation_only_for_typed_paths(state, tmp_path):
     state.save_diagnostics(str(target))
     assert prompts == ['Replace file?']
     assert state.diagnostics_out == str(target)
+
+
+@pytest.mark.parametrize('kind, extension', [('bundle', '.zip'), ('diagnostics', '.jsonl')])
+@pytest.mark.parametrize('blank', ['', '   '])
+def test_native_save_dialog_starts_at_the_real_default(state, kind, extension, blank):
+    calls = []
+    class Window:
+        def create_file_dialog(self, *args, **kwargs):
+            calls.append(kwargs)
+            return None
+    bridge = desktop.Bridge(state)
+    bridge._window = Window()
+    default = Path(state.default_out() if kind == 'bundle' else state.default_diagnostics_out()).resolve()
+    assert bridge.pick_path(kind, blank) == {'path': ''}
+    assert (Path(calls[0]['directory']), calls[0]['save_filename']) == (default.parent, default.name)
+
+
+def test_native_save_dialog_starts_at_the_live_source_default(state, tmp_path, monkeypatch):
+    monkeypatch.setattr(PageState, 'download_directory', staticmethod(lambda: tmp_path))
+    state.source_snapshot = object()
+    calls = []
+    class Window:
+        def create_file_dialog(self, *args, **kwargs):
+            calls.append(kwargs)
+            return None
+    bridge = desktop.Bridge(state)
+    bridge._window = Window()
+    bridge.pick_path('bundle', ' ')
+    bridge.pick_path('diagnostics', '')
+    assert [(Path(c['directory']), c['save_filename']) for c in calls] == [
+        (tmp_path.resolve(), 'bundle.zip'), (tmp_path.resolve(), 'vcfcf-migrator-diagnostics.jsonl')]
+    state.source_snapshot = None
+
+
+@pytest.mark.parametrize('kind, extension', [('bundle', '.zip'), ('diagnostics', '.jsonl')])
+def test_overwrite_is_confirmed_exactly_once_for_the_real_destination(state, tmp_path, kind, extension):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    prompts = []
+    state.confirm = lambda title, message: prompts.append(message) or True
+    run = state.build if kind == 'bundle' else state.save_diagnostics
+    existing = tmp_path / ('report' + extension)
+    existing.write_text('old')
+
+    def pick(chosen):
+        class Window:
+            def create_file_dialog(self, *args, **kwargs):
+                return (chosen,)
+        bridge = desktop.Bridge(state)
+        bridge._window = Window()
+        return bridge.pick_path(kind, '')
+
+    suffixless = pick(str(tmp_path / 'report'))
+    assert suffixless == {'path': str(existing.resolve()), 'confirmed': False}
+    run(suffixless['path'])
+    assert len(prompts) == 1 and str(existing.resolve()) in prompts[0]
+
+    prompts.clear()
+    exact = pick(str(existing))
+    assert exact == {'path': str(existing.resolve()), 'confirmed': True}
+    run(exact['path'], True)
+    assert not prompts
+
+    run(str(existing))
+    assert len(prompts) == 1

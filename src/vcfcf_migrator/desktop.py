@@ -94,7 +94,7 @@ _BRIDGE_JS = """
       window.pywebview.api.pick_path(picker.dataset.pick, input.value).then(function (result) {
         if (!input.isConnected) return;
         if (result.error) { banner(result.error); return; }
-        if (result.path) { input.value = result.path; input.dataset.picked = result.path; input.dispatchEvent(new Event('change', {bubbles:true})); }
+        if (result.path) { input.value = result.path; input.dataset.picked = result.confirmed ? result.path : ''; input.dispatchEvent(new Event('change', {bubbles:true})); }
       }).catch(function () { banner('The file picker could not open. Enter the path manually.'); })
         .finally(function () { picker.disabled = picker.dataset.pick === 'ca' && document.getElementById('source-ignore')?.checked; });
     }
@@ -146,7 +146,7 @@ _BRIDGE_JS = """
           if (result.error) { throw Error(result.error); }
           if (!result.path) return null;
           data.out = result.path;
-          data.picked = '1';
+          if (result.confirmed) { data.picked = '1'; }
           return window.pywebview.api.act(action, data);
         });
       }
@@ -304,7 +304,9 @@ class Bridge:
                     file_types=(('Zip files (*.zip)' if kind == 'bundle' else 'JSON lines (*.jsonl)'),))
             value = (chosen[0] if chosen else '') if isinstance(chosen, (list, tuple)) else (chosen or '')
             if value and kind != 'ca':
+                exact = str(Path(value).expanduser().resolve())
                 value = self._state.output_path(value, extension)
+                return {'path': value, 'confirmed': value == exact}
             return {'path': value}
         except Exception:
             return {'error': 'The file picker could not open. Enter the path manually.'}
