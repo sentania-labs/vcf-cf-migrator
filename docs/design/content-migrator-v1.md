@@ -90,8 +90,11 @@ same core:
   opens the browser, shows the tree with checkboxes and previews,
   writes the bundle on "Build". No server beyond the local process;
   closing the tab stops nothing important, closing the process stops
-  everything. Every setting the CLI takes has a control on this page
-  (rule 2), with defaults that work untouched.
+  everything. The page has controls for the settings an admin needs to
+  open, select and build, with defaults that work untouched. The
+  regression tools (`inspect`, `tree`, JSON output, selection files,
+  `corpus-check`) are CLI-only, and connecting to a live Operations
+  source is GUI-only.
 
 **Pass-through is the contract, and it constrains the build path.**
 There is no translation module. The one rule that makes pass-through
