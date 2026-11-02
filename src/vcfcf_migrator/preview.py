@@ -846,10 +846,10 @@ def heatmap_metrics(cfg: dict) -> List[Tuple[str, str]]:
 # the product's badge scale. The page's blue accent is chart ink and says
 # nothing about a value, so it never appears in a heat scale: a VCF Operations
 # heatmap runs red to green and never shows blue.
-HEAT_GOOD = "var(--ok)"
-HEAT_FAIR = "var(--warn)"
-HEAT_POOR = "var(--bad)"
-HEAT_BAD = "var(--bad-ink)"
+HEAT_GOOD = "#74B43B"
+HEAT_FAIR = "#ECC33E"
+HEAT_POOR = "#E07720"
+HEAT_BAD = "#DE3F30"
 HEAT_RAMP = (HEAT_GOOD, HEAT_GOOD, HEAT_FAIR, HEAT_POOR, HEAT_BAD)
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 

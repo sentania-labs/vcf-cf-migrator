@@ -86,7 +86,7 @@ def test_tls_policy_against_untrusted_server(tls_server, tmp_path):
 
 
 @pytest.mark.parametrize('name, expected', [('Local', None), ('local', None), ('', None),
-                                            ('SSO / B', 'SSO / B'), (' Directory A ', ' Directory A ')])
+                                            ('SSO / B', 'SSO / B'), (' Directory A ', 'Directory A')])
 def test_login_source_mapping_and_test_never_exports(tls_server, name, expected):
     address, cert, requests = tls_server
     client = source.Client(address, ca_file=str(cert))
@@ -224,3 +224,9 @@ def test_theme_default_persistence_validation_and_corpus_compatibility(config_di
     assert third.theme == 'light'
     for item in (state, second, third):
         item.log.close()
+
+
+@pytest.mark.parametrize('value', ['', '   ', '/'])
+def test_blank_or_nameless_destination_falls_back_to_the_default(state, value):
+    default = str(Path('fallback-bundle').resolve()) + '.zip'
+    assert state.output_path(value, '.zip', 'fallback-bundle') == default

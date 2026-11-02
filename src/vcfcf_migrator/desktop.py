@@ -295,7 +295,7 @@ class Bridge:
                     file_types=('PEM certificates (*.pem;*.crt)', 'All files (*.*)'))
             else:
                 extension = '.zip' if kind == 'bundle' else '.jsonl'
-                target = Path(self._state.output_path(current or ('bundle.zip' if kind == 'bundle' else 'diagnostics.jsonl'), extension))
+                target = Path(self._state.output_path(current, extension, 'bundle.zip' if kind == 'bundle' else 'diagnostics.jsonl'))
                 chosen = window.create_file_dialog(webview.SAVE_DIALOG, directory=str(target.parent),
                     save_filename=target.name,
                     file_types=(('Zip files (*.zip)' if kind == 'bundle' else 'JSON lines (*.jsonl)'),))

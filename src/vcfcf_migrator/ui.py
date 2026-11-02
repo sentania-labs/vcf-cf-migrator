@@ -140,7 +140,7 @@ class PageState:
     def save_diagnostics(self, out_path: str) -> None:
         """One file holding the run header, the input fingerprint, every log
         event and the bundle's manifest, ready to attach to a mail."""
-        out = self.output_path(out_path or self.default_diagnostics_out(), '.jsonl')
+        out = self.output_path(out_path, '.jsonl', self.default_diagnostics_out())
         if not self.allow_output(out):
             return
         header = self._last_event("run.start")
@@ -280,8 +280,10 @@ class PageState:
         return str(source.with_name(source.stem + "-bundle.zip"))
 
     @staticmethod
-    def output_path(value: str, extension: str) -> str:
-        path = Path(value.strip()).expanduser()
+    def output_path(value: str, extension: str, default: str = '') -> str:
+        path = Path((value or '').strip() or default).expanduser()
+        if not path.name:
+            path = Path(default).expanduser()
         if path.suffix.lower() != extension:
             path = path.with_name(path.name + extension)
         return str(path.resolve())
@@ -471,7 +473,7 @@ class PageState:
             self.build_report = "Build refused. No bundle written.\n" + "\n".join(exc.lines)
             self.tab = "review"
             return
-        out = self.output_path(out_path or self.default_out(), '.zip')
+        out = self.output_path(out_path, '.zip', self.default_out())
         if not self.allow_output(out):
             return
         self.build_out = out

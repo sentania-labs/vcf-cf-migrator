@@ -178,6 +178,7 @@ class Client:
 
     def authenticate(self, username, password, auth_source=''):
         credentials = {'username': username, 'password': password}
+        auth_source = (auth_source or '').strip()
         if auth_source and auth_source.lower() != 'local':
             credentials['authSource'] = auth_source
         try:
