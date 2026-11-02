@@ -136,7 +136,7 @@ jobs:
       - name: Exercise the packaged native window
         run: |
           python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app'
-          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --objects 9000 --identities 113 --screenshot macos-app-large.png
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --launcher --objects 9000 --identities 113 --screenshot macos-app-large.png
       - name: Save the synthetic-content screenshot
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

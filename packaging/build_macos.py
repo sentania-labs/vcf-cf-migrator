@@ -1,5 +1,6 @@
-"""Build the Finder application separately from the standalone CLI executable."""
+"""Build the Finder application and its command-line launcher."""
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -18,6 +19,9 @@ def main():
     app = root / 'dist' / (APP_NAME + '.app')
     if not (app / 'Contents' / 'MacOS' / APP_NAME).is_file():
         raise SystemExit('The build did not produce the expected application executable.')
+    launcher = app / 'Contents' / 'MacOS' / 'vcfcf-migrator'
+    shutil.copy2(root / 'packaging' / 'macos-cli-launcher', launcher)
+    launcher.chmod(0o755)
     print(app)
 
 

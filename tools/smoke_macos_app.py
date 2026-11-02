@@ -31,17 +31,24 @@ def wait_for(predicate, timeout=45):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('app', type=Path)
+    parser.add_argument('--launcher', action='store_true', help='Launch the UI through the bundled CLI')
+    parser.add_argument('--assess-only', action='store_true', help='Check the stapled app with Gatekeeper')
+    parser.add_argument('--objects', type=int, default=1)
+    parser.add_argument('--identities', type=int, default=0)
+    parser.add_argument('--screenshot', type=Path, default=Path('macos-app-smoke.png'))
+    args = parser.parse_args()
+    if args.assess_only:
+        subprocess.run(['xcrun', 'stapler', 'validate', str(args.app)], check=True)
+        subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose=2', str(args.app)], check=True)
+        subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(args.app)], check=True)
+        return
     import Quartz
     from AppKit import NSRunningApplication
     from Foundation import NSURL
     import Vision
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('app', type=Path)
-    parser.add_argument('--objects', type=int, default=1)
-    parser.add_argument('--identities', type=int, default=0)
-    parser.add_argument('--screenshot', type=Path, default=Path('macos-app-smoke.png'))
-    args = parser.parse_args()
     if args.objects < 1 or args.identities < 0:
         parser.error('objects must be positive and identities nonnegative')
     # Hosted Mac runners start at 1024x768, smaller than this app's default.
@@ -74,9 +81,10 @@ def main():
         before = {a.processIdentifier() for a in NSRunningApplication.runningApplicationsWithBundleIdentifier_(info['CFBundleIdentifier'])}
         running = None
         with (scratch / 'application.log').open('w+') as log:
-            process = subprocess.Popen(['open', '-n', '-W', str(app), '--args',
-                                        '--log', str(events_path), '--log-format', 'jsonl',
-                                        'ui', str(source)], stdout=log, stderr=log)
+            command = ([str(app / 'Contents' / 'MacOS' / 'vcfcf-migrator')] if args.launcher
+                       else ['open', '-n', '-W', str(app), '--args'])
+            process = subprocess.Popen(command + ['--log', str(events_path), '--log-format', 'jsonl',
+                                                   'ui', str(source)], stdout=log, stderr=log)
             try:
                 running = wait_for(lambda: next((a for a in NSRunningApplication.runningApplicationsWithBundleIdentifier_(
                     info['CFBundleIdentifier']) if a.processIdentifier() not in before), None))

@@ -1,0 +1,42 @@
+#!/bin/sh
+# Resolve the installed symlink before finding the app's executable.
+launcher=$0
+while [ -L "$launcher" ]; do
+    directory=$(CDPATH="" cd -- "$(dirname -- "$launcher")" && pwd -P) || exit 1
+    target=$(readlink "$launcher") || exit 1
+    case $target in
+        /*) launcher=$target ;;
+        *) launcher=$directory/$target ;;
+    esac
+done
+directory=$(CDPATH="" cd -- "$(dirname -- "$launcher")" && pwd -P) || exit 1
+launcher=$directory/$(basename -- "$launcher")
+
+if [ "${1-}" = install-cli ]; then
+    if [ "$#" -ne 1 ]; then
+        echo 'Usage: vcfcf-migrator install-cli' >&2
+        exit 2
+    fi
+    if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+        bindir=/usr/local/bin
+    else
+        bindir=$HOME/.local/bin
+        mkdir -p "$bindir" || exit 1
+    fi
+    link=$bindir/vcfcf-migrator
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "$launcher" ]; then
+        echo "CLI already installed at $link"
+    elif [ -e "$link" ] || [ -L "$link" ]; then
+        echo "Cannot install CLI: $link already exists. Remove it first if you want to replace it." >&2
+        exit 1
+    else
+        ln -s "$launcher" "$link" || exit 1
+        echo "Installed CLI at $link"
+    fi
+    case :$PATH: in
+        *:"$bindir":*) ;;
+        *) echo "Add $bindir to your PATH to run vcfcf-migrator." ;;
+    esac
+    exit 0
+fi
+exec "$directory/VCF Content Migrator" "$@"

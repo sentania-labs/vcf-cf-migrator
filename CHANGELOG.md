@@ -5,6 +5,11 @@
 - Dashboard navigation now includes linked dashboards automatically. Missing
   dashboards, missing navigation widgets, and unreadable navigation references
   block bundle creation. Navigation gap counts use the complete export. (#3)
+- Each Mac download is now one signed and notarized app archive per chip that
+  holds both the Finder app and the `vcfcf-migrator` command line, at
+  `VCF Content Migrator.app/Contents/MacOS/vcfcf-migrator`. Running
+  `vcfcf-migrator install-cli` from there links it into `/usr/local/bin` or
+  `~/.local/bin`. The separate Mac command-line zips are no longer published.
 
 ## 0.5.2
 
