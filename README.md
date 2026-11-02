@@ -72,15 +72,16 @@ credentials. Command-line commands do not check for updates.
 3. **Review and select.** Choose a content type and search by name. Click an
    object to see its preview, dependencies, and details. **Select shown** adds
    the filtered results; **Select all** includes the whole readable inventory.
-   Required objects are added automatically. Removing a direct pick keeps it
-   included if another pick still needs it.
-4. **Review the bundle.** Choose **Review bundle** to check your picks and the
+   Required objects are added automatically. Removing an object you selected
+   keeps it included if another selected object still needs it.
+4. **Review the bundle.** Choose **Review bundle** to check your selections and the
    dependencies they bring along. Resolve missing dependencies by using a more
-   complete source export or removing the affected picks. Required references
+   complete source export or removing the affected selections. Required references
    that cannot be identified as built-in content are treated as missing;
    there is no override. Policy references do not block a build, but their
    assignments must be checked on the target.
-5. **Write and import.** Save to a new ZIP, then use the target instance's
+5. **Build and import.** The migrator builds the bundle but does not import
+   it. Choose **Save bundle as** for a new ZIP, then use the target instance's
    content import. Supply the original export password if requested. Open the
    imported objects on the target and check that their widgets, data sources,
    and links work.
@@ -95,10 +96,11 @@ needs.
 ## Connect directly to Operations
 
 Instead of downloading an export yourself, expand **Open export > Connect to
-Operations**. Enter the HTTPS address, username, password, and an export
-encryption password. Add the authority source if your account requires one.
-For an internal certificate authority, provide the path to its trusted PEM CA
-file. Certificate verification is always enabled.
+Operations**. Enter the VCF Operations URL, username, login password, and an export
+encryption password. Set the login source if your account is managed outside
+Local, such as a directory or SSO source configured in Operations; leave it
+blank for Local. For an internal certificate authority, provide the path to its
+trusted PEM CA file. Certificate verification is always enabled.
 
 Choose **Connect and load**. Operations exports the supported custom content;
 when the download finishes, select and build your bundle as usual. Keep the
@@ -138,7 +140,7 @@ dashboards too. After import, check the links on the target instance.
 ## If something goes wrong
 
 - **Missing dependencies:** export the required content from the source, or
-  remove the picks that depend on it. A target might already have an object,
+  remove the selections that depend on it. A target might already have an object,
   but the offline tool cannot verify that.
 - **Unexpected inventory count:** do not assume a manifest total equals the
   selectable inventory. One reported dashboard-count discrepancy remains
