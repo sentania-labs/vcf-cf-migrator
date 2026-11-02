@@ -1,4 +1,4 @@
-"""Finder bundle; the CLI remains a separate one-file build."""
+"""Finder bundle shared by the graphical app and CLI launcher."""
 from importlib.metadata import version
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, copy_metadata

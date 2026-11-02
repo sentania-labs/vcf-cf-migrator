@@ -6,9 +6,9 @@
 # be built on Windows and a macOS binary on macOS.
 #
 # Order, each job a gate for the next: refuse a bad tag and run the suite;
-# build one binary per OS (two for macOS) and smoke it (every subcommand on a
+# build each platform download and smoke it (subcommands on a
 # generated fixture, including the refusal of a build with a missing
-# dependency) from a directory holding nothing but the binary; then build the
+# dependency); then build the
 # wheel and publish the GitHub Release, idempotently per tag.
 #
 # Signing and notarization are the org's shared actions in sentania-labs/.github
@@ -146,6 +146,7 @@ jobs:
         run: xvfb-run -a python tools/smoke_native.py
 
       - name: Build the one-file binary
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           # copy-metadata: without it the binary has no dist-info and both
@@ -183,16 +184,6 @@ jobs:
       # Order matters: sign, then the smoke below runs the SIGNED binary,
       # then notarize, so a signature that breaks startup is caught in
       # seconds rather than after Apple's round trip.
-      - name: Sign the binary (macOS)
-        if: runner.os == 'macOS'
-        uses: sentania-labs/.github/.github/actions/macos-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github main 2026-10-07
-        with:
-          binary: dist/vcfcf-migrator${{ matrix.ext }}
-          entitlements: packaging/macos-entitlements.plist
-          macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
-          macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
-          macos-team-id: ${{ secrets.MACOS_TEAM_ID }}
-
       - name: Sign the Mac application
         if: runner.os == 'macOS'
         uses: sentania-labs/.github/.github/actions/macos-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # main 2026-10-07
@@ -208,7 +199,7 @@ jobs:
         run: |
           python -m pip install pyobjc-framework-Quartz pyobjc-framework-Vision
           python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app'
-          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --objects 9000 --identities 113 --screenshot macos-app-large.png
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --launcher --objects 9000 --identities 113 --screenshot macos-app-large.png
 
       - name: Smoke the binary from a directory holding nothing else
         shell: bash
@@ -219,14 +210,20 @@ jobs:
           checks="$PWD/tests/fixtures/ci_checks.py"
           python tests/fixtures/make_export_fixture.py "$RUNNER_TEMP/fixture.zip"
           mkdir -p "$RUNNER_TEMP/smoke"
-          cp "dist/vcfcf-migrator${{ matrix.ext }}" "$RUNNER_TEMP/smoke/"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            bin="$PWD/dist/VCF Content Migrator.app/Contents/MacOS/vcfcf-migrator"
+          else
+            cp "dist/vcfcf-migrator${{ matrix.ext }}" "$RUNNER_TEMP/smoke/"
+            bin="$RUNNER_TEMP/smoke/vcfcf-migrator${{ matrix.ext }}"
+          fi
           cd "$RUNNER_TEMP/smoke"
-          bin="./vcfcf-migrator${{ matrix.ext }}"
           "$bin" version
           "$bin" inspect "$RUNNER_TEMP/fixture.zip"
           "$bin" inspect --json "$RUNNER_TEMP/fixture.zip" > inspect.json
           python "$checks" listing inspect.json
           "$bin" tree "$RUNNER_TEMP/fixture.zip"
+          "$bin" preview "$RUNNER_TEMP/fixture.zip" "$(python "$checks" preview-object)" --out preview.html
+          python "$checks" preview preview.html
           # The fixture's select-all depends on content the fixture leaves
           # out on purpose, so build refuses it (#31): no override, no file.
           # The bundle smoked here is the fixture's clean selection, whose
@@ -246,6 +243,13 @@ jobs:
             exit 1
           fi
           python "$checks" refusal refused.jsonl
+          "$bin" log-render refused.jsonl > rendered.log
+          test -s rendered.log
+          if "$bin" inspect missing.zip > /dev/null 2> error.log; then
+            echo "::error::inspect accepted a missing file"
+            exit 1
+          fi
+          test -s error.log
           mkdir -p empty-corpus
           "$bin" corpus-check empty-corpus
           # The binary must report the tag's version, not a dev version.
@@ -261,15 +265,6 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a -s '-screen 0 1280x1024x24' python tools/smoke_frozen_linux.py dist/vcfcf-migrator
 
-      - name: Notarize (macOS)
-        if: runner.os == 'macOS'
-        uses: sentania-labs/.github/.github/actions/macos-notarize@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github main 2026-10-07
-        with:
-          binary: dist/vcfcf-migrator${{ matrix.ext }}
-          notary-issuer-id: ${{ secrets.NOTARY_ISSUER_ID }}
-          notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
-          notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
-
       - name: Notarize and staple the Mac application
         if: runner.os == 'macOS'
         uses: sentania-labs/.github/.github/actions/macos-notarize@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # main 2026-10-07
@@ -280,14 +275,21 @@ jobs:
           notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
           notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
 
+      - name: Assess the stapled Mac application
+        if: runner.os == 'macOS'
+        run: python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --assess-only
+
       - name: Package the executable
+        if: runner.os != 'macOS'
         shell: bash
         run: python packaging/archive.py "dist/vcfcf-migrator${{ matrix.ext }}" "${{ matrix.name }}"
 
       - name: Include the stapled Mac application archive
         if: runner.os == 'macOS'
         shell: bash
-        run: cp "dist/vcfcf-migrator-${{ matrix.name }}-app.zip" archives/
+        run: |
+          mkdir -p archives
+          cp "dist/vcfcf-migrator-${{ matrix.name }}-app.zip" archives/
 
       - name: Clean up signing material
         if: always() && runner.os == 'macOS'

@@ -11,9 +11,16 @@ Download the archive for your computer and extract it. On Mac, move **VCF Conten
 | Linux x86-64 | `vcfcf-migrator-linux.tar.gz` |
 | Windows x86-64 | `vcfcf-migrator-windows.zip` |
 
-Mac CLI users can use the separate `vcfcf-migrator-macos-arm64.zip` or
-`vcfcf-migrator-macos-x86_64.zip` downloads. Both contain `vcfcf-migrator`.
-The Mac app is signed, notarized, and carries its notarization ticket.
+For the Mac command line, move the app to Applications, then run:
+
+```sh
+"/Applications/VCF Content Migrator.app/Contents/MacOS/vcfcf-migrator" install-cli
+```
+
+This links the command into `/usr/local/bin`, or `~/.local/bin` if the former
+is not writable. Add that directory to your PATH if prompted, and keep the app
+in Applications so the link continues to work. The app is signed, notarized,
+and carries its notarization ticket.
 
 The application opens a native window. It does not start a local web server.
 On Mac, Apple menu > About This Mac shows your chip or processor.

@@ -161,12 +161,17 @@ to a public issue. Previously saved reports are not changed by an upgrade.
 
 ## Command-line use
 
-Mac command-line users can download `vcfcf-migrator-macos-arm64.zip` or
-`vcfcf-migrator-macos-x86_64.zip`. These separate archives each contain the
-standalone `vcfcf-migrator` executable. They do not require the `.app` to be
-installed. A bare Mac executable cannot carry an attached notarization ticket,
-so its first launch may need to contact Apple. Older releases provide
-executables directly, with the platform in the filename.
+On Mac, move the app to Applications first, then install its command-line
+launcher from Terminal:
+
+```sh
+"/Applications/VCF Content Migrator.app/Contents/MacOS/vcfcf-migrator" install-cli
+```
+
+This creates a symlink in `/usr/local/bin` when writable, otherwise in
+`~/.local/bin`. If the command reports that directory is not on your PATH, add
+it to your shell's PATH. Keep the app in Applications; moving or removing it
+breaks the link. The launcher can also be run directly at the path above.
 
 The same tools are available from a terminal. These examples assume the
 executable is named `vcfcf-migrator` and is on your PATH; otherwise use its full
