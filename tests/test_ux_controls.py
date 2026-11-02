@@ -230,3 +230,16 @@ def test_theme_default_persistence_validation_and_corpus_compatibility(config_di
 def test_blank_or_nameless_destination_falls_back_to_the_default(state, value):
     default = str(Path('fallback-bundle').resolve()) + '.zip'
     assert state.output_path(value, '.zip', 'fallback-bundle') == default
+
+
+def test_replace_confirmation_only_for_typed_paths(state, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    prompts = []
+    state.confirm = lambda title, message: prompts.append(title) or True
+    target = tmp_path / 'existing.jsonl'
+    target.write_text('old')
+    state.save_diagnostics(str(target), True)
+    assert not prompts
+    state.save_diagnostics(str(target))
+    assert prompts == ['Replace file?']
+    assert state.diagnostics_out == str(target)

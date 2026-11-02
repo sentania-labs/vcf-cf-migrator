@@ -94,7 +94,7 @@ _BRIDGE_JS = """
       window.pywebview.api.pick_path(picker.dataset.pick, input.value).then(function (result) {
         if (!input.isConnected) return;
         if (result.error) { banner(result.error); return; }
-        if (result.path) { input.value = result.path; input.dispatchEvent(new Event('change', {bubbles:true})); }
+        if (result.path) { input.value = result.path; input.dataset.picked = result.path; input.dispatchEvent(new Event('change', {bubbles:true})); }
       }).catch(function () { banner('The file picker could not open. Enter the path manually.'); })
         .finally(function () { picker.disabled = picker.dataset.pick === 'ca' && document.getElementById('source-ignore')?.checked; });
     }
@@ -134,6 +134,8 @@ _BRIDGE_JS = """
     if (by && by.name) { data[by.name] = by.value; }
     new FormData(form).forEach(function (value, key) { data[key] = value; });
     var action = form.getAttribute('action') || '/';
+    var out = action === '/build' ? form.querySelector('#out') : null;
+    if (out && out.dataset.picked && out.dataset.picked === out.value) { data.picked = '1'; }
     invalidateConnection();
     if (!window.migratorActivity.start(action)) { return; }
     if (action === '/connect') { form.reset(); }
@@ -144,6 +146,7 @@ _BRIDGE_JS = """
           if (result.error) { throw Error(result.error); }
           if (!result.path) return null;
           data.out = result.path;
+          data.picked = '1';
           return window.pywebview.api.act(action, data);
         });
       }
@@ -295,7 +298,7 @@ class Bridge:
                     file_types=('PEM certificates (*.pem;*.crt)', 'All files (*.*)'))
             else:
                 extension = '.zip' if kind == 'bundle' else '.jsonl'
-                target = Path(self._state.output_path(current, extension, 'bundle.zip' if kind == 'bundle' else 'diagnostics.jsonl'))
+                target = Path(self._state.output_path(current, extension, self._state.default_out() if kind == 'bundle' else self._state.default_diagnostics_out()))
                 chosen = window.create_file_dialog(webview.SAVE_DIALOG, directory=str(target.parent),
                     save_filename=target.name,
                     file_types=(('Zip files (*.zip)' if kind == 'bundle' else 'JSON lines (*.jsonl)'),))

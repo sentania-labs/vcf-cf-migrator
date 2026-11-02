@@ -137,11 +137,11 @@ class PageState:
                 return event
         return None
 
-    def save_diagnostics(self, out_path: str) -> None:
+    def save_diagnostics(self, out_path: str, from_dialog: bool = False) -> None:
         """One file holding the run header, the input fingerprint, every log
         event and the bundle's manifest, ready to attach to a mail."""
         out = self.output_path(out_path, '.jsonl', self.default_diagnostics_out())
-        if not self.allow_output(out):
+        if not self.allow_output(out, from_dialog):
             return
         header = self._last_event("run.start")
         source = self._last_event("input.fingerprint")
@@ -288,12 +288,12 @@ class PageState:
             path = path.with_name(path.name + extension)
         return str(path.resolve())
 
-    def allow_output(self, out: str) -> bool:
+    def allow_output(self, out: str, from_dialog: bool = False) -> bool:
         target = Path(out)
         if self.zip_path and target == Path(self.zip_path).resolve():
             self.error = 'Choose a different destination. The source export cannot be overwritten.'
             return False
-        if target.exists() and not self.confirm('Replace file?', f'Replace the existing file at {target}?'):
+        if target.exists() and not from_dialog and not self.confirm('Replace file?', f'Replace the existing file at {target}?'):
             self.message = 'Save cancelled. The existing file is unchanged.'
             return False
         return True
@@ -453,7 +453,7 @@ class PageState:
     # -- the commands ------------------------------------------------------
 
     @serialized
-    def build(self, out_path: str) -> None:
+    def build(self, out_path: str, from_dialog: bool = False) -> None:
         """Write the bundle for the closed selection, exactly as the CLI does.
 
         The UI refuses missing references before calling the shared writer.
@@ -474,7 +474,7 @@ class PageState:
             self.tab = "review"
             return
         out = self.output_path(out_path, '.zip', self.default_out())
-        if not self.allow_output(out):
+        if not self.allow_output(out, from_dialog):
             return
         self.build_out = out
         try:
@@ -658,7 +658,7 @@ def _act_filter(state: "PageState", form: dict) -> str:
 def _act_build(state: "PageState", form: dict) -> str:
     # Keep readiness and the written bundle report on the review screen.
     state.tab = "review"
-    state.build(form.get("out", ""))
+    state.build(form.get("out", ""), form.get("picked") == "1")
     return ""
 
 
@@ -667,7 +667,7 @@ def _act_diagnostics(state: "PageState", form: dict) -> str:
     # and the banner renders above the panels, so there is nothing on any one
     # panel to land on. Moving someone here anyway would be a rule invented to
     # match the shape of the other actions rather than to help anyone.
-    state.save_diagnostics(form.get("out", ""))
+    state.save_diagnostics(form.get("out", ""), form.get("picked") == "1")
     return ""
 
 
