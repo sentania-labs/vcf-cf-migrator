@@ -32,10 +32,92 @@ _BRIDGE_JS = """
       window.pywebview.api.open_release().catch(function () {});
     }
   });
+  var lookupGeneration = 0, lookupTimer = null, testGeneration = 0;
+  function invalidateConnection() {
+    lookupGeneration++;
+    testGeneration++;
+    clearTimeout(lookupTimer);
+    var status = document.getElementById('test-status');
+    if (status) status.textContent = '';
+  }
+  function loadSources() {
+    var address = document.getElementById('source-address');
+    var ca = document.getElementById('source-ca_file');
+    var ignore = document.getElementById('source-ignore');
+    if (!address || !ca || !ignore) return;
+    ca.disabled = ignore.checked;
+    document.querySelector('[data-pick="ca"]').disabled = ignore.checked;
+    document.getElementById('ssl-warning').hidden = !ignore.checked;
+    var seq = ++lookupGeneration;
+    var status = document.getElementById('source-status');
+    var list = document.getElementById('login-sources');
+    list.replaceChildren();
+    var local = document.createElement('option'); local.value = 'Local'; list.appendChild(local);
+    // Invalid addresses do not dispatch a request. Python also validates at the trust boundary.
+    try {
+      var url = new URL(address.value);
+      if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.search || url.hash ||
+          !['', '/', '/suite-api', '/suite-api/', '/suite-api/api', '/suite-api/api/'].includes(url.pathname)) throw Error();
+    } catch (_) { status.textContent = 'Enter a valid HTTPS server URL to load login sources. Manual entry is always available.'; return; }
+    status.textContent = 'Loading login sources…';
+    window.pywebview.api.login_sources(address.value, ca.value, ignore.checked).then(function (result) {
+      if (seq !== lookupGeneration || !list.isConnected) return;
+      (result.sources || []).filter(function(name) { return name.toLowerCase() !== 'local'; }).forEach(function (name) {
+        var option = document.createElement('option'); option.value = name; list.appendChild(option);
+      });
+      status.textContent = result.error ? result.error + ' Enter a login source manually.' :
+        (result.sources.length ? 'Login sources loaded. You can also enter one manually.' : 'No additional login sources returned. Use Local or enter one manually.');
+    }).catch(function () {
+      if (seq === lookupGeneration && list.isConnected) status.textContent = 'Could not load login sources. Enter one manually.';
+    });
+  }
+  document.addEventListener('input', function (ev) {
+    if (!ev.target.closest('.connect-form')) return;
+    testGeneration++;
+    document.getElementById('test-status').textContent = '';
+    if (['source-address', 'source-ca_file'].includes(ev.target.id)) {
+      invalidateConnection();
+      document.getElementById('source-status').textContent = 'Waiting for server settings…';
+      lookupTimer = setTimeout(loadSources, 400);
+    }
+  });
+  document.addEventListener('change', function (ev) {
+    if (!['source-address', 'source-ca_file', 'source-ignore'].includes(ev.target.id)) return;
+    invalidateConnection();
+    loadSources();
+  });
+  document.addEventListener('click', function (ev) {
+    var picker = ev.target.closest('[data-pick]');
+    if (picker && !picker.disabled) {
+      var input = document.getElementById(picker.dataset.target);
+      picker.disabled = true;
+      window.pywebview.api.pick_path(picker.dataset.pick, input.value).then(function (result) {
+        if (!input.isConnected) return;
+        if (result.error) { banner(result.error); return; }
+        if (result.path) { input.value = result.path; input.dispatchEvent(new Event('change', {bubbles:true})); }
+      }).catch(function () { banner('The file picker could not open. Enter the path manually.'); })
+        .finally(function () { picker.disabled = picker.dataset.pick === 'ca' && document.getElementById('source-ignore')?.checked; });
+    }
+    if (ev.target.id === 'test-connection') {
+      var button = ev.target, form = button.form, data = {};
+      // Testing does not require the unrelated export encryption password.
+      var inputs = ['source-address', 'source-username', 'source-password'];
+      if (inputs.some(function(id) { return !document.getElementById(id).reportValidity(); })) return;
+      new FormData(form).forEach(function (value, key) { if (key !== 'export_password') data[key] = value; });
+      var seq = ++testGeneration;
+      var status = document.getElementById('test-status');
+      status.textContent = 'Testing connection…'; button.disabled = true;
+      window.pywebview.api.test_connection(data).then(function (result) {
+        if (seq === testGeneration && status.isConnected) status.textContent = result;
+      }).catch(function () {
+        if (seq === testGeneration && status.isConnected) status.textContent = 'Connection failed. Check the server settings and credentials.';
+      }).finally(function () { data = null; button.disabled = false; });
+    }
+  });
   function banner(text) {
     var bar = document.createElement('div');
     bar.setAttribute('role', 'alert');
-    bar.style.cssText = 'background:#8d1515;color:#fff;padding:10px 14px;font:14px system-ui';
+    bar.className = 'err';
     bar.textContent = text;
     document.body.insertBefore(bar, document.body.firstChild);
   }
@@ -52,13 +134,23 @@ _BRIDGE_JS = """
     if (by && by.name) { data[by.name] = by.value; }
     new FormData(form).forEach(function (value, key) { data[key] = value; });
     var action = form.getAttribute('action') || '/';
+    invalidateConnection();
     if (!window.migratorActivity.start(action)) { return; }
     if (action === '/connect') { form.reset(); }
     var navigation = window.migratorNavigation.capture(action);
     Promise.resolve().then(function () {
+      if (action === '/diagnostics' && data.manual !== '1') {
+        return window.pywebview.api.pick_path('diagnostics', data.out || '').then(function (result) {
+          if (result.error) { throw Error(result.error); }
+          if (!result.path) return null;
+          data.out = result.path;
+          return window.pywebview.api.act(action, data);
+        });
+      }
       return window.pywebview.api.act(action, data);
     }).then(function (res) {
       data = null;
+      if (!res) return;
       var doc = new DOMParser().parseFromString(res.html, 'text/html');
       document.body.replaceWith(doc.body);
       showRelease();
@@ -167,6 +259,52 @@ class Bridge:
         self._release_checked = False
         self._release_tag = None
 
+    def login_sources(self, address: str, ca_file: str, ignore_ssl: bool) -> dict:
+        from .source import Client, SourceError
+        try:
+            return {'sources': Client(address, ca_file=ca_file, ignore_ssl=ignore_ssl, request_timeout=10).login_sources()}
+        except SourceError as exc:
+            return {'error': str(exc)}
+        except Exception:
+            return {'error': 'Could not load login sources. Enter a source manually.'}
+
+    def test_connection(self, form: dict) -> str:
+        from .source import Client, SourceError
+        try:
+            Client(form.get('address', ''), ca_file=form.get('ca_file', ''),
+                   ignore_ssl=form.get('ignore_ssl') in (True, '1'), request_timeout=10).test_connection(
+                form.get('username', ''), form.get('password', ''), form.get('auth_source', ''))
+            return 'Connection succeeded. No export was started.'
+        except SourceError as exc:
+            return str(exc)
+        except Exception:
+            return 'Connection failed. Check the address and credentials.'
+        finally:
+            form.clear()
+
+    def pick_path(self, kind: str, current: str = '') -> dict:
+        from pathlib import Path
+        import webview
+        window = getattr(self, '_window', None)
+        if not window or kind not in ('ca', 'bundle', 'diagnostics'):
+            return {'error': 'The file picker is unavailable. Enter the path manually.'}
+        try:
+            if kind == 'ca':
+                chosen = window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
+                    file_types=('PEM certificates (*.pem;*.crt)', 'All files (*.*)'))
+            else:
+                extension = '.zip' if kind == 'bundle' else '.jsonl'
+                target = Path(self._state.output_path(current or ('bundle.zip' if kind == 'bundle' else 'diagnostics.jsonl'), extension))
+                chosen = window.create_file_dialog(webview.SAVE_DIALOG, directory=str(target.parent),
+                    save_filename=target.name,
+                    file_types=(('Zip files (*.zip)' if kind == 'bundle' else 'JSON lines (*.jsonl)'),))
+            value = (chosen[0] if chosen else '') if isinstance(chosen, (list, tuple)) else (chosen or '')
+            if value and kind != 'ca':
+                value = self._state.output_path(value, extension)
+            return {'path': value}
+        except Exception:
+            return {'error': 'The file picker could not open. Enter the path manually.'}
+
     def check_release(self) -> Optional[str]:
         # pywebview invokes bridge methods on worker threads. This lock is
         # separate from content actions, so the network never holds them up.
@@ -249,9 +387,17 @@ def run(state: Any, title: str = "VCF content migrator", width: int = 1280,
     holder: Dict[str, Any] = {}
     # Set before the first render, so the very first page carries the button.
     state.file_picker = _picker_for(holder)
+    if initial_zip:
+        state.source_mode = 'zip'
+    state.confirm = lambda title, message: holder['window'].create_confirmation_dialog(title, message)
+    import shutil
+    import sys
+    if sys.platform in ('darwin', 'win32') or shutil.which('xdg-open'):
+        state.show_in_folder = show_in_folder
     holder["window"] = webview.create_window(title, html=page_html(state, initial_zip),
                                              js_api=bridge, width=width,
                                              height=height)
+    bridge._window = holder["window"]
     def progress(stage):
         try:
             holder['window'].evaluate_js('window.migratorActivity.stage(' + json.dumps(stage) + ')')
@@ -262,3 +408,24 @@ def run(state: Any, title: str = "VCF content migrator", width: int = 1280,
     import sys
 
     webview.start(gui="qt" if sys.platform.startswith("linux") else None, http_server=False)
+
+
+def show_in_folder(path: str) -> bool:
+    """Reveal only a successfully written bundle, without invoking a shell."""
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    target = Path(path).resolve()
+    if not target.is_file():
+        return False
+    try:
+        if sys.platform == 'darwin':
+            subprocess.Popen(['open', '-R', str(target)])
+        elif sys.platform == 'win32':
+            os.startfile(str(target.parent))
+        else:
+            subprocess.Popen(['xdg-open', str(target.parent)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False

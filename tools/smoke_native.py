@@ -122,8 +122,16 @@ def main():
                 wait_for(lambda: window.evaluate_js("Boolean(document.getElementById('diag_out'))"))
                 report = scratch / 'diagnostics.jsonl'
                 window.evaluate_js("document.getElementById('diag_out').value=" + json.dumps(str(report)))
+                # Native dialog interaction is covered by smoke_ux.py. Here guard
+                # the bridge path and the diagnostics file contract.
+                dialogs = []
+                def save_dialog(*args, **kwargs):
+                    dialogs.append((args, kwargs))
+                    return str(report)
+                window.create_file_dialog = save_dialog
                 submit('/diagnostics')
                 wait_for(report.exists)
+                assert dialogs[0][0] == (webview.SAVE_DIALOG,)
                 text = report.read_text()
                 assert str(scratch) not in text
                 assert '[Fixture]' not in text

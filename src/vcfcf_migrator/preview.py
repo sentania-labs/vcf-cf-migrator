@@ -128,10 +128,12 @@ DEFAULT_GRID_COLUMNS = 12
 # clamped and named instead.
 MAX_GRID_COLUMNS = 48
 
+from . import theme
+
 PREVIEW_CSS = """
-.pv { --pv-bg:#1b1f24; --pv-panel:#23282f; --pv-panel2:#2a3038; --pv-line:#363d47;
-  --pv-ink:#f2f4f7; --pv-ink2:#b7bfca; --pv-ink3:#7f8896; --pv-accent:#3987e5;
-  --pv-warn:#e0a400; --pv-ok:#199e70; --pv-bad:#d95926;
+ .pv { --pv-bg:var(--bg); --pv-panel:var(--surface); --pv-panel2:var(--surface-sunken); --pv-line:var(--line);
+  --pv-ink:var(--ink); --pv-ink2:var(--ink-muted); --pv-ink3:var(--ink-muted); --pv-accent:var(--accent);
+  --pv-warn:var(--warn); --pv-ok:var(--ok); --pv-bad:var(--bad);
   background:var(--pv-bg); color:var(--pv-ink); border-radius:6px; padding:14px 16px 18px;
   font:13px/1.45 system-ui,"Segoe UI",sans-serif; }
 .pv * { box-sizing:border-box }
@@ -151,8 +153,8 @@ PREVIEW_CSS = """
   text-transform:uppercase; letter-spacing:.04em; white-space:nowrap }
 .pv .pv-flow { font-size:10px; font-weight:500; padding:1px 6px; border-radius:9px;
   white-space:nowrap; min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis }
-.pv .pv-flow.driven { background:rgba(57,135,229,0.16); color:#8fbcf5 }
-.pv .pv-flow.drives { background:rgba(25,158,112,0.16); color:#67c9a2 }
+.pv .pv-flow.driven { background:var(--accent-soft); color:var(--accent-ink) }
+.pv .pv-flow.drives { background:var(--ok-soft); color:var(--ok-ink) }
 .pv .pv-w.is-receiver { border-left:3px solid var(--pv-accent) }
 .pv .pv-w.is-provider { border-left:3px solid var(--pv-ok) }
 .pv .pv-drivenby { font-size:10.5px; color:var(--pv-ink3); margin:0 0 6px }
@@ -183,11 +185,11 @@ PREVIEW_CSS = """
 .pv .pv-placeholder { border:1px dashed var(--pv-line); border-radius:3px; color:var(--pv-ink3);
   font-size:11px; padding:10px; text-align:center }
 .pv .pv-nothing { border:1px solid var(--pv-warn); border-left-width:3px; border-radius:3px;
-  background:rgba(224,164,0,0.09); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
+  background:var(--warn-soft); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
 .pv .pv-nothing b { color:var(--pv-warn); display:block; font-size:10px; text-transform:uppercase;
   letter-spacing:.06em; margin-bottom:3px }
 .pv .pv-elsewhere { border:1px dashed var(--pv-accent); border-radius:3px;
-  background:rgba(57,135,229,0.07); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
+  background:var(--accent-soft); color:var(--pv-ink2); font-size:11.5px; padding:9px 11px }
 .pv .pv-elsewhere b { color:var(--pv-accent); display:block; font-size:10px;
   text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px }
 .pv .pv-section { grid-column:1 / -1; border-bottom:1px solid var(--pv-line); color:var(--pv-ink2);
@@ -226,7 +228,7 @@ _PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <style>
-body {{ margin:0; padding:18px; background:#11151a; font:13px/1.45 system-ui,"Segoe UI",sans-serif; }}
+body {{ margin:0; padding:18px; background:var(--bg); font:13px/1.45 system-ui,"Segoe UI",sans-serif; }}
 {css}
 </style>
 </head>
@@ -844,10 +846,10 @@ def heatmap_metrics(cfg: dict) -> List[Tuple[str, str]]:
 # the product's badge scale. The page's blue accent is chart ink and says
 # nothing about a value, so it never appears in a heat scale: a VCF Operations
 # heatmap runs red to green and never shows blue.
-HEAT_GOOD = "#74B43B"    # green, the good end
-HEAT_FAIR = "#ECC33E"    # yellow
-HEAT_POOR = "#E07720"    # orange
-HEAT_BAD = "#DE3F30"     # red, the bad end
+HEAT_GOOD = "var(--ok)"
+HEAT_FAIR = "var(--warn)"
+HEAT_POOR = "var(--bad)"
+HEAT_BAD = "var(--bad-ink)"
 HEAT_RAMP = (HEAT_GOOD, HEAT_GOOD, HEAT_FAIR, HEAT_POOR, HEAT_BAD)
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -2418,4 +2420,4 @@ def render_page(graph: Graph, node: Node) -> str:
     """The preview as one standalone HTML file: inline CSS, inline SVG, no
     network of any kind."""
     return _PAGE.format(title=_e(f"{node.name} ({node.kind}) preview"),
-                        css=PREVIEW_CSS, body=fragment(graph, node))
+                        css=theme.CSS + PREVIEW_CSS, body=fragment(graph, node))

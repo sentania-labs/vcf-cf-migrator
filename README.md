@@ -67,7 +67,7 @@ credentials. Command-line commands do not check for updates.
    the dependencies of the objects you intend to move. If Operations asks for
    an encryption password, keep it for the target import. The migrator does not
    need that password.
-2. **Open the ZIP.** Use **Browse** in the desktop window, or enter the file's
+2. **Open the ZIP.** Choose **Open an export zip**, then **Browse**, or enter the file's
    local path and choose **Open export**.
 3. **Review and select.** Choose a content type and search by name. Click an
    object to see its preview, dependencies, and details. **Select shown** adds
@@ -81,7 +81,7 @@ credentials. Command-line commands do not check for updates.
    there is no override. Policy references do not block a build, but their
    assignments must be checked on the target.
 5. **Build and import.** The migrator builds the bundle but does not import
-   it. Choose **Save bundle as** for a new ZIP, then use the target instance's
+   it. Use **Save As…** to choose a ZIP destination, or edit the path, then **Build bundle**. The app confirms the full destination and offers **Show in folder** where supported. Use the target instance's
    content import. Supply the original export password if requested. Open the
    imported objects on the target and check that their widgets, data sources,
    and links work.
@@ -95,12 +95,20 @@ needs.
 
 ## Connect directly to Operations
 
-Instead of downloading an export yourself, expand **Open export > Connect to
-Operations**. Enter the VCF Operations URL, username, login password, and an export
-encryption password. Set the login source if your account is managed outside
-Local, such as a directory or SSO source configured in Operations; leave it
-blank for Local. For an internal certificate authority, provide the path to its
-trusted PEM CA file. Certificate verification is always enabled.
+Choose **Connect to VCF Operations** on the start page (or **Change source**
+after loading content). Enter the HTTPS server URL, username and login password.
+**Login source** starts at **Local** and offers the sources returned by the server;
+you can also type a directory or SSO source name. Discovery uses your connection
+security settings. A lookup failure does not prevent manual entry. This is a
+username/password sign-in, not browser SSO.
+
+Certificate verification is on by default. Use **Browse…** beside **Trusted CA
+certificate bundle (PEM, optional)** for a private CA. **Ignore SSL validation**
+disables verification and the CA field while retaining its path. The warning on
+the form explains that the server's identity will not be verified.
+
+**Test connection** checks the URL, TLS and credentials without starting an
+export. Enter a separate **Export encryption password** when ready to download.
 
 Choose **Connect and load**. Operations exports the supported custom content;
 when the download finishes, select and build your bundle as usual. Keep the
@@ -116,7 +124,7 @@ Operations API serves the account's latest export. The migrator checks the job
 identity before and after downloading, but cannot fully rule out a competing
 export started at the same time. If a connection fails or times out, check the
 source export job before trying again. Your existing inventory and selection
-remain available when the replacement cannot be loaded.
+remain available when the replacement cannot be loaded. A successfully loaded replacement asks for confirmation before discarding your current selection.
 
 ## What carries across
 
@@ -151,7 +159,7 @@ dashboards too. After import, check the links on the target instance.
   again. Include the export size and the operation you were performing in a
   problem report.
 
-In **Help & diagnostics**, choose **Save anonymized diagnostics** and attach
+In **Help & diagnostics**, choose **Save diagnostics…**, select a destination in the native save dialog, and attach
 that file to an [issue](https://github.com/sentania-labs/vcf-cf-migrator/issues).
 Include the application version, what you tried, and what happened.
 
@@ -161,7 +169,16 @@ anonymous labels. **Local file logs are private, not anonymized diagnostics.**
 Do not attach them, source exports, or screenshots containing private content
 to a public issue. Previously saved reports are not changed by an upgrade.
 
+Appearance is under **Help & diagnostics > Settings**. Light is the default;
+your light/dark choice is saved for the next launch. Local log settings are in a
+separate disclosure beneath appearance.
+
 ## Command-line use
+
+Inspection, tree/JSON output, selection-file input and `corpus-check` are
+command-line tools. They are not controls in the desktop app. The saved
+`corpus_dir` setting, `VCFCF_MIGRATOR_CORPUS` environment variable and `--corpus`
+override continue to work. Connecting to a live Operations source is GUI-only.
 
 On Mac, move the app to Applications first, then install its command-line
 launcher from Terminal:

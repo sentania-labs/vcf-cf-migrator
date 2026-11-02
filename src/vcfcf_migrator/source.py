@@ -85,20 +85,28 @@ def validate_size(path):
         check(archive, 0)
 
 
+def tls_context(ca_file='', ignore_ssl=False):
+    """Create the TLS policy used by every Operations request."""
+    if ignore_ssl:
+        return ssl._create_unverified_context()
+    try:
+        return ssl.create_default_context(cafile=ca_file or None)
+    except (OSError, ssl.SSLError):
+        raise SourceError('The trusted CA bundle could not be read. Choose a valid PEM CA bundle.') from None
+
+
 class Client:
     def __init__(self, address, ca_file='', opener=None, progress=None,
-                 timeout=300, poll_interval=1):
+                 timeout=300, poll_interval=1, ignore_ssl=False, request_timeout=30):
         self.base = endpoint(address)
         self.token = None
         self.auth_scheme = 'OpsToken'
         self.try_legacy = True
         self.progress = progress or (lambda text: None)
+        self.request_timeout = request_timeout
         self.timeout = timeout
         self.poll_interval = poll_interval
-        try:
-            context = ssl.create_default_context(cafile=ca_file or None)
-        except (OSError, ssl.SSLError):
-            raise SourceError('The trusted CA file could not be read. Choose a PEM CA certificate.') from None
+        context = tls_context(ca_file, ignore_ssl)
         self.opener = opener or urllib.request.build_opener(
             urllib.request.HTTPSHandler(context=context), NoRedirects())
 
@@ -110,7 +118,7 @@ class Client:
         request = urllib.request.Request(self.base + path, headers=headers,
                                          data=json.dumps(data).encode() if data is not None else None)
         try:
-            return self.opener.open(request, timeout=30)
+            return self.opener.open(request, timeout=self.request_timeout)
         except urllib.error.HTTPError as exc:
             code = exc.code
             exc.close()
@@ -127,7 +135,10 @@ class Client:
                 429: 'Operations is busy. Wait before connecting again.',
             }
             raise SourceError(messages.get(code, 'Operations could not complete the request. No automatic export retry was made.')) from None
-        except (urllib.error.URLError, ssl.SSLError, OSError, socket.timeout):
+        except (urllib.error.URLError, ssl.SSLError, OSError, socket.timeout) as exc:
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                raise SourceError('Certificate verification failed. Choose a trusted CA bundle or check the server certificate.') from None
             raise SourceError('Connection failed. Check the address, trusted CA, network, and source availability. If export had started, check its status before retrying.') from None
 
     def _json(self, path, data=None, extra_headers=None):
@@ -158,22 +169,50 @@ class Client:
             raise SourceError('Operations did not identify the export reliably. Use a manually downloaded ZIP.')
         return ident, started
 
+    def login_sources(self):
+        value = self._json('/auth/sources').get('sources')
+        if not isinstance(value, list):
+            raise SourceError('Operations returned an unreadable list of login sources.')
+        return [item['name'] for item in value if isinstance(item, dict)
+                and isinstance(item.get('name'), str) and item['name']]
+
+    def authenticate(self, username, password, auth_source=''):
+        credentials = {'username': username, 'password': password}
+        if auth_source and auth_source.lower() != 'local':
+            credentials['authSource'] = auth_source
+        try:
+            result = self._json('/auth/token/acquire', credentials)
+        finally:
+            credentials.clear()
+        token = result.get('token')
+        if not isinstance(token, str) or not token:
+            raise SourceError('Operations did not return a usable session token.')
+        self.token = token
+        result.clear()
+
+    def release(self):
+        if self.token:
+            try:
+                with self._request('/auth/token/release', data={}):
+                    pass
+            except Exception:
+                pass
+        self.token = None
+
+    def test_connection(self, username, password, auth_source=''):
+        if not username or not password:
+            raise SourceError('Enter your username and login password.')
+        try:
+            self.authenticate(username, password, auth_source)
+            self._json('/versions/current')
+        finally:
+            self.release()
+
     def acquire(self, username, password, auth_source='', export_password=''):
         snapshot = None
         try:
             self.progress('Authenticating')
-            credentials = {'username': username, 'password': password}
-            if auth_source:
-                credentials['authSource'] = auth_source
-            try:
-                result = self._json('/auth/token/acquire', credentials)
-            finally:
-                credentials.clear()
-            token = result.get('token')
-            if not isinstance(token, str) or not token:
-                raise SourceError('Operations did not return a usable session token.')
-            self.token = token
-            result.clear()
+            self.authenticate(username, password, auth_source)
             try:
                 previous = self._status()
             finally:
@@ -245,11 +284,4 @@ class Client:
                 snapshot.close()
             raise
         finally:
-            if self.token:
-                try:
-                    with self._request('/auth/token/release', data={}):
-                        pass
-                except Exception:
-                    # Logout is best effort and must not replace the acquisition result.
-                    pass
-            self.token = None
+            self.release()

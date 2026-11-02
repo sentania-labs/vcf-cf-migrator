@@ -12,21 +12,14 @@ from typing import List
 
 from vcfcf_migrator import preview as _preview
 from vcfcf_migrator import runlog as _runlog
-from vcfcf_migrator import settings as _settings
-from vcfcf_migrator import wording
+from vcfcf_migrator import theme, wording
 from vcfcf_migrator.graph import Graph, Node
 
-STYLE = """
-:root {
-  --bg:#f6f7f9; --card:#ffffff; --line:#d9dee5; --line2:#eef1f5; --ink:#1d2430;
-  --ink2:#5a6676; --ink3:#8b95a3; --accent:#1f5fbf; --accent-soft:#e8f0fc;
-  --ok:#1a7f4b; --ok-soft:#e6f4ec; --warn:#8a6100; --warn-soft:#fdf3d8;
-  --bad:#a22c1c; --bad-soft:#fbe9e6;
-}
+STYLE = theme.CSS + """
 * { box-sizing:border-box }
 body { margin:0; background:var(--bg); color:var(--ink);
   font:14px/1.5 system-ui,"Segoe UI",Roboto,sans-serif; }
-a { color:var(--accent) }
+a { color:var(--link) }
 h1 { font-size:17px; margin:0; font-weight:650; letter-spacing:-0.01em }
 h2 { font-size:13px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.06em;
   color:var(--ink3); font-weight:650 }
@@ -35,17 +28,20 @@ code, pre { font-family:ui-monospace,Menlo,Consolas,monospace }
 pre { background:var(--line2); padding:10px 12px; border-radius:6px; overflow-x:auto;
   font-size:12px; margin:0 }
 button { font:inherit; font-size:13px; padding:5px 11px; border-radius:6px;
-  border:1px solid var(--line); background:#fff; color:var(--ink); cursor:pointer }
+  border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer }
 button:hover { border-color:var(--ink3) }
-button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600 }
-button.primary:hover { background:#1a4fa0 }
+button.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); font-weight:600 }
+button.primary:hover { background:var(--accent-strong) }
 button.ghost { border-color:transparent; color:var(--ink2); padding:4px 7px }
-button.ghost:hover { border-color:var(--line); background:#fff }
-input[type=text], input[type=url], input[type=password], textarea { font:inherit; font-size:13px; padding:6px 9px; width:100%;
-  border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink) }
+button.ghost:hover { border-color:var(--line); background:var(--card) }
+input:not([type=checkbox]):not([type=hidden]), select, textarea { font:inherit; font-size:13px; padding:6px 9px; width:100%;
+  border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--ink) }
 textarea { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px }
 label { display:block; font-size:12px; color:var(--ink2); margin-bottom:3px }
-:focus-visible { outline:2px solid var(--accent); outline-offset:1px }
+/* Keep focus visible after native dialogs and full-body redraws as well as Tab. */
+:focus { outline:2px solid var(--focus); outline-offset:1px }
+button:focus-visible, input:focus-visible, select:focus-visible,
+summary:focus-visible, a:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
 small { color:var(--ink3); font-size:11.5px }
 
 header.top { position:sticky; top:0; z-index:5; background:var(--card);
@@ -57,9 +53,9 @@ header.top form.nogrow { flex:0 0 auto }
 header.top form .grow { flex:1 1 auto }
 
 .msg, .err { margin:10px 18px 0; padding:9px 12px; border-radius:6px; font-size:13px }
-.msg { background:var(--ok-soft); border-left:3px solid var(--ok); color:#14532d;
+.msg { background:var(--ok-soft); border-left:3px solid var(--ok); color:var(--ok-ink);
   white-space:pre-wrap }
-.err { background:var(--bad-soft); border-left:3px solid var(--bad); color:#7f1d1d;
+.err { background:var(--bad-soft); border-left:3px solid var(--bad); color:var(--bad-ink);
   white-space:pre-wrap }
 
 .card { background:var(--card); border:1px solid var(--line); border-radius:9px;
@@ -69,7 +65,7 @@ header.top form .grow { flex:1 1 auto }
 .row:hover { background:var(--line2) }
 .row.sel { background:var(--accent-soft) }
 .row.preview-on { box-shadow:inset 0 0 0 2px var(--accent) }
-.tick { width:16px; height:16px; margin:0; accent-color:var(--accent) }
+.tick { width:16px; height:16px; margin:0; accent-color:var(--link) }
 .missing { color:var(--warn); font-size:12px; overflow-wrap:anywhere }
 
 .stack { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end }
@@ -100,10 +96,10 @@ ACTIVITY_JS = """
     document.body.setAttribute('aria-busy', 'true');
     var bar = document.createElement('div');
     bar.id = 'operation-progress';
-    bar.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#ffffffaa;display:grid;place-items:center;cursor:progress';
+    bar.style.cssText = 'position:fixed;inset:0;z-index:9999;background:var(--bg);display:grid;place-items:center;cursor:progress';
     var status = document.createElement('div');
     status.setAttribute('role', 'status');
-    status.style.cssText = 'background:#fff;border:1px solid #d9dee5;border-radius:9px;padding:24px;color:#1d2430;font:16px system-ui';
+    status.style.cssText = 'background:var(--card);border:1px solid var(--line);border-radius:9px;padding:24px;color:var(--ink);font:16px system-ui';
     var labels = {'/open':'Opening export', '/pick-export':'Choosing and opening export',
       '/connect':'Connecting to Operations', '/select-all':'Selecting content', '/select-shown':'Selecting shown content',
       '/remove-pick':'Updating selection', '/clear':'Clearing selection',
@@ -163,7 +159,7 @@ PAGE = """<!doctype html>
 {preview_css}
 </style>
 </head>
-<body>
+<body data-theme="{theme}">
 {body}
 </body>
 </html>
@@ -220,7 +216,7 @@ def render(state) -> str:
     if state.graph is not None and state.zip_path:
         title = f"vcfcf-migrator: {state.zip_path.rsplit('/', 1)[-1]}"
     return PAGE.format(title=e(title), style=STYLE + workspace.STYLE,
-                       preview_css=_preview.PREVIEW_CSS, body=body + ACTIVITY_JS)
+                       preview_css=_preview.PREVIEW_CSS, body=body + ACTIVITY_JS, theme=state.theme)
 
 
 def _messages(state) -> str:
@@ -250,6 +246,8 @@ def _build_form(state) -> str:
         "<form method='post' action='/build'>",
         "<div class='field'><label for='out'>Save bundle as</label>",
         f"<input type='text' name='out' id='out' value='{e(state.build_out or state.default_out())}'>"
+        "<button type='button' data-pick='bundle' data-target='out'>Save As…</button>"
+        "<p class='note'>Bundle files use the .zip extension.</p>"
         "</div>",
         "<p class='note'>The app builds the bundle; it does not import it.</p>",
         "<div class='stack'>",
@@ -277,126 +275,49 @@ def _matches(graph: Graph, text: str) -> List[Node]:
             or needle in n.uuid.lower() or needle in n.ident.lower()]
 
 
-def _commands_panel(state) -> str:
-    """Every command the CLI has, with a control here. The house rule is that
-    nothing is configurable only from a file or a flag."""
-    corpus, _src = _settings.corpus_dir(state.corpus_cli)
-    zip_value = e(state.zip_path)
-    parts = [
-        "<div class='card'>",
-        "<h2>Commands</h2>",
-        "<div class='stack'>",
-        f"<form method='post' action='/inspect'><input type='hidden' name='zip' value='{zip_value}'>"
-        + _button("inspect") + "</form>",
-        f"<form method='post' action='/inspect'><input type='hidden' name='zip' value='{zip_value}'>"
-        "<input type='hidden' name='json' value='1'>" + _button("inspect --json") + "</form>",
-        "<form method='post' action='/tree'>" + _button("tree") + "</form>",
-        "<form method='post' action='/tree'><input type='hidden' name='json' value='1'>"
-        + _button("tree --json") + "</form>",
-        "</div>",
-        "<div class='field' style='margin-top:12px'>",
-        "<form method='post' action='/corpus-check' class='stack'>",
-        f"<div class='grow'><label for='corpus_run'>{wording.REGRESSION_FOLDER_LABEL}</label>"
-        f"<input type='text' name='dir' id='corpus_run' value='{e(str(corpus))}'></div>",
-        _button("Run compatibility check"),
-        "</form></div>",
-        "<div class='field'>",
-        "<form method='post' action='/apply-lines'>",
-        "<label for='lines'>Selection, one object per line (the same file "
-        "<code>build --select</code> takes)</label>",
-        f"<textarea name='lines' id='lines' rows='5'>{e(state.selection_lines())}</textarea>",
-        "<div class='stack' style='margin-top:8px'>" + _button("Apply these lines")
-        + "</div></form></div>",
-        "<p class='note'>The equivalent command line for what this page is set to:</p>",
-        "<div class='stack'>",
-    ]
-    for cmd in ("tree", "preview", "build", "corpus-check"):
-        parts.append("<form method='post' action='/run' style='display:inline'>"
-                     f"<input type='hidden' name='cmd' value='{cmd}'>"
-                     + _button(f"show the {cmd} command", ghost=True) + "</form>")
-    parts += ["</div>"]
-    # What the buttons above produce. This used to render on the preview
-    # panel, which was harmless while everything was on one page and became a
-    # bug the moment they were separated: running `tree` moved you here and
-    # left the tree behind on the panel you had just left.
-    if state.listing:
-        parts += ["<h2 style='margin-top:18px'>Listing</h2>",
-                  f"<pre>{e(state.listing)}</pre>"]
-    if state.command_output:
-        parts += ["<h2 style='margin-top:18px'>Command output</h2>",
-                  f"<pre>{e(state.command_output)}</pre>"]
-    parts += ["</div>"]
-    return "".join(parts)
-
-
 def _log_controls(state) -> str:
-    """The run log's destination and level, and the diagnostics file.
-
-    Every setting has a GUI option, and a log an admin cannot turn on from the
-    page is a setting that lives only in a flag.
-    """
     destination, destination_from, level, level_from = state.log_settings()
-    options = "".join(
-        f"<option value='{e(name)}'{' selected' if name == level else ''}>{e(name)}</option>"
-        for name in _runlog.LEVEL_NAMES)
-    return "".join([
-        "<details><summary>Local logging</summary>",
-        "<form method='post' action='/settings' class='field'>",
-        "<label for='log_file'>Run log file (leave empty for none)"
-        "</label>",
-        f"<input type='text' name='log_file' id='log_file' value='{e(destination or '')}' "
-        "placeholder='run.log'>",
-        f"<p class='note'><small>current value from: {e(destination_from)}. The log records "
-        "what the tool did and why: content names, uuids and metric keys, member names, "
-        "counts and timings. It never records credentials, the export password, encrypted "
-        "values; dashboard owners appear as owner-1, owner-2. Local logs are private: "
-        "paths and content names can identify people. Share the anonymized diagnostics "
-        "file below instead of the local log. "
-        "This page keeps the events of this session whether or not a file is set, so "
-        "diagnostics can be saved after something goes wrong."
-        "</small></p>",
-        _button("Save log file"),
-        "</form>",
-        "<form method='post' action='/settings' class='field'>",
-        "<label for='log_level'>Log level</label>",
-        f"<select name='log_level' id='log_level'>{options}</select>",
-        f"<p class='note'><small>current value from: {e(level_from)}. error is the failure "
-        "that ended the command, warn adds every refusal and every swallowed failure, info "
-        "adds the run header, the per-phase counts and timings and the fingerprints, detail "
-        "adds every decision with its object and its reason, debug adds the per-reference "
-        "and per-widget detail behind them.</small></p>",
-        _button("Save log level"),
-        "</form>",
-        "</details>",
-        "<form method='post' action='/diagnostics' class='field'>",
-        "<label for='diag_out'>Diagnostics file</label>",
-        f"<input type='text' name='out' id='diag_out' "
-        f"value='{e(state.diagnostics_out or state.default_diagnostics_out())}'>",
-        _button("Save anonymized diagnostics"),
-        "<p class='note'><small>This report contains operation codes, counts, timings and "
-        "software versions. Paths, names, identifiers and free text become labels "
-        "that are consistent within this report. No reverse mapping is included. "
-        "Credentials and export passwords are not included. Review the report before sharing, "
-        "and use a filename without personal or customer details.</small></p>",
-        "</form>",
-    ])
+    labels = {'error': 'Errors only', 'warn': 'Warnings and errors', 'info': 'Activity summary',
+              'detail': 'Detailed decisions', 'debug': 'Troubleshooting detail'}
+    options = ''.join(f"<option value='{e(name)}'{' selected' if name == level else ''}>{labels[name]}</option>"
+                      for name in _runlog.LEVEL_NAMES)
+    return ("<details class='logging'><summary>Local log settings</summary>"
+            "<p>File logging is off by default. Session events are still available in diagnostics. "
+            "Local logs are private and can contain paths and content names; share anonymized diagnostics instead. The app never records credentials or export passwords.</p>"
+            "<form method='post' action='/settings' class='field'>"
+            "<label for='log_file'>Log file path (empty turns file logging off)</label>"
+            f"<input type='text' name='log_file' id='log_file' value='{e(destination or '')}'>"
+            f"<p class='note'>Current destination comes from {e(destination_from)}. "
+            "A value of - means terminal output, usually hidden in the desktop app.</p>"
+            + _button('Save log destination') + '</form>'
+            "<form method='post' action='/settings' class='field'>"
+            "<label for='log_level'>Amount of detail</label>"
+            f"<select name='log_level' id='log_level'>{options}</select>"
+            f"<p class='note'>Current detail level comes from {e(level_from)}. "
+            "Activity summary includes counts and timings. Detailed decisions explains content choices. "
+            "Troubleshooting detail includes individual references and widgets.</p>"
+            + _button('Save log detail') + '</form></details>')
 
 
 def _settings_panel(state) -> str:
-    corpus, source = _settings.corpus_dir(state.corpus_cli)
-    return "".join([
-        "<div class='card'>",
-        "<h2>Settings</h2>",
-        _log_controls(state),
-        "<details><summary>Advanced settings</summary>",
-        "<form method='post' action='/settings' class='field'>",
-        f"<label for='corpus_dir'>{wording.REGRESSION_FOLDER_LABEL}</label>",
-        f"<input type='text' name='corpus_dir' id='corpus_dir' value='{e(str(corpus))}'>",
-        f"<p class='note'><small>{wording.REGRESSION_FOLDER_HELP} Current value from: {e(source)}.</small></p>",
-        _button("Save regression test export folder"),
-        "</form>",
-        "</details>",
-        "<p class='note'><small>The application runs in a native window. "
-        "It does not start a local web server. Close the window to stop.</small></p>",
-        "</div>",
-    ])
+    themes = ''.join(f"<option value='{name}'{' selected' if state.theme == name else ''}>{name.capitalize()}</option>"
+                     for name in ('light', 'dark'))
+    return ("<div class='card'><h2>Help &amp; diagnostics</h2>"
+            "<ol><li>Open an export zip or connect to VCF Operations to download one.</li>"
+            "<li>Select content using the checkboxes. Select a name to preview it. Required content is included automatically.</li>"
+            "<li>Review missing references, then build and save a bundle. Import that bundle in your target Operations instance.</li></ol>"
+            f"<p>{wording.BUILD_PASSWORD_REMINDER}</p>"
+            "<h3>Get support</h3><p>Save diagnostics to share an anonymized record of this session.</p>"
+            "<form method='post' action='/diagnostics' class='field'>"
+            "<label for='diag_out'>Diagnostics destination</label>"
+            f"<input type='text' name='out' id='diag_out' value='{e(state.diagnostics_out or state.default_diagnostics_out())}'>"
+            + _button('Save diagnostics…', primary=True)
+            + "<details><summary>Cannot open the save dialog?</summary>"
+            + _button('Save to the entered path', name='manual', value='1') + '</details>'
+            + "<p class='note'>Contains operation codes, counts, timings and versions. Paths, names, identifiers and free text "
+            "become report-local labels. No reverse mapping is included. Credentials and export passwords are excluded. "
+            "Review the report before sharing and avoid personal details in its filename.</p></form></div>"
+            "<div class='card'><h2>Settings</h2><form method='post' action='/settings' class='field'>"
+            "<label for='theme'>Appearance</label>"
+            f"<select id='theme' name='theme'>{themes}</select>"
+            + _button('Save appearance') + '</form>' + _log_controls(state) + '</div>')
