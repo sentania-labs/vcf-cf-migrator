@@ -178,8 +178,9 @@ class Client:
 
     def authenticate(self, username, password, auth_source=''):
         credentials = {'username': username, 'password': password}
-        auth_source = (auth_source or '').strip()
-        if auth_source and auth_source.lower() != 'local':
+        # Normalize only the built-in Local/blank aliases. Directory and SSO
+        # names come from the server or manual entry and must travel verbatim.
+        if auth_source and auth_source.strip().lower() not in ('', 'local'):
             credentials['authSource'] = auth_source
         try:
             result = self._json('/auth/token/acquire', credentials)

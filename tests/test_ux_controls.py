@@ -85,8 +85,9 @@ def test_tls_policy_against_untrusted_server(tls_server, tmp_path):
             source.Client(address, ca_file=str(ca)).login_sources()
 
 
-@pytest.mark.parametrize('name, expected', [('Local', None), ('local', None), ('', None),
-                                            ('SSO / B', 'SSO / B'), (' Directory A ', 'Directory A')])
+@pytest.mark.parametrize('name, expected', [('Local', None), (' local ', None), ('', None),
+                                            ('SSO / B', 'SSO / B'), (' Directory A ', ' Directory A '),
+                                            ('Directory  MixedCase', 'Directory  MixedCase')])
 def test_login_source_mapping_and_test_never_exports(tls_server, name, expected):
     address, cert, requests = tls_server
     client = source.Client(address, ca_file=str(cert))

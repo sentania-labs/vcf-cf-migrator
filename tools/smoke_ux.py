@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import threading
@@ -288,6 +289,7 @@ def main():
                 document = Path(page.diagnostics_out).read_text()
                 assert '[Fixture]' not in document and 'synthetic-password' not in document
                 # Switching appearance must update the live DOM, not just saved settings.
+                heatmaps = {}
                 for theme in ('dark', 'light'):
                     fill('theme', theme, 'change')
                     submit('/settings', 'theme', theme)
@@ -304,6 +306,14 @@ def main():
                     submit('/preview', 'key', dash)
                     wait_for(lambda: page.preview_key == dash and ready())
                     assert not js(CONTRAST), js(CONTRAST)
+                    colors = js("Array.from(new Set(Array.from(document.querySelectorAll('.pv-heat i')).map(e=>getComputedStyle(e).backgroundColor)))")
+                    assert len(colors) == 4, (theme, colors)
+                    rgb = [tuple(map(int, re.findall(r'\d+', color)[:3])) for color in colors]
+                    # No two bands collapse into the same status color. This
+                    # checks actual rendered cells, including CSS inheritance.
+                    assert all(sum((a - b) ** 2 for a, b in zip(first, second)) >= 32 ** 2
+                               for i, first in enumerate(rgb) for second in rgb[i + 1:]), (theme, colors)
+                    heatmaps[theme] = colors
                     capture(theme + '-preview')
                     for panel in ('dependencies', 'details', 'preview'):
                         submit('/inspector-tab', 'panel', panel)
@@ -325,6 +335,7 @@ def main():
                     wait_for(lambda: dash not in page.picked and ready())
                     submit('/tab', 'tab', 'settings')
                     wait_for(lambda: js("Boolean(document.getElementById('theme'))") and ready())
+                assert heatmaps['dark'] != heatmaps['light']
                 submit('/tab', 'tab', 'source')
                 wait_for(lambda: page.tab == 'source' and ready())
                 submit('/source-mode', 'mode', 'connect')

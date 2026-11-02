@@ -838,18 +838,13 @@ def heatmap_metrics(cfg: dict) -> List[Tuple[str, str]]:
     return out
 
 
-# VCF Operations' heat colours, green at the good end and red at the bad end.
-# Not invented here and not the page's own chrome: these are the hex values the
-# corpus's own heatmaps carry in ``config.configs[].color.thresholds.colors``
-# (the shape documented in the factory's
-# knowledge/context/api-surface/widget_types_survey.md, "Heatmap"), and they are
-# the product's badge scale. The page's blue accent is chart ink and says
-# nothing about a value, so it never appears in a heat scale: a VCF Operations
-# heatmap runs red to green and never shows blue.
-HEAT_GOOD = "#74B43B"
-HEAT_FAIR = "#ECC33E"
-HEAT_POOR = "#E07720"
-HEAT_BAD = "#DE3F30"
+# The fallback keeps green-to-red heat semantics using generated Lattice data
+# tokens, with four distinct bands in each theme. Blue remains chart ink, not
+# a heat level. Explicit colors carried by an export are preserved below.
+HEAT_GOOD = "var(--heat-good)"
+HEAT_FAIR = "var(--heat-fair)"
+HEAT_POOR = "var(--heat-poor)"
+HEAT_BAD = "var(--heat-bad)"
 HEAT_RAMP = (HEAT_GOOD, HEAT_GOOD, HEAT_FAIR, HEAT_POOR, HEAT_BAD)
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -863,8 +858,8 @@ def heatmap_palette(cfg: dict) -> Tuple[str, ...]:
     high free capacity is good). Twenty of the corpus's heatmap layers carry a
     green-to-red list and several carry the reverse, so taking the widget's own
     list keeps each one pointing the way its author meant. Anything not a plain
-    hex colour is ignored, and a widget that declares none gets the product
-    ramp, good to bad.
+    hex colour is ignored, and a widget that declares none gets the themed
+    fallback ramp, good to bad.
     """
     configs = cfg.get("configs")
     if isinstance(configs, list):
