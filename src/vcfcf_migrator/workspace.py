@@ -277,7 +277,7 @@ def review(state):
            action('/tab', 'Back to inventory', {'tab': 'preview'})]
     selection = state.selection
     if not selection or not selection.keys:
-        return ''.join(out) + '<p>Pick at least one object before building.</p></div></main>'
+        return ''.join(out) + '<p>Select at least one object before building.</p></div></main>'
     if selection.missing_dependencies():
         out.append("<div class='err'><strong>Build is blocked by missing references</strong>"
                    '<p>Remove the affected selections or open an export that includes their dependencies. '
@@ -286,7 +286,7 @@ def review(state):
             source = state.graph.nodes[gap.source_key]
             causes = ', '.join(display_name(state, n) for n in affected_picks(state, gap.source_key))
             out.append(f'<li>{e(display_name(state, source))} requires {e(gap.kind)} {e(gap.ident)} '
-                       f'(via {e(gap.via)}). Affected picks: {e(causes)}.</li>')
+                       f'(via {e(gap.via)}). Affected selections: {e(causes)}.</li>')
         out.append('</ul></div>')
     else:
         out.append("<p class='msg'>Ready to build. All recorded dependencies are included.</p>")
@@ -303,7 +303,7 @@ def review(state):
     for key in state.picked:
         node = state.graph.nodes[key]
         out.append(f"<div class='review-row'><span>{e(node.name)} <small>{e(identity(state, node))}</small></span>"
-                   + action('/remove-pick', 'Remove pick', {'key': key}) + '</div>')
+                   + action('/remove-pick', 'Remove from selection', {'key': key}) + '</div>')
     out.append(f'<details><summary>{len(selection.added)} automatically required objects</summary><ul>')
     for addition in selection.added:
         out.append(f'<li>{e(display_name(state, state.graph.nodes[addition.key]))}</li>')

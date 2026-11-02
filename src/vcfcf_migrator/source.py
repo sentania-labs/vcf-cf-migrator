@@ -121,7 +121,7 @@ class Client:
                 self.auth_scheme = 'vRealizeOpsToken'
                 return self._request(path)
             messages = {
-                401: 'Authentication failed or the session expired. Check credentials and authority source.',
+                401: 'Authentication failed or the session expired. Check credentials and login source.',
                 403: 'Operations refused the request. Check export permissions and whether another content job is running.',
                 404: 'This Operations endpoint does not offer the required content export API.',
                 429: 'Operations is busy. Wait before connecting again.',

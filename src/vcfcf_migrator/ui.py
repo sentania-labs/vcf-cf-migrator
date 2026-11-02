@@ -233,7 +233,7 @@ class PageState:
             if self.graph is not None:
                 still = f"; {self.zip_path} is still open"
                 if self.picked:
-                    still += f" with {plural(len(self.picked), 'object')} picked"
+                    still += f" with {plural(len(self.picked), 'object')} selected"
                 self.error += still
             return
 
@@ -267,7 +267,7 @@ class PageState:
         snapshot = None
         try:
             if not form.get('username') or not form.get('password') or not form.get('export_password'):
-                raise _source.SourceError('Enter your username, password, and an export encryption password.')
+                raise _source.SourceError('Enter your username, login password, and an export encryption password.')
             client = _source.Client(form.get('address', ''), ca_file=form.get('ca_file', '').strip(),
                                     progress=self.source_progress)
             snapshot = client.acquire(form['username'], form['password'],
@@ -432,7 +432,7 @@ class PageState:
             self.error = str(e)
             return
         self._set_picked(keys)
-        self.message = (f"applied {plural(len(lines), 'line')}: {len(self.picked)} picked, "
+        self.message = (f"applied {plural(len(lines), 'line')}: {len(self.picked)} selected, "
                         f"{len(self.selection.keys)} included with required items")
 
     def selection_lines(self) -> str:
@@ -467,17 +467,17 @@ class PageState:
     def select_shown(self):
         keys = list(dict.fromkeys(self.picked + [n.key for n in self.visible_nodes()]))
         self._set_picked(keys)
-        self.message = "selected the shown content; existing picks are retained"
+        self.message = "selected the shown content; existing selections are retained"
 
     @serialized
     def remove_pick(self, key):
         if key not in self.picked:
-            self.error = "this object is not a direct pick"
+            self.error = "this object is not one you selected directly"
             return
         self._set_picked(k for k in self.picked if k != key)
-        self.message = "removed pick"
+        self.message = "removed from your selection"
         if key in self.selection_keys():
-            self.message += "; still included because another pick requires it"
+            self.message += "; still included because another selected object requires it"
 
     # -- the commands ------------------------------------------------------
 
@@ -515,9 +515,9 @@ class PageState:
         self.tab = "review"
         self.build_report = (_selection.render(self.graph, self.selection)
                              + _bundle.render(result))
-        self.message = f"Bundle built and saved to {result.path}."
+        self.message = f"bundle built and saved to {result.path}"
         if self.source_snapshot is not None:
-            self.message += f" {EXPORT_PASSWORD_HELP}"
+            self.message += f". {EXPORT_PASSWORD_HELP}"
 
     def run_inspect(self, zip_path: str, as_json: bool = False) -> None:
         self.as_json = as_json
@@ -545,11 +545,14 @@ class PageState:
         from vcfcf_migrator.corpus_check import run
 
         target, source = _settings.corpus_dir(directory or self.corpus_cli)
+        if not Path(target).is_dir():
+            self.error = f"regression test export folder {target} does not exist"
+            return
         buffer = io.StringIO()
         code = run(target, source, buffer)
         self.command_output = buffer.getvalue()
-        self.message = (f"Compatibility check completed for {target}." if code == 0
-                        else f"Compatibility check found problems in {target}; see the results below.")
+        self.message = (f"compatibility check finished for {target}; see the results below" if code == 0
+                        else f"compatibility check found problems in {target}; see the results below")
 
     def save_setting(self, form: dict) -> None:
         if "corpus_dir" in form:

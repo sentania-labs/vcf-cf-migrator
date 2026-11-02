@@ -290,7 +290,7 @@ def test_a_build_through_the_page_is_the_build_the_cli_writes(state, export_zip,
     from_page = tmp_path / "page.zip"
     state.build(str(from_page))
     assert not state.error, state.error
-    assert "Bundle built and saved to" in state.message
+    assert "bundle built and saved to" in state.message
 
     picks = tmp_path / "picks.txt"
     picks.write_text("\n".join(state.selection_lines().splitlines()) + "\n")
@@ -349,7 +349,7 @@ def test_build_endpoint_writes_the_bundle(server, tmp_path, config_dir):
     _post(server, "/select", {"key": f"supermetric:{EMPTY_SM_ID}", "on": "1"})
     out = tmp_path / "from-endpoint.zip"
     _, body = _post(server, "/build", {"out": str(out)})
-    assert f"Bundle built and saved to {out}" in body
+    assert f"bundle built and saved to {out}" in body
     assert zipfile.ZipFile(out).namelist()
 
 
@@ -387,7 +387,7 @@ def test_a_failed_open_leaves_the_selection_preview_and_counts_untouched(state, 
 
     assert state.error, "a failed open has to say so"
     assert "is still open" in state.error
-    assert "1 object picked" in state.error
+    assert "1 object selected" in state.error
     assert (state.zip_path, set(state.selected_keys()), set(state.selection_keys()),
             state.preview_key, state.selection.counts(state.graph)) == before
     # The page still shows the same selection, counts and preview.

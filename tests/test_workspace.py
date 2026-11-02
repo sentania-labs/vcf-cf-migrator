@@ -127,4 +127,30 @@ def test_live_source_build_reminds_user_to_keep_export_password(page, tmp_path):
     page.source_snapshot = object()
     page.build(str(tmp_path / 'bundle.zip'))
     assert not page.error
-    assert 'Keep this password: you will need it when importing the bundle.' in page.render()
+    assert 'Keep this password: you will need it when importing the bundle.' in page.message
+
+
+def test_manual_zip_build_does_not_mention_export_password(page, tmp_path):
+    good = next(n for n in page.graph.ordered()
+                if n.kind == 'supermetric' and not selection.close(page.graph, [n.key]).missing)
+    page.toggle(good.key, True)
+    page.build(str(tmp_path / 'bundle.zip'))
+    assert not page.error
+    assert page.message.startswith('bundle built and saved to')
+    assert 'Keep this password' not in page.message
+
+
+def test_compatibility_check_on_missing_folder_says_so(page, tmp_path):
+    page.run_corpus_check(str(tmp_path / 'nope'))
+    assert 'does not exist' in page.error
+    assert 'problems' not in page.message
+    assert 'corpus' not in page.error.lower()
+
+
+def test_compatibility_check_on_empty_folder_reports_zero_zips(page, tmp_path):
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    page.run_corpus_check(str(empty))
+    assert not page.error
+    assert '0 zips' in page.command_output
+    assert 'problems' not in page.message

@@ -380,7 +380,7 @@ def test_the_page_builds_a_clean_selection_and_lists_the_policy(config_dir, expo
     out = tmp_path / "clean.zip"
     state.build(str(out))
     assert not state.error, state.error
-    assert f"Bundle built and saved to {out}" in state.message
+    assert f"bundle built and saved to {out}" in state.message
     assert "referenced but not carried: 1" in state.build_report
     assert zipfile.ZipFile(out).namelist()
 

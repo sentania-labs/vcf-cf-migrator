@@ -242,7 +242,7 @@ def _build_form(state) -> str:
     ready = bool(state.selection and state.selection.keys and not state.selection.missing_dependencies())
     reasons = []
     if not (state.selection and state.selection.keys):
-        reasons.append("pick at least one object")
+        reasons.append("select at least one object")
     if state.selection and state.selection.missing_dependencies():
         reasons.append("resolve the missing references before building")
     return "".join([

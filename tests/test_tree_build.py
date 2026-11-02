@@ -854,7 +854,7 @@ def test_corpus_check_reports_one_line_per_zip(tmp_path, capsys):
     (tmp_path / "b.zip").write_bytes(b"not a zip at all")
     assert main(["corpus-check", str(tmp_path)]) == 1
     out = capsys.readouterr().out.splitlines()
-    assert out[0].startswith("corpus:")
+    assert out[0].startswith("regression test export folder:")
     assert any(l.startswith("ok       a.zip") and "documents byte-identical" in l for l in out)
     assert any(l.startswith("error    b.zip") for l in out)
 
