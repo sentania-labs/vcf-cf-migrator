@@ -253,11 +253,11 @@ def run(directory, source: str, stream: TextIO) -> int:
     if not directory.is_dir():
         runlog.error("corpus.absent", dir=str(directory), dir_from=source,
                      reason=runlog.prose("the corpus directory does not exist"))
-        stream.write(f"corpus directory {directory} does not exist (from {source})\n")
+        stream.write(f"regression test export folder {directory} does not exist (from {source})\n")
         return 1
     zips = sorted(p for p in directory.iterdir() if p.suffix.lower() == ".zip")
     runlog.info("corpus.walk", dir=str(directory), dir_from=source, zips=len(zips))
-    stream.write(f"corpus: {directory} (from {source}), {plural(len(zips), 'zip')}\n")
+    stream.write(f"regression test export folder: {directory} (from {source}), {plural(len(zips), 'zip')}\n")
     if not zips:
         return 0
     scratch = Path(tempfile.mkdtemp(prefix="vcfcf-migrator-corpus-"))

@@ -13,6 +13,7 @@ from typing import List
 from vcfcf_migrator import preview as _preview
 from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import settings as _settings
+from vcfcf_migrator import wording
 from vcfcf_migrator.graph import Graph, Node
 
 STYLE = """
@@ -241,17 +242,18 @@ def _build_form(state) -> str:
     ready = bool(state.selection and state.selection.keys and not state.selection.missing_dependencies())
     reasons = []
     if not (state.selection and state.selection.keys):
-        reasons.append("pick at least one object")
+        reasons.append("select at least one object")
     if state.selection and state.selection.missing_dependencies():
         reasons.append("resolve the missing references before building")
     return "".join([
         "<hr style='border:none;border-top:1px solid var(--line2);margin:14px 0'>",
         "<form method='post' action='/build'>",
-        "<div class='field'><label for='out'>Bundle to write</label>",
+        "<div class='field'><label for='out'>Save bundle as</label>",
         f"<input type='text' name='out' id='out' value='{e(state.build_out or state.default_out())}'>"
         "</div>",
+        "<p class='note'>The app builds the bundle; it does not import it.</p>",
         "<div class='stack'>",
-        f"<button type='submit' class='primary'{'' if ready else ' disabled'}>Build the bundle"
+        f"<button type='submit' class='primary'{'' if ready else ' disabled'}>Build bundle"
         "</button>",
         "</div>",
         ("<p class='note'>" + e("; ".join(reasons)) + "</p>") if reasons else "",
@@ -294,9 +296,9 @@ def _commands_panel(state) -> str:
         "</div>",
         "<div class='field' style='margin-top:12px'>",
         "<form method='post' action='/corpus-check' class='stack'>",
-        "<div class='grow'><label for='corpus_run'>corpus-check directory</label>"
+        f"<div class='grow'><label for='corpus_run'>{wording.REGRESSION_FOLDER_LABEL}</label>"
         f"<input type='text' name='dir' id='corpus_run' value='{e(str(corpus))}'></div>",
-        _button("Run corpus-check"),
+        _button("Run compatibility check"),
         "</form></div>",
         "<div class='field'>",
         "<form method='post' action='/apply-lines'>",
@@ -340,7 +342,7 @@ def _log_controls(state) -> str:
     return "".join([
         "<details><summary>Local logging</summary>",
         "<form method='post' action='/settings' class='field'>",
-        "<label for='log_file'>Run log file (empty for none; - writes to the terminal)"
+        "<label for='log_file'>Run log file (leave empty for none)"
         "</label>",
         f"<input type='text' name='log_file' id='log_file' value='{e(destination or '')}' "
         "placeholder='run.log'>",
@@ -371,10 +373,11 @@ def _log_controls(state) -> str:
         f"<input type='text' name='out' id='diag_out' "
         f"value='{e(state.diagnostics_out or state.default_diagnostics_out())}'>",
         _button("Save anonymized diagnostics"),
-        "<p class='note'><small>Share this report: operation codes, counts, timings and "
+        "<p class='note'><small>This report contains operation codes, counts, timings and "
         "software versions. Paths, names, identifiers and free text become labels "
         "that are consistent within this report. No reverse mapping is included. "
-        "Use a filename without personal or customer details.</small></p>",
+        "Credentials and export passwords are not included. Review the report before sharing, "
+        "and use a filename without personal or customer details.</small></p>",
         "</form>",
     ])
 
@@ -387,13 +390,10 @@ def _settings_panel(state) -> str:
         _log_controls(state),
         "<details><summary>Advanced settings</summary>",
         "<form method='post' action='/settings' class='field'>",
-        "<label for='corpus_dir'>Corpus directory (real export zips; never inside the repo)"
-        "</label>",
+        f"<label for='corpus_dir'>{wording.REGRESSION_FOLDER_LABEL}</label>",
         f"<input type='text' name='corpus_dir' id='corpus_dir' value='{e(str(corpus))}'>",
-        f"<p class='note'><small>current value from: {e(source)}. Saved values go to "
-        f"{e(str(_settings.settings_path()))}. The {e(_settings.ENV_CORPUS)} environment "
-        "variable and the --corpus flag override the saved value.</small></p>",
-        _button("Save corpus directory"),
+        f"<p class='note'><small>{wording.REGRESSION_FOLDER_HELP} Current value from: {e(source)}.</small></p>",
+        _button("Save regression test export folder"),
         "</form>",
         "</details>",
         "<p class='note'><small>The application runs in a native window. "

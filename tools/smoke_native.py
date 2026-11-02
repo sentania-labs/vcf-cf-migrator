@@ -116,7 +116,7 @@ def main():
                 window.evaluate_js("document.getElementById('out').value=" + json.dumps(str(output)))
                 submit('/build')
                 wait_for(output.exists)
-                wait_for(lambda: 'bundle written' in window.evaluate_js('document.body.innerText'))
+                wait_for(lambda: 'bundle built and saved' in window.evaluate_js('document.body.innerText'))
                 assert read_export(output).counts() == {'supermetric': 1}
                 submit('/tab', 'tab', 'settings')
                 wait_for(lambda: window.evaluate_js("Boolean(document.getElementById('diag_out'))"))

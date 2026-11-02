@@ -28,7 +28,7 @@ from vcfcf_migrator.export_reader import (
     render_text,
 )
 from vcfcf_migrator.rawdoc import RawDocError
-from vcfcf_migrator.wording import plural
+from vcfcf_migrator.wording import BUILD_PASSWORD_REMINDER, plural
 
 # The commands whose exact command line the page can hand back, so an admin
 # can script what they just did by hand.
@@ -233,7 +233,7 @@ class PageState:
             if self.graph is not None:
                 still = f"; {self.zip_path} is still open"
                 if self.picked:
-                    still += f" with {plural(len(self.picked), 'object')} picked"
+                    still += f" with {plural(len(self.picked), 'object')} selected"
                 self.error += still
             return
 
@@ -267,7 +267,7 @@ class PageState:
         snapshot = None
         try:
             if not form.get('username') or not form.get('password') or not form.get('export_password'):
-                raise _source.SourceError('Enter your username, password, and an export encryption password.')
+                raise _source.SourceError('Enter your username, login password, and an export encryption password.')
             client = _source.Client(form.get('address', ''), ca_file=form.get('ca_file', '').strip(),
                                     progress=self.source_progress)
             snapshot = client.acquire(form['username'], form['password'],
@@ -432,8 +432,8 @@ class PageState:
             self.error = str(e)
             return
         self._set_picked(keys)
-        self.message = (f"applied {plural(len(lines), 'line')}: {len(self.picked)} picked, "
-                        f"{len(self.selection.keys)} after closure")
+        self.message = (f"applied {plural(len(lines), 'line')}: {len(self.picked)} selected, "
+                        f"{len(self.selection.keys)} included with required items")
 
     def selection_lines(self) -> str:
         """The current picks as the lines a selection file would hold."""
@@ -467,17 +467,17 @@ class PageState:
     def select_shown(self):
         keys = list(dict.fromkeys(self.picked + [n.key for n in self.visible_nodes()]))
         self._set_picked(keys)
-        self.message = "selected the shown content; existing picks are retained"
+        self.message = "selected the shown content; existing selections are retained"
 
     @serialized
     def remove_pick(self, key):
         if key not in self.picked:
-            self.error = "this object is not a direct pick"
+            self.error = "this object is not one you selected directly"
             return
         self._set_picked(k for k in self.picked if k != key)
-        self.message = "removed pick"
+        self.message = "removed from your selection"
         if key in self.selection_keys():
-            self.message += "; still included because another pick requires it"
+            self.message += "; still included because another selected object requires it"
 
     # -- the commands ------------------------------------------------------
 
@@ -515,7 +515,9 @@ class PageState:
         self.tab = "review"
         self.build_report = (_selection.render(self.graph, self.selection)
                              + _bundle.render(result))
-        self.message = f"bundle written to {result.path}"
+        self.message = f"bundle built and saved to {result.path}"
+        if self.source_snapshot is not None:
+            self.message += f". {BUILD_PASSWORD_REMINDER}"
 
     def run_inspect(self, zip_path: str, as_json: bool = False) -> None:
         self.as_json = as_json
@@ -546,16 +548,20 @@ class PageState:
         buffer = io.StringIO()
         code = run(target, source, buffer)
         self.command_output = buffer.getvalue()
-        self.message = f"corpus-check over {target} finished with exit code {code}"
+        if not Path(target).is_dir():
+            self.error = f"regression test export folder {target} does not exist"
+            return
+        self.message = (f"compatibility check finished for {target}; see the results below" if code == 0
+                        else f"compatibility check found problems in {target}; see the results below")
 
     def save_setting(self, form: dict) -> None:
         if "corpus_dir" in form:
             value = form.get("corpus_dir", "").strip()
             if not value:
-                self.error = "corpus directory cannot be empty"
+                self.error = "Regression test export folder cannot be empty"
                 return
             saved = _settings.save_settings({"corpus_dir": value})
-            self.message = f"corpus directory saved to {saved}"
+            self.message = f"Regression test export folder saved to {saved}"
             return
         if "log_file" in form:
             value = form.get("log_file", "").strip()

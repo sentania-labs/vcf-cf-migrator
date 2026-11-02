@@ -38,7 +38,7 @@ def test_missing_dependency_build_cannot_be_bypassed_by_post(page, tmp_path):
     assert 'refused' in page.error
     assert not out.exists()
     assert 'Build is blocked' in page.render()
-    assert "class='primary' disabled>Build the bundle" in page.render()
+    assert "class='primary' disabled>Build bundle" in page.render()
 
 
 def test_review_recovers_after_removing_affected_pick(page, tmp_path):
@@ -90,7 +90,7 @@ def test_duplicate_names_keep_their_identity_in_review(page):
     for owner in (OWNER, OWNER_2):
         page.toggle(f'dashboard:{DASHBOARD_ID}@{owner}', True)
     dispatch(page, '/tab', {'tab': 'review'})
-    markup = page.render().split('<h3>Your picks</h3>', 1)[1]
+    markup = page.render().split('<h3>You selected</h3>', 1)[1]
     assert OWNER in markup and OWNER_2 in markup
     assert markup.count(DASHBOARD_ID) >= 2
 
@@ -118,3 +118,49 @@ def test_inventory_navigation_exits_expanded_preview(page):
     dispatch(page, '/tab', {'tab': 'preview'})
     assert not page.preview_expanded
     assert "class='inventory card'" in page.render()
+
+
+def test_live_source_build_reminds_user_to_keep_export_password(page, tmp_path):
+    good = next(n for n in page.graph.ordered()
+                if n.kind == 'supermetric' and not selection.close(page.graph, [n.key]).missing)
+    page.toggle(good.key, True)
+    page.source_snapshot = object()
+    page.build(str(tmp_path / 'bundle.zip'))
+    assert not page.error
+    assert 'Keep the export encryption password you entered when connecting' in page.message
+
+
+def test_manual_zip_build_does_not_mention_export_password(page, tmp_path):
+    good = next(n for n in page.graph.ordered()
+                if n.kind == 'supermetric' and not selection.close(page.graph, [n.key]).missing)
+    page.toggle(good.key, True)
+    page.build(str(tmp_path / 'bundle.zip'))
+    assert not page.error
+    assert page.message.startswith('bundle built and saved to')
+    assert 'export encryption password' not in page.message
+
+
+def test_compatibility_check_on_missing_folder_says_so(page, tmp_path):
+    page.run_corpus_check(str(tmp_path / 'nope'))
+    assert 'does not exist' in page.error
+    assert 'does not exist' in page.command_output
+    assert 'problems' not in page.message
+    assert 'corpus' not in page.error.lower()
+
+
+def test_compatibility_check_on_empty_folder_reports_zero_zips(page, tmp_path):
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    page.run_corpus_check(str(empty))
+    assert not page.error
+    assert '0 zips' in page.command_output
+    assert 'problems' not in page.message
+
+
+def test_missing_folder_check_replaces_earlier_output(page, tmp_path):
+    folder = tmp_path / 'folder'
+    folder.mkdir()
+    page.run_corpus_check(str(folder))
+    assert '0 zips' in page.command_output
+    page.run_corpus_check(str(tmp_path / 'nope'))
+    assert '0 zips' not in page.command_output
