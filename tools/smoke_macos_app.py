@@ -162,7 +162,7 @@ def main():
                 wait_for(lambda: rendered_after('/open'))
                 click('Select all', '/select-all')
                 click('Review bundle', '/tab')
-                click('Build the bundle', '/build', scroll=True)
+                click('Build bundle', '/build', scroll=True)
                 output = scratch / 'source-bundle.zip'
                 wait_for(output.exists, timeout=20)
                 with zipfile.ZipFile(output) as bundle:
