@@ -11,7 +11,7 @@ archive = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(archive)
 
 
-@pytest.mark.parametrize('platform', ['linux', 'windows', 'macos-arm64', 'macos-x86_64'])
+@pytest.mark.parametrize('platform', ['linux', 'windows'])
 def test_download_contains_only_the_executable_with_launch_permissions(tmp_path, platform):
     binary = tmp_path / 'build-target'
     payload = b'invented executable bytes'

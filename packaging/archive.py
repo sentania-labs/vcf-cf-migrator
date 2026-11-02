@@ -32,7 +32,7 @@ def package(binary, platform, output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary")
-    parser.add_argument("platform", choices=["linux", "windows", "macos-arm64", "macos-x86_64"])
+    parser.add_argument("platform", choices=["linux", "windows"])
     parser.add_argument("--out", default="archives")
     args = parser.parse_args()
     print(package(args.binary, args.platform, args.out))
