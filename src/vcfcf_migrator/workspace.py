@@ -121,8 +121,8 @@ def header(state):
             ('address', 'VCF Operations URL', 'url', True),
             ('username', 'Username', 'text', True),
             ('password', 'Login password', 'password', True),
-            ('auth_source', 'Login source', 'text', False),
-            ('ca_file', 'Trusted CA certificate bundle', 'text', False),
+            ('auth_source', 'Login source (optional)', 'text', False),
+            ('ca_file', 'Trusted CA certificate file path (optional)', 'text', False),
             ('export_password', 'Export encryption password', 'password', True)):
         change += (f"<div class='field'><label for='source-{name}'>{label}</label>"
                    f"<input id='source-{name}' name='{name}' type='{kind}' autocomplete='off'"

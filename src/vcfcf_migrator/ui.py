@@ -28,7 +28,7 @@ from vcfcf_migrator.export_reader import (
     render_text,
 )
 from vcfcf_migrator.rawdoc import RawDocError
-from vcfcf_migrator.wording import EXPORT_PASSWORD_HELP, plural
+from vcfcf_migrator.wording import BUILD_PASSWORD_REMINDER, plural
 
 # The commands whose exact command line the page can hand back, so an admin
 # can script what they just did by hand.
@@ -517,7 +517,7 @@ class PageState:
                              + _bundle.render(result))
         self.message = f"bundle built and saved to {result.path}"
         if self.source_snapshot is not None:
-            self.message += f". {EXPORT_PASSWORD_HELP}"
+            self.message += f". {BUILD_PASSWORD_REMINDER}"
 
     def run_inspect(self, zip_path: str, as_json: bool = False) -> None:
         self.as_json = as_json
@@ -545,12 +545,12 @@ class PageState:
         from vcfcf_migrator.corpus_check import run
 
         target, source = _settings.corpus_dir(directory or self.corpus_cli)
-        if not Path(target).is_dir():
-            self.error = f"regression test export folder {target} does not exist"
-            return
         buffer = io.StringIO()
         code = run(target, source, buffer)
         self.command_output = buffer.getvalue()
+        if not Path(target).is_dir():
+            self.error = f"regression test export folder {target} does not exist"
+            return
         self.message = (f"compatibility check finished for {target}; see the results below" if code == 0
                         else f"compatibility check found problems in {target}; see the results below")
 

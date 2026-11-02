@@ -127,7 +127,7 @@ def test_live_source_build_reminds_user_to_keep_export_password(page, tmp_path):
     page.source_snapshot = object()
     page.build(str(tmp_path / 'bundle.zip'))
     assert not page.error
-    assert 'Keep this password: you will need it when importing the bundle.' in page.message
+    assert 'Keep the export encryption password you entered when connecting' in page.message
 
 
 def test_manual_zip_build_does_not_mention_export_password(page, tmp_path):
@@ -137,12 +137,13 @@ def test_manual_zip_build_does_not_mention_export_password(page, tmp_path):
     page.build(str(tmp_path / 'bundle.zip'))
     assert not page.error
     assert page.message.startswith('bundle built and saved to')
-    assert 'Keep this password' not in page.message
+    assert 'export encryption password' not in page.message
 
 
 def test_compatibility_check_on_missing_folder_says_so(page, tmp_path):
     page.run_corpus_check(str(tmp_path / 'nope'))
     assert 'does not exist' in page.error
+    assert 'does not exist' in page.command_output
     assert 'problems' not in page.message
     assert 'corpus' not in page.error.lower()
 
@@ -154,3 +155,12 @@ def test_compatibility_check_on_empty_folder_reports_zero_zips(page, tmp_path):
     assert not page.error
     assert '0 zips' in page.command_output
     assert 'problems' not in page.message
+
+
+def test_missing_folder_check_replaces_earlier_output(page, tmp_path):
+    folder = tmp_path / 'folder'
+    folder.mkdir()
+    page.run_corpus_check(str(folder))
+    assert '0 zips' in page.command_output
+    page.run_corpus_check(str(tmp_path / 'nope'))
+    assert '0 zips' not in page.command_output
