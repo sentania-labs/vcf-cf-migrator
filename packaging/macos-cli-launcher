@@ -2,14 +2,14 @@
 # Resolve the installed symlink before finding the app's executable.
 launcher=$0
 while [ -L "$launcher" ]; do
-    directory=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P) || exit 1
+    directory=$(CDPATH="" cd -- "$(dirname -- "$launcher")" && pwd -P) || exit 1
     target=$(readlink "$launcher") || exit 1
     case $target in
         /*) launcher=$target ;;
         *) launcher=$directory/$target ;;
     esac
 done
-directory=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P) || exit 1
+directory=$(CDPATH="" cd -- "$(dirname -- "$launcher")" && pwd -P) || exit 1
 launcher=$directory/$(basename -- "$launcher")
 
 if [ "${1-}" = install-cli ]; then
