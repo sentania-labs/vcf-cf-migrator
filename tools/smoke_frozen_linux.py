@@ -1,6 +1,8 @@
 """Drive the packaged Linux window with X11 input and verify its output ZIP.
 
 Run under xvfb-run with a 1280x1024 display and xdotool installed.
+VCFCF_MIGRATOR_TEST_BUNDLE_OUT is a test-only native picker override; the
+packaged window still selects content and builds through its normal bridge.
 """
 from __future__ import annotations
 
@@ -25,7 +27,9 @@ def main():
         scratch = Path(directory)
         source = scratch / 'source.zip'
         make_export(source, 1, 0)
-        env = dict(os.environ, VCFCF_MIGRATOR_CONFIG_DIR=str(scratch / 'settings'))
+        output = scratch / 'source-bundle.zip'
+        env = dict(os.environ, VCFCF_MIGRATOR_CONFIG_DIR=str(scratch / 'settings'),
+                   VCFCF_MIGRATOR_TEST_BUNDLE_OUT=str(output))
         with (scratch / 'application.log').open('w+') as log:
             process = subprocess.Popen([str(executable), 'ui', str(source)], env=env,
                                        stdout=log, stderr=log)
@@ -40,7 +44,9 @@ def main():
                     subprocess.run(['xdotool', 'mousemove', '--window', window,
                                     str(x), str(y), 'click', '1'], check=True)
                     time.sleep(1)
-                output = scratch / 'source-bundle.zip'
+                # Save As returns the test destination, then the next focusable
+                # control is Build bundle. Submit it through the real bridge.
+                subprocess.run(['xdotool', 'key', '--window', window, 'Tab', 'Return'], check=True)
                 deadline = time.monotonic() + 15
                 while not output.exists() and time.monotonic() < deadline:
                     if process.poll() is not None:

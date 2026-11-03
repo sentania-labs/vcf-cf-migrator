@@ -185,6 +185,19 @@ jobs:
       # Order matters: sign, then the smoke below runs the SIGNED app's launcher,
       # then notarize, so a signature that breaks startup is caught in
       # seconds rather than after Apple's round trip.
+      # The CLI wrapper is a shell script, so the shared action's Mach-O
+      # discovery cannot find it. Sign it by path before sealing the app.
+      # The notarization action uses ditto, preserving its signature xattrs.
+      - name: Sign the Mac CLI wrapper
+        if: runner.os == 'macOS'
+        uses: sentania-labs/.github/.github/actions/macos-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # main 2026-10-07
+        with:
+          binary: dist/VCF Content Migrator.app/Contents/MacOS/vcfcf-migrator
+          entitlements: packaging/macos-entitlements.plist
+          macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
+          macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+          macos-team-id: ${{ secrets.MACOS_TEAM_ID }}
+
       - name: Sign the Mac application
         if: runner.os == 'macOS'
         uses: sentania-labs/.github/.github/actions/macos-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # main 2026-10-07
@@ -278,7 +291,13 @@ jobs:
 
       - name: Assess the stapled Mac application
         if: runner.os == 'macOS'
-        run: python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --assess-only
+        run: |
+          python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --assess-only
+          # Script signatures live in xattrs. Verify the actual download also
+          # retains them after the notarization action archives the app.
+          unpacked="$RUNNER_TEMP/signed-download"
+          ditto -x -k "dist/vcfcf-migrator-${{ matrix.name }}-app.zip" "$unpacked"
+          codesign --verify --deep --strict --verbose=2 "$unpacked/VCF Content Migrator.app"
 
       - name: Package the executable
         if: runner.os != 'macOS'
