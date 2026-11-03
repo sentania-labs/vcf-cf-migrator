@@ -1,6 +1,7 @@
 """Native webview window and action bridge. No local HTTP server is used."""
 
 import json
+import os
 import threading
 import webbrowser
 from typing import Any, Dict, Optional, Tuple
@@ -292,6 +293,12 @@ class Bridge:
         window = getattr(self, '_window', None)
         if not window or kind not in ('ca', 'bundle', 'diagnostics'):
             return {'error': 'The file picker is unavailable. Enter the path manually.'}
+        # Test hook for the frozen Linux smoke under Xvfb, whose native Save
+        # dialog cannot be driven reliably. Unset in normal app launches.
+        # Keep overwrite confirmation: this hook does not confirm an overwrite.
+        test_out = os.environ.get('VCFCF_MIGRATOR_TEST_BUNDLE_OUT')
+        if kind == 'bundle' and test_out:
+            return {'path': self._state.output_path(test_out, '.zip'), 'confirmed': False}
         try:
             if kind == 'ca':
                 chosen = window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
