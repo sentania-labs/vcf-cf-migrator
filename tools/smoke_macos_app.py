@@ -117,6 +117,7 @@ def main():
                         and w.get('kCGWindowBounds', {}).get('Width', 0) > 600), None)
 
                 native = wait_for(window)
+                recognized_labels = []
                 def button_point(label):
                     # Find the visible label, rather than assuming Cocoa and Qt
                     # render fonts and control spacing at the same coordinates.
@@ -137,6 +138,7 @@ def main():
                         return text.lower().replace('…', '').replace('.', '').strip()
                     wanted = plain(label)
                     items = [(item, str(item.topCandidates_(1)[0].string())) for item in request.results() or []]
+                    recognized_labels[:] = [text for _, text in items]
                     for matches in ([p for p in items if plain(p[1]) == wanted],
                                     [p for p in items if p[1].lower().startswith(label.lower())],
                                     [p for p in items if label.lower() in p[1].lower()]):
@@ -168,7 +170,11 @@ def main():
                                 event = Quartz.CGEventCreateKeyboardEvent(None, 119, down)
                                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
                         return point
-                    point = wait_for(find)
+                    try:
+                        point = wait_for(find)
+                    except AssertionError as exc:
+                        raise AssertionError(f'Could not locate native control {label!r}; '
+                                             f'OCR labels: {recognized_labels!r}') from exc
                     print('Clicking visible native control:', label, flush=True)
                     for event_type in (Quartz.kCGEventMouseMoved, Quartz.kCGEventLeftMouseDown,
                                        Quartz.kCGEventLeftMouseUp):
@@ -196,7 +202,10 @@ def main():
                     with zipfile.ZipFile(source) as original:
                         assert metrics == json.loads(original.read('supermetrics.json'))
                 subprocess.run(['screencapture', '-x', str(args.screenshot)], check=True)
-                click('Help & diagnostics', '/tab')
+                # This word uniquely identifies the header button on Review.
+                # Vision can split the full phrase or vary the ampersand's
+                # spacing on Intel; click its visible word and verify /tab.
+                click('diagnostics', '/tab')
                 click('Save diagnostics…', '/diagnostics', save_dialog=True)
                 report = (scratch / 'vcfcf-migrator-diagnostics.jsonl').read_text()
                 assert json.loads(report.splitlines()[0])['kind'] == 'vcfcf-migrator-diagnostics'
