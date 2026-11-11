@@ -83,6 +83,24 @@ jobs:
           notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
           notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
 
+      - name: Refuse to start without Windows signing secrets
+        env:
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_PROFILE: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          missing=0
+          for name in ARTIFACT_SIGNING_ENDPOINT ARTIFACT_SIGNING_ACCOUNT ARTIFACT_SIGNING_PROFILE AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing signing secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -90,8 +108,9 @@ jobs:
 
       - name: Install and run the suite
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install . pytest
+          python -m pip install --require-hashes --only-binary=:all: -r packaging/release-bootstrap.txt
+          python -m pip install --require-hashes --no-build-isolation -r packaging/release-requirements.txt
+          python -m pip install --no-deps --no-build-isolation .
           python -m pytest -q
           # The version baked into the install must be the tag's.
           want="${GITHUB_REF_NAME#v}"
@@ -132,8 +151,9 @@ jobs:
 
       - name: Install the package and PyInstaller
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install . pyinstaller
+          python -m pip install --require-hashes --only-binary=:all: -r packaging/release-bootstrap.txt
+          python -m pip install --require-hashes --no-build-isolation -r packaging/release-requirements.txt
+          python -m pip install --no-deps --no-build-isolation .
 
       - name: Install native Linux runtime
         if: runner.os == 'Linux'
@@ -178,6 +198,25 @@ jobs:
         if: runner.os == 'macOS'
         run: python packaging/build_macos.py
 
+      - name: Sign the Windows executable
+        if: runner.os == 'Windows'
+        uses: sentania-labs/.github/.github/actions/windows-sign@899421db1380620b2d4e2d8ac8b6acf16fe15b99 # windows-sign fix merged on main
+        with:
+          files: ${{ github.workspace }}\dist\vcfcf-migrator.exe
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Verify Authenticode signature
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature 'dist/vcfcf-migrator.exe'
+          if ($signature.Status -ne 'Valid') { throw "Authenticode verification failed: $($signature.Status)" }
+
       # ---- macOS signing and notarization -------------------------------
       # The org's shared actions (sentania-labs/.github) do the work; their
       # comments carry the why (hardened runtime, timestamp, strict verify,
@@ -211,7 +250,6 @@ jobs:
       - name: Exercise the packaged Mac window
         if: runner.os == 'macOS'
         run: |
-          python -m pip install pyobjc-framework-Quartz pyobjc-framework-Vision
           python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app'
           python tools/smoke_macos_app.py 'dist/VCF Content Migrator.app' --launcher --objects 9000 --identities 113 --screenshot macos-app-large.png
 
@@ -330,6 +368,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # gh release create / upload
+      id-token: write
+      attestations: write
     steps:
       - name: Check out
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -343,8 +383,9 @@ jobs:
 
       - name: Build the wheel
         run: |
-          python -m pip install --upgrade pip build
-          python -m build --wheel
+          python -m pip install --require-hashes --only-binary=:all: -r packaging/release-bootstrap.txt
+          python -m pip install --require-hashes --no-build-isolation -r packaging/release-requirements.txt
+          python -m build --wheel --no-isolation
           ls -l dist/
 
       - name: Download the binaries
@@ -353,13 +394,33 @@ jobs:
           path: binaries
           merge-multiple: true
 
+      - name: Hash the release assets
+        run: |
+          python - <<'PYCODE'
+          import hashlib
+          from pathlib import Path
+          paths = sorted([*Path("dist").glob("*.whl"), *Path("binaries").glob("*.zip"), *Path("binaries").glob("*.tar.gz")])
+          if len(paths) != 5:
+              raise SystemExit(f"Expected one wheel and four archives, found {len(paths)}")
+          Path("SHA256SUMS").write_text("".join(f"{hashlib.file_digest(p.open('rb'), 'sha256').hexdigest()}  {p.name}\n" for p in paths))
+          PYCODE
+
+      - name: Attest the release assets
+        uses: sentania-labs/.github/.github/actions/attest-provenance@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github main 2026-10-07
+        with:
+          subject-path: |
+            SHA256SUMS
+            dist/*.whl
+            binaries/*.zip
+            binaries/*.tar.gz
+
       - name: Publish GitHub Release (idempotent per tag)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l binaries/
           TAG="$GITHUB_REF_NAME"
-          ASSETS="dist/*.whl binaries/*.zip binaries/*.tar.gz"
+          ASSETS="SHA256SUMS dist/*.whl binaries/*.zip binaries/*.tar.gz"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # shellcheck disable=SC2086
             gh release upload "$TAG" $ASSETS --clobber --repo "$GITHUB_REPOSITORY"

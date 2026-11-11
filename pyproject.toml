@@ -19,7 +19,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = [
-    "vcf-cf-tooling-core @ https://github.com/sentania-labs/vcf-content-factory/releases/download/core-v0.1.0/vcf_cf_tooling_core-0.1.0-py3-none-any.whl",
+    "vcf-cf-tooling-core @ https://github.com/sentania-labs/vcf-content-factory/releases/download/core-v0.1.0/vcf_cf_tooling_core-0.1.0-py3-none-any.whl#sha256=f7e11cf88002a9f5a9779bc8acd858c3e19c1ae7c472182aeac61c0797551096",
     "PyYAML>=6.0",
     "pywebview>=5.0; sys_platform == 'darwin' or sys_platform == 'win32'",
     "pywebview[pyside6]>=6.0; sys_platform == 'linux'",
