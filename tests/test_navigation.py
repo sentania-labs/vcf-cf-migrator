@@ -79,7 +79,7 @@ def test_missing_dashboard_is_reported_and_builds(tmp_path, config_dir, capsys):
     out = tmp_path / 'bundle.zip'
     picks = tmp_path / 'picks.txt'; picks.write_text('a\n')
     assert main(['build', str(path), '--select', str(picks), '--out', str(out)]) == 0
-    assert 'inferred to be already missing on the source' in capsys.readouterr().out
+    assert 'may already be missing on the source' in capsys.readouterr().out
     assert out.exists()
     state = PageState(str(path))
     try:
@@ -87,7 +87,7 @@ def test_missing_dashboard_is_reported_and_builds(tmp_path, config_dir, capsys):
         state.toggle(key, on=True)
         assert not state.selection.missing_dependencies()
         state.tab = 'review'
-        assert 'inferred to be already missing on the source' in state.render()
+        assert 'may already be missing on the source' in state.render()
     finally:
         state.log.close()
 

@@ -308,8 +308,9 @@ def test_build_reports_where_the_bundle_went_and_what_is_in_it(state, tmp_path):
     state.build(str(out))
     page = state.render()
     assert str(out) in page
-    assert "carrying:" in page
-    assert "supermetrics.json" in page  # the members it wrote
+    assert "Included:" in page
+    assert "super metrics: 1" in page
+    assert "supermetrics.json" not in page
 
 
 # ---------------------------------------------------------------------------

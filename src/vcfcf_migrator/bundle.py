@@ -32,7 +32,7 @@ from vcfcf_migrator import containers as _containers
 from vcfcf_migrator.containers import Container, zip_directory_entry, zip_entry
 from vcfcf_migrator.graph import (Graph, dashboard_binding_lines, is_directory_group,
                                   same_id_dashboard_lines)
-from vcfcf_migrator.selection import Selection, refuse_missing_dependencies
+from vcfcf_migrator.selection import Selection, refuse_missing_dependencies, content_kind_label
 
 # Content kind -> the key configuration.json counts it under.
 MANIFEST_KEYS = {
@@ -96,7 +96,7 @@ def post_import_checklist(graph, selection):
     for node in groups:
         policies = [r.ident for r in node.refs if r.kind == 'policy']
         lines.extend(['', f'Custom group: {node.name}',
-                      '  Source policy: ' + (', '.join(graph.policy_names.get(p, p) for p in policies)
+                      '  Source policy: ' + (', '.join(graph.policy_names.get(p, f'Unknown policy (ID: {p})') for p in policies)
                                              if policies else 'not specified'),
                       '  Check its policy assignment on the target.'])
     return '\n'.join(lines) + '\n'
@@ -126,7 +126,7 @@ def _picked_indexes(containers: Sequence[Container], keys: Sequence[str]
     return out
 
 
-def _narrow_sharings(data: bytes, dashboard_ids) -> Optional[bytes]:
+def _narrow_sharings(data: bytes, dashboard_ids, keep_directory=False) -> Optional[bytes]:
     """``dashboardsharings/<owner>`` with only the carried dashboards in it.
     A sharing entry naming a dashboard the bundle does not hold would point
     the import at an absent object."""
@@ -144,7 +144,7 @@ def _narrow_sharings(data: bytes, dashboard_ids) -> Optional[bytes]:
         except ValueError:
             continue
         # Only local groups can be expected to exist without a source directory.
-        if not isinstance(group_doc, dict) or is_directory_group(group_doc):
+        if not isinstance(group_doc, dict) or (is_directory_group(group_doc) and not keep_directory):
             continue
         dashboards = rawdoc.member(members, "dashboards")
         if dashboards is None:
@@ -255,14 +255,25 @@ def _merge_owner_archives(archives, sharings):
 
 
 
-def _validate_dashboard_owners(written, by_owner):
+def _validate_dashboard_owners(written, by_owner, target_user="admin", keep_ownership=False):
     """Reject an archive whose ownership scaffolding does not match."""
     if not by_owner:
         return
     mapping = json.loads(written['usermappings.json'])
     users = mapping.get('users', [])
-    if (mapping.get('sources') != [] or len(users) != 1
-            or users[0] != {'userId': next(iter(by_owner)), 'userName': 'admin'}):
+    if keep_ownership:
+        if len(users) != len(by_owner) or {str(u.get('userId')) for u in users if isinstance(u, dict)} != set(by_owner):
+            raise ValueError('Dashboard owner mapping is inconsistent')
+        sources = mapping.get('sources')
+        if not isinstance(sources, list):
+            raise ValueError('The export does not contain usable directory information')
+        source_ids = {str(source[k]) for source in sources if isinstance(source, dict)
+                      for k in ('id', 'sourceId', 'userSourceId', 'uuid') if source.get(k)}
+        needed = {str(u['userSourceId']) for u in users if u.get('userSourceId')}
+        if not needed.issubset(source_ids):
+            raise ValueError('The export is missing directory information for a selected owner')
+    elif (mapping.get('sources') != [] or len(users) != 1
+          or users[0] != {'userId': next(iter(by_owner)), 'userName': target_user}):
         raise ValueError('Dashboard owner mapping is inconsistent')
     owners = set(by_owner)
     for prefix in ('dashboards/', 'dashboardsharings/'):
@@ -284,7 +295,7 @@ def _validate_dashboard_owners(written, by_owner):
         if not isinstance(groups, list):
             raise ValueError('Dashboard sharing is not a list')
         for group in groups:
-            if not isinstance(group, dict) or is_directory_group(group):
+            if not isinstance(group, dict) or (is_directory_group(group) and not keep_ownership):
                 raise ValueError('Dashboard sharing is not local')
             for dashboard in group.get('dashboards', []):
                 if not isinstance(dashboard, dict) or dashboard.get('dashboardId') not in ids:
@@ -320,30 +331,36 @@ def directory_entries(written: Sequence[str], source_directories: Sequence[str] 
 def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
                  selection: Selection, out_path, marker: Optional[str] = None,
                  directories: Sequence[str] = (),
-                 directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
+                 directory_order: Optional[Dict[str, int]] = None,
+                 target_user: str = 'admin', keep_ownership: bool = False) -> BuildResult:
     """Refuse missing dependencies before creating or touching an output file."""
+    if not keep_ownership and not target_user.strip():
+        raise ValueError('Enter a target user name')
+    target_user = target_user.strip()
     refuse_missing_dependencies(graph, selection)
     same_id = same_id_dashboard_lines(graph, selection.keys)
     if same_id:
         raise ValueError('; '.join(same_id))
     return _write_bundle(members, member_order, graph, selection, out_path, marker,
-                         directories, directory_order)
+                         directories, directory_order, target_user, keep_ownership)
 
 
 def _write_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
                  selection: Selection, out_path, marker: Optional[str] = None,
                  directories: Sequence[str] = (),
-                 directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
+                 directory_order: Optional[Dict[str, int]] = None,
+                 target_user: str = 'admin', keep_ownership: bool = False) -> BuildResult:
     """Write the bundle for *selection* and report what went into it."""
     with runlog.phase("build", out=str(out_path), carrying=len(selection.keys)):
         return _build_bundle(members, member_order, graph, selection, out_path, marker,
-                             directories, directory_order or {})
+                             directories, directory_order or {}, target_user, keep_ownership)
 
 
 def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
                   selection: Selection, out_path, marker: Optional[str] = None,
                   directories: Sequence[str] = (),
-                  directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
+                  directory_order: Optional[Dict[str, int]] = None,
+                  target_user: str = 'admin', keep_ownership: bool = False) -> BuildResult:
     result = BuildResult(path=str(out_path))
     for key in selection.keys:
         node = graph.nodes.get(key)
@@ -412,14 +429,34 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                   reason=runlog.prose("one dashboard member per owner, and the manifest counts them "
                          "the same way"))
     if owners:
-        # Source owner IDs are file-local keys; the importer maps this one to
-        # the source-less target account by name.
-        target_owner = sorted(owners)[0]
-        written["usermappings.json"] = json.dumps({"sources": [], "users": [
-            {"userId": target_owner, "userName": "admin"}]}).encode("utf-8")
         dashboard_count = sum(by_owner.values())
-        result.notes.append(f"Dashboard ownership maps to the target local admin account "
-                            f"({dashboard_count} {'dashboard' if dashboard_count == 1 else 'dashboards'}).")
+        names = ', '.join(dict.fromkeys(graph.nodes[k].name for k in selection.keys
+                                        if graph.nodes[k].kind == 'dashboard' and graph.nodes[k].owner))
+        if keep_ownership:
+            try:
+                original = json.loads(members['usermappings.json'])
+                users = [u for u in original['users'] if isinstance(u, dict)
+                         and str(u.get('userId')) in owners]
+            except (KeyError, TypeError, ValueError):
+                raise ValueError('The export does not contain the selected dashboard owner mappings')
+            if {str(u.get('userId')) for u in users} != set(owners):
+                raise ValueError('The export does not contain every selected dashboard owner mapping')
+            written['usermappings.json'] = json.dumps({'sources': original.get('sources', []),
+                                                        'users': users}).encode('utf-8')
+            owner_labels = ', '.join(graph.owner_names.get(o, 'Unknown owner') for o in sorted(owners))
+            result.notes.append(f'Dashboard ownership stays with {owner_labels} ({dashboard_count} '
+                                f"{'dashboard' if dashboard_count == 1 else 'dashboards'}).")
+            result.notes.append('Source owners and directory sharing are kept for: ' + names
+                                + '. These dashboards will be skipped unless the same users and directories exist on the target.')
+        else:
+            target_owner = sorted(owners)[0]
+            written['usermappings.json'] = json.dumps({'sources': [], 'users': [
+                {'userId': target_owner, 'userName': target_user}]}).encode('utf-8')
+            label = 'local admin' if target_user == 'admin' else target_user
+            result.notes.append(f'Dashboard ownership maps to {label} on the target ({dashboard_count} '
+                                f"{'dashboard' if dashboard_count == 1 else 'dashboards'}).")
+            if target_user != 'admin':
+                result.notes.append('These dashboards will be skipped unless the exact target user exists: ' + names + '.')
     # One rule, one loop: **every carried owner gets a sharing member**,
     # whatever the source held. It used to be two loops, one synthesizing where
     # the source had no member at all and one narrowing where it did, and the
@@ -435,7 +472,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         source = members.get(member)
         carried_ids = {entry.ident for entry in _containers.DashboardsContainer(
             f"dashboards/{owner}", written[f"dashboards/{owner}"], owner=owner).entries()}
-        narrowed = _narrow_sharings(source, carried_ids) if source else None
+        narrowed = _narrow_sharings(source, carried_ids, keep_ownership) if source else None
         if narrowed is not None:
             written[member] = narrowed
             runlog.detail("scaffolding.narrowed", member=member, bytes=len(narrowed),
@@ -443,13 +480,10 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                           reason=runlog.prose("narrowed to the dashboards the bundle carries"))
             continue
         written[member] = b"[]"
-        why = ("carried no sharing member for this owner" if source is None else
-               "carried a sharing member with nothing in it for the dashboards this "
-               "bundle holds, or one that did not parse")
-        result.notes.append(
-            f"the source {why}, and the target needs one beside every dashboards "
-            f"member, so the bundle carries an empty {member}: the dashboards import "
-            "private to whoever imports them, and sharing is set on the target")
+        affected_names = [graph.nodes[k].name for k in selection.keys
+                          if graph.nodes[k].kind == 'dashboard' and graph.nodes[k].owner == owner]
+        result.notes.append('No sharing remains for: ' + ', '.join(affected_names)
+                            + '. These dashboards will be private; set sharing on the target.')
         runlog.detail("scaffolding.synthesized", member=member,
                       had_source=source is not None,
                       reason=runlog.prose(
@@ -461,7 +495,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
             runlog.detail("scaffolding.skipped", member=name,
                           reason=runlog.prose("this owner has no dashboard in the bundle"))
 
-    if len(owners) > 1:
+    if len(owners) > 1 and not keep_ownership:
         target_owner = sorted(owners)[0]
         archives = [(f"dashboards/{owner}", written[f"dashboards/{owner}"])
                     for owner in sorted(owners)]
@@ -474,11 +508,11 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         written[f"dashboardsharings/{target_owner}"] = sharing
         by_owner = {target_owner: sum(by_owner.values())}
         if changed:
-            result.notes.append("Colliding resource tokens were rewritten in: " + ", ".join(changed))
+            result.notes.append("Resource references were adjusted when combining dashboards: " + ", ".join(changed))
     affected = list(dict.fromkeys(
         graph.nodes[k].name for k in selection.keys
         if (graph.nodes[k].owner, graph.nodes[k].ident) in graph.directory_shared_dashboards))
-    if affected:
+    if affected and not keep_ownership:
         result.notes.append("Directory sharing removed for: " + ", ".join(affected)
                             + ". Set sharing on the target.")
 
@@ -493,21 +527,13 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         manifest["dashboardsByOwner"] = [{"owner": o, "count": c}
                                          for o, c in sorted(by_owner.items())]
     written["configuration.json"] = (json.dumps(manifest, indent=3) + "\n").encode("utf-8")
-    _validate_dashboard_owners(written, by_owner)
+    _validate_dashboard_owners(written, by_owner, target_user, keep_ownership)
     runlog.detail("manifest.written", member="configuration.json",
                   manifest={k: v for k, v in manifest.items() if not isinstance(v, list)},
                   owners=len(by_owner),
                   reason=runlog.prose("written fresh with the counts actually carried, because the "
                          "source's counts describe the source"))
-    result.notes.append(
-        "configuration.json is written fresh with the counts actually carried, and with no "
-        "signature: the factory's own content-import path writes it the same way "
-        "(vcfcf_core.dashboards.packager, vcfcf_core.reports.render) and those zips import")
-    if marker and marker in members:
-        result.notes.append(
-            "the marker is copied byte for byte, and its content is the source instance's "
-            "owner uuid; whether the target accepts a foreign owner uuid there is on the M5 "
-            "verification list")
+    result.notes.append('Bundle counts reflect the selected content. Target acceptance has not been checked.')
 
     ordered = [n for n in member_order if n in written]
     # A member the source did not have goes beside the member it belongs to,
@@ -610,12 +636,17 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
 
 
 def render(result: BuildResult) -> str:
-    lines = [f"bundle: {result.path}"]
-    lines.append("carrying: " + (", ".join(f"{k}={v}" for k, v in sorted(result.counts.items()))
+    """A plain-language report; detailed member data remains available as JSON."""
+    lines = [f"Bundle: {result.path}"]
+    lines.append("Included: " + (", ".join(f"{content_kind_label(k)}: {v}" for k, v in sorted(result.counts.items()))
                                  or "nothing"))
-    lines.append(f"members: {len(result.members)}")
-    for name in result.members:
-        lines.append(f"  {name}")
     for note in result.notes:
-        lines.append(f"note: {note}")
+        if ': pruned ' in note:
+            note = note.split(': pruned ', 1)[1]
+            note = 'Removed ' + note.replace('resourceKind entries', 'resource kind entries').replace('resource entries', 'object entries')
+        elif ': kept unattributed localization keys:' in note:
+            note = 'Some localization entries could not be matched and were kept.'
+        elif note.startswith('members this tool does not understand'):
+            note = 'Some unsupported content was not included.'
+        lines.append(note)
     return "\n".join(lines) + "\n"

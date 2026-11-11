@@ -164,12 +164,12 @@ def test_select_all_of_the_fixture_is_refused_and_names_every_missing_dependency
     err = capsys.readouterr().err
     assert "refused: the selection depends on 4 objects this export does not carry" in err
     assert err.rstrip().endswith("no bundle written")
-    # Every missing dependency, with its reason, and nothing else.
-    for ident in (ABSENT_SM_ID, ABSENT_SM_NAME, ABSENT_ALERT_ID, "WebhookPlugin/fixture"):
-        assert f"[{ident}] wanted by" in err, ident
-    assert f"view [{ABSENT_VIEW_ID}] wanted by" not in err
-    assert err.count("it is not in this export") == 4
-    assert GROUP_POLICY_ID not in err, "a policy is not a missing dependency"
+    # The report names affected objects without exposing implementation IDs.
+    assert '[Fixture] VM List' in err and '[Fixture] Cluster rule' in err
+    assert 'required super metric' in err and 'required outbound setting' in err
+    assert ABSENT_SM_ID not in err
+    assert GROUP_POLICY_ID not in err
+
 
 
 def test_a_subset_with_one_missing_dependency_is_refused_too(tmp_path, export_zip, capsys):
@@ -181,7 +181,8 @@ def test_a_subset_with_one_missing_dependency_is_refused_too(tmp_path, export_zi
     assert not out.exists()
     err = capsys.readouterr().err
     assert "depends on 1 object this export does not carry" in err
-    assert err.count(" wanted by ") == 1 and ABSENT_SM_ID in err
+    assert "[Fixture] VM List" in err and "required super metric" in err
+    assert ABSENT_SM_ID not in err
 
 
 def test_a_refused_build_with_json_says_so_on_stdout_too(tmp_path, export_zip, capsys):
@@ -269,9 +270,9 @@ def test_a_selection_whose_only_gap_is_a_policy_builds_and_lists_it(tmp_path, ex
     assert main(["build", str(export_zip), "--select", str(picks), "--out", str(out)]) == 0
     assert out.exists() and read_export(out).counts() == {"customgroup": 1}
     report = capsys.readouterr().out
-    assert "referenced but not carried: 1" in report
-    assert f"policy [{GROUP_POLICY_ID}] wanted by customgroup {GROUP_NAME}" in report
-    assert "check the group policy assignment" in report
+    assert "References to check: 1" in report
+    assert GROUP_NAME in report and "check the policy assignment" in report
+    assert "check the policy assignment" in report
     assert "missing dependencies" not in report
 
 
@@ -300,7 +301,7 @@ def test_the_clean_selection_builds_and_the_ci_checker_agrees(tmp_path, export_z
     assert picks.read_text(encoding="utf-8").splitlines() == list(CLEAN_SELECTION)
     assert main(["build", str(export_zip), "--select", str(picks), "--out", str(out)]) == 0
     report = capsys.readouterr().out
-    assert "referenced but not carried: 1" in report and "missing dependencies" not in report
+    assert "References to check: 1" in report and "missing dependencies" not in report
     assert main(["inspect", "--json", str(out)]) == 0
     doc = json.loads(capsys.readouterr().out)
     assert "listing matches the fixture" in ci_checks.check_listing(doc, bundle=True)
@@ -349,8 +350,9 @@ def test_the_page_refuses_a_build_with_a_missing_dependency_and_writes_nothing(
     assert "Build refused. No bundle written." in page
     # Every missing dependency of this selection is named on the page, in the
     # refusal under Last build and in the list above the button.
-    for ident in (ABSENT_VIEW_ID, ABSENT_SM_NAME):
-        assert ident in page, ident
+    assert "view is missing from the export" in page
+    assert ABSENT_SM_NAME in page
+    assert ABSENT_VIEW_ID not in page
     assert GROUP_POLICY_ID not in state.build_report
     assert "<button type='submit' class='primary' disabled>Build bundle" in page
 
@@ -361,11 +363,12 @@ def test_the_page_says_so_before_build_is_pressed(config_dir, export_zip):
     state.tab = "review"
     page = state.render()
     assert "Build is blocked" in page
-    assert ABSENT_SM_ID in page
+    assert "required super metric" in page
+    assert ABSENT_SM_ID not in page
     # A policy reference in the tree reads as what it is.
     state.toggle(GROUP, on=True)
     page = state.render()
-    assert "Referenced but not carried" in page and GROUP_POLICY_ID in page
+    assert "References to check" in page and "policy assignment" in page
 
 
 def test_the_page_builds_a_clean_selection_and_lists_the_policy(config_dir, export_zip,
@@ -381,7 +384,7 @@ def test_the_page_builds_a_clean_selection_and_lists_the_policy(config_dir, expo
     state.build(str(out))
     assert not state.error, state.error
     assert f"bundle built and saved to {out}" in state.message
-    assert "referenced but not carried: 1" in state.build_report
+    assert "References to check: 1" in state.build_report
     assert zipfile.ZipFile(out).namelist()
 
 

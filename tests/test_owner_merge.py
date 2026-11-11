@@ -44,7 +44,7 @@ def test_owner_merge_keeps_bindings_and_only_rewrites_collisions(tmp_path):
             assert actual['a'] == originals['a']
             if second_token.endswith('0_::_'):
                 assert actual['b'] != originals['b']
-                assert any('b' in note and 'tokens were rewritten' in note for note in result.notes)
+                assert any('b' in note and 'Resource references were adjusted' in note for note in result.notes)
             else:
                 assert actual['b'] == originals['b']
 
@@ -92,7 +92,7 @@ def test_directory_sharing_is_removed_and_reported(tmp_path):
         groups = json.loads(z.read('dashboardsharings/a'))
         assert [group['groupName'] for group in groups] == ['local group']
     assert any('Directory sharing removed for: a' in note for note in result.notes)
-    assert any('admin account (1 dashboard)' in note for note in result.notes)
+    assert any('admin on the target (1 dashboard)' in note for note in result.notes)
 
 
 def test_inconsistent_owner_scaffolding_is_rejected():
@@ -154,7 +154,7 @@ def test_same_dashboard_id_under_two_owners_is_refused_and_nothing_is_written(tm
     g = graph.build_graph(members)
     picked = selection.select_all(g)
     out = tmp_path / 'out.zip'
-    with pytest.raises(ValueError, match='exists under owners a, b with the same ID; choose one copy'):
+    with pytest.raises(ValueError, match='exists under owners Owner 1, Owner 2; choose one copy'):
         bundle.build_bundle(members, list(members), g, picked, out)
     assert not out.exists()
     one = selection.close(g, ['dashboard:same@a'])

@@ -136,7 +136,11 @@ notification templates, and outbound settings.
 Selected content documents are copied unchanged, except that colliding local
 resource tokens are rewritten when dashboards from multiple owners are merged.
 Encrypted settings stay encrypted, and the original export remains your source
-copy. Dashboard ownership maps to local `admin` on the target; directory-group
+copy. Dashboard ownership maps to local `admin` on the target by default; you
+can choose another target user or keep source owners and directory sharing in
+Review bundle. With the CLI, use `--target-owner USER` or
+`--keep-directory-ownership`. Other users and source directories must exist on
+the target or their dashboards will be skipped. By default, directory-group
 sharing is removed and must be set again there. The build report identifies any
 rewritten tokens and lists the target objects and adapter kinds to check.
 
