@@ -144,7 +144,8 @@ the target or their dashboards will be skipped. By default, directory-group
 sharing is removed and must be set again there. If the same dashboard ID is
 selected under more than one owner, the build is refused until you choose one
 copy or keep source owners. The build report identifies any
-rewritten tokens and lists the target objects and adapter kinds to check.
+rewritten tokens and lists the target objects and adapter kinds to check. The
+desktop app also saves it beside the ZIP as `<name>-build-report.txt`.
 
 Policies are not included. When the bundle contains super metrics or custom
 groups, the build writes a post-import checklist beside the ZIP. Use it to enable
