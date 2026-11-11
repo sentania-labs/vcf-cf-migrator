@@ -327,6 +327,11 @@ def render(graph: Graph, selection: Selection) -> str:
         if directory:
             lines.append("Directory-owned dashboards: " + ", ".join(directory)
                          + ". Check their sharing on the target.")
+        shared = [n.name for n in dashboards
+                  if (n.owner, n.ident) in graph.directory_shared_dashboards]
+        if shared:
+            lines.append("Directory sharing will be removed for: " + ", ".join(shared)
+                         + ". Set sharing on the target.")
     counts = selection.counts(graph)
     if counts:
         lines.append("carrying: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))

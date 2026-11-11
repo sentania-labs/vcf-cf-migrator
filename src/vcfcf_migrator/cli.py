@@ -308,6 +308,9 @@ def cmd_build(args) -> int:
     except OSError as e:
         print(f"vcfcf-migrator build: cannot write {args.out}: {e}", file=sys.stderr)
         return 1
+    except (ValueError, RawDocError) as e:
+        print(f"vcfcf-migrator build: {e}; no bundle written", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps({"selection": _selection.as_dict(graph, picked),
                           "build": result.as_dict()}, indent=2))

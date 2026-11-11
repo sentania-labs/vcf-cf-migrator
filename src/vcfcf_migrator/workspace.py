@@ -333,6 +333,11 @@ def review(state):
         if directory:
             out.append("<p class='note'>Directory-owned dashboards: "
                        + e(", ".join(directory)) + ". Check their sharing on the target.</p>")
+        shared = [n.name for n in dashboards
+                  if (n.owner, n.ident) in state.graph.directory_shared_dashboards]
+        if shared:
+            out.append("<p class='note'>Directory sharing will be removed for: "
+                       + e(", ".join(shared)) + ". Set sharing on the target.</p>")
     if selection.missing_dependencies():
         out.append("<div class='err'><strong>Build is blocked by missing references</strong>"
                    '<p>Remove the affected selections or open an export that includes their dependencies. '

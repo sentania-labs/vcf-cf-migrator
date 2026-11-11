@@ -146,6 +146,13 @@ def _narrow_sharings(data: bytes, dashboard_uuids: Sequence[str]) -> Optional[by
     out = []
     for group in groups:
         members = rawdoc.json_members(text, group.start)
+        try:
+            group_doc = json.loads(group.raw(text))
+        except ValueError:
+            continue
+        # Only local groups can be expected to exist without a source directory.
+        if not isinstance(group_doc, dict) or group_doc.get("sourceType") != "LOCAL":
+            continue
         dashboards = rawdoc.member(members, "dashboards")
         if dashboards is None:
             out.append(group.raw(text))
@@ -254,6 +261,42 @@ def _merge_owner_archives(archives, sharings):
     return output.getvalue(), json.dumps(merged_sharings).encode('utf-8'), changed
 
 
+
+def _validate_dashboard_owners(written, by_owner):
+    """Reject an archive whose ownership scaffolding does not match."""
+    if not by_owner:
+        return
+    mapping = json.loads(written['usermappings.json'])
+    users = mapping.get('users', [])
+    if (mapping.get('sources') != [] or len(users) != 1
+            or users[0] != {'userId': next(iter(by_owner)), 'userName': 'admin'}):
+        raise ValueError('Dashboard owner mapping is inconsistent')
+    owners = set(by_owner)
+    for prefix in ('dashboards/', 'dashboardsharings/'):
+        found = {name[len(prefix):] for name in written if name.startswith(prefix)}
+        if found != owners:
+            raise ValueError('Dashboard owner files do not match the owner mapping')
+    manifest = json.loads(written['configuration.json'])
+    if manifest.get('dashboardsByOwner') != [
+            {'owner': owner, 'count': count} for owner, count in sorted(by_owner.items())]:
+        raise ValueError('Dashboard counts do not match the owner mapping')
+    for owner, count in by_owner.items():
+        container = _containers.DashboardsContainer(
+            f'dashboards/{owner}', written[f'dashboards/{owner}'], owner=owner)
+        entries = container.entries()
+        if len(entries) != count:
+            raise ValueError('Dashboard count does not match the owner file')
+        ids = {entry.ident for entry in entries}
+        groups = json.loads(written[f'dashboardsharings/{owner}'])
+        if not isinstance(groups, list):
+            raise ValueError('Dashboard sharing is not a list')
+        for group in groups:
+            if not isinstance(group, dict) or group.get('sourceType') != 'LOCAL':
+                raise ValueError('Dashboard sharing is not local')
+            for dashboard in group.get('dashboards', []):
+                if not isinstance(dashboard, dict) or dashboard.get('dashboardId') not in ids:
+                    raise ValueError('Dashboard sharing does not match its owner file')
+
 def directory_entries(written: Sequence[str], source_directories: Sequence[str] = ()
                       ) -> List[str]:
     """The zip directory entries a bundle needs: one per directory it puts a
@@ -361,7 +404,9 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         target_owner = sorted(owners)[0]
         written["usermappings.json"] = json.dumps({"sources": [], "users": [
             {"userId": target_owner, "userName": "admin"}]}).encode("utf-8")
-        result.notes.append("Dashboard ownership maps to the target admin account.")
+        dashboard_count = sum(by_owner.values())
+        result.notes.append(f"Dashboard ownership maps to the target local admin account "
+                            f"({dashboard_count} {'dashboard' if dashboard_count == 1 else 'dashboards'}).")
     # One rule, one loop: **every carried owner gets a sharing member**,
     # whatever the source held. It used to be two loops, one synthesizing where
     # the source had no member at all and one narrowing where it did, and the
@@ -427,9 +472,13 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                 groups = json.loads(source)
             except ValueError:
                 groups = []
-            if any(isinstance(group, dict) and group.get("sourceType") not in (None, "LOCAL")
+            if any(isinstance(group, dict) and group.get("sourceType") != "LOCAL"
                    for group in groups if isinstance(groups, list)):
-                result.notes.append("Some dashboard sharing groups come from a directory; check sharing on the target.")
+                affected = [graph.nodes[k].name for k in selection.keys
+                            if (graph.nodes[k].owner, graph.nodes[k].ident)
+                            in graph.directory_shared_dashboards]
+                result.notes.append("Directory sharing removed for: " + ", ".join(affected)
+                                    + ". Set sharing on the target.")
                 break
 
     counts = selection.counts(graph)
@@ -441,6 +490,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         manifest["dashboardsByOwner"] = [{"owner": o, "count": c}
                                          for o, c in sorted(by_owner.items())]
     written["configuration.json"] = (json.dumps(manifest, indent=3) + "\n").encode("utf-8")
+    _validate_dashboard_owners(written, by_owner)
     runlog.detail("manifest.written", member="configuration.json",
                   manifest={k: v for k, v in manifest.items() if not isinstance(v, list)},
                   owners=len(by_owner),

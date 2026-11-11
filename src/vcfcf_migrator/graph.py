@@ -224,6 +224,7 @@ class Graph:
     containers: List[Container] = field(default_factory=list)
     unknown_members: List[str] = field(default_factory=list)
     directory_owners: set = field(default_factory=set)
+    directory_shared_dashboards: set = field(default_factory=set)
     missing: List[MissingEdge] = field(default_factory=list)
     # By-name references that several different objects answer to; every match
     # is carried, and the admin is told rather than left to find out.
@@ -760,6 +761,17 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
     if isinstance(mappings, dict):
         graph.directory_owners = {str(user.get("userId")) for user in (mappings.get("users") or [])
                                   if isinstance(user, dict) and user.get("userSourceId")}
+    for member, data in members.items():
+        if not member.startswith("dashboardsharings/"):
+            continue
+        owner = member.split("/", 1)[1]
+        groups = _json(data)
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict) or group.get("sourceType") == "LOCAL":
+                continue
+            for dash in group.get("dashboards", []) or []:
+                if isinstance(dash, dict) and dash.get("dashboardId"):
+                    graph.directory_shared_dashboards.add((owner, str(dash["dashboardId"])))
     dashboard_docs = {}
     for container in found:
         runlog.detail("container.found", member=container.member,

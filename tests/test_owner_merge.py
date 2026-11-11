@@ -73,3 +73,31 @@ def test_single_directory_owner_mapping_and_dashboard_bytes(tmp_path):
             original_container = graph._containers.DashboardsContainer('dashboards/a', source, owner='a')
             actual_container = graph._containers.DashboardsContainer('dashboards/a', z.read('dashboards/a'), owner='a')
             assert original_container.entries()[0].raw == actual_container.entries()[0].raw
+
+
+def test_directory_sharing_is_removed_and_reported(tmp_path):
+    members = {'dashboards/a': archive('a', 'resource:id:0_::_', 'Group A'),
+               'dashboardsharings/a': json.dumps([
+                   {'sourceType': 'ACTIVE_DIRECTORY', 'groupName': 'directory group',
+                    'dashboards': [{'dashboardId': 'a'}]},
+                   {'sourceType': 'LOCAL', 'groupName': 'local group',
+                    'dashboards': [{'dashboardId': 'a'}]}]).encode(),
+               'customgroups.json': json.dumps({'customGroups': [{'name': 'Group A'}]}).encode()}
+    g = graph.build_graph(members)
+    picked = selection.select_all(g)
+    assert 'Directory sharing will be removed for: a' in selection.render(g, picked)
+    out = tmp_path / 'out.zip'
+    result = bundle.build_bundle(members, list(members), g, picked, out)
+    with zipfile.ZipFile(out) as z:
+        groups = json.loads(z.read('dashboardsharings/a'))
+        assert [group['groupName'] for group in groups] == ['local group']
+    assert any('Directory sharing removed for: a' in note for note in result.notes)
+    assert any('admin account (1 dashboard)' in note for note in result.notes)
+
+
+def test_inconsistent_owner_scaffolding_is_rejected():
+    import pytest
+    with pytest.raises(ValueError, match='owner files'):
+        bundle._validate_dashboard_owners({
+            'usermappings.json': b'{"sources":[],"users":[{"userId":"a","userName":"admin"}]}',
+            'dashboards/b': b'wrong owner'}, {'a': 1})

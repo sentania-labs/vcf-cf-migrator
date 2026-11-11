@@ -12,6 +12,7 @@ import vcfcf_core
 from vcfcf_migrator import __version__
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import graph as _graph
+from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator import settings as _settings
@@ -21,7 +22,6 @@ from vcfcf_migrator.export_reader import (
     NotAnExport,
     read_members,
 )
-from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator.wording import BUILD_PASSWORD_REMINDER, plural
 
 def serialized(method):
@@ -484,6 +484,9 @@ class PageState:
                                           directory_order=self.members.directory_order)
         except OSError as e:
             self.error = f"cannot write {out}: {e}"
+            return
+        except (ValueError, RawDocError) as e:
+            self.error = f"cannot build bundle: {e}; no bundle written"
             return
         self.tab = "review"
         self.build_report = (_selection.render(self.graph, self.selection)
