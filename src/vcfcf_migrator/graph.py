@@ -217,6 +217,7 @@ class Graph:
     metric_policies: Dict[str, List[str]] = field(default_factory=dict)
     metric_kinds: Dict[str, List[str]] = field(default_factory=dict)
     policy_data_available: bool = False
+    policy_file_present: bool = False
     dashboard_bindings: Dict[str, List[dict]] = field(default_factory=dict)
     missing: List[MissingEdge] = field(default_factory=list)
     # By-name references that several different objects answer to; every match
@@ -866,7 +867,7 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 if isinstance(dash, dict) and dash.get("dashboardId"):
                     graph.directory_shared_dashboards.add((owner, str(dash["dashboardId"])))
     policy_root = _xml(members.get("policies.xml", b""))
-    graph.policy_data_available = policy_root is not None
+    graph.policy_file_present = "policies.xml" in members
     if policy_root is not None:
         for policy in policy_root.iter():
             if policy.tag.split('}')[-1].lower() != 'policy':
@@ -876,6 +877,7 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
             if not ident:
                 continue
             graph.policy_names[ident] = name
+            graph.policy_data_available = True
             for metric in policy.iter():
                 if (metric.tag.split('}')[-1].lower() == 'supermetric'
                         and (metric.get('enabled') or '').lower() == 'true' and metric.get('id')):
@@ -978,7 +980,8 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 # scanning the list, which on a 430-object export with 201
                 # such edges is the difference between linear and quadratic.
                 classification = ('target_binding' if node.kind == 'dashboard' and ref.kind == 'customgroup'
-                                  else 'inferred_dangling' if ref.kind in complete_types
+                                  else 'inferred_dangling' if node.kind == 'dashboard'
+                                  and ref.kind in complete_types
                                   and ref.kind in ('view', 'dashboard') else 'blocking')
                 gap = MissingEdge(node.key, ref.kind, ref.ident, ref.via, classification)
                 if not ref.optional and gap not in seen_gaps:
@@ -1228,6 +1231,10 @@ def missing_reason(gap: MissingEdge) -> str:
     if gap.kind == 'dashboard navigation':
         return runlog.prose('the navigation structure cannot be resolved; repair the '
                             'link on the source and export again; bundle creation is blocked')
+    if gap.kind == 'view' and gap.source_key.startswith('report:'):
+        return runlog.prose('a report section names a view absent from this export; '
+                            'export it as well or remove the report from the selection; '
+                            'bundle creation is blocked')
     if gap.kind == 'dashboard':
         return runlog.prose('the referenced dashboard is absent from this export; '
                             'export it as well or remove the dashboard that needs it; '

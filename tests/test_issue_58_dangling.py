@@ -45,3 +45,22 @@ def test_missing_or_inconsistent_view_type_blocks():
         picked = selection.close(g, ['dashboard:d'])
         assert len(picked.missing_dependencies()) == 2
         assert all(gap.classification == 'blocking' for gap in picked.missing_dependencies())
+
+
+def test_report_section_naming_missing_view_still_blocks():
+    members = _members()
+    del members['dashboard/dashboard.json']
+    members['configuration.json'] = json.dumps({'type': 'ALL', 'views': 1, 'reports': 1}).encode()
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, 'w') as z:
+        z.writestr('content.xml', b'<Content><Reports><ReportDef id="r"><Title>Report</Title><Sections>'
+                   b'<Section><ContentType>View</ContentType><ContentKey>missing</ContentKey></Section>'
+                   b'</Sections></ReportDef></Reports></Content>')
+    members['reports.zip'] = raw.getvalue()
+    g = graph.build_graph(members)
+    picked = selection.close(g, ['report:r'])
+    gaps = picked.missing_dependencies()
+    assert [gap.kind for gap in gaps] == ['view']
+    assert gaps[0].classification == 'blocking'
+    assert 'report section' in graph.missing_reason(gaps[0])
+    assert 'widget' not in graph.missing_reason(gaps[0])

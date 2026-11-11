@@ -59,3 +59,15 @@ def test_unknown_group_type_is_not_guessed():
                                 'customGroupTypes': [{'resourceKind': 'Custom'}]}).encode())
     assert json.loads(c.rebuild([0]))['customGroupTypes'] == [{'resourceKind': 'Custom'}]
     assert any('no type' in note for note in c.notes)
+
+
+def test_localization_key_matched_only_by_another_entry_name_is_kept():
+    from vcfcf_migrator.containers import XmlElementContainer
+    data = (b'<Views><ViewDef id="view-a"><Title>A</Title></ViewDef>'
+            b'<ViewDef id="view-b"><Title localizationKey="title.b">Memory</Title></ViewDef></Views>')
+    c = XmlElementContainer('views.zip', data, 'ViewDef', 'view', inner='content.xml',
+                            name_path='Title', siblings={'resources/content.properties':
+                                b'title.b=Other\nMemory.title=Keep\n'})
+    with zipfile.ZipFile(io.BytesIO(c.rebuild([0]))) as z:
+        assert z.read('resources/content.properties') == b'Memory.title=Keep\n'
+    assert any('kept unattributed localization keys: Memory.title' in note for note in c.notes)

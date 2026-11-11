@@ -80,8 +80,14 @@ def post_import_checklist(graph, selection):
         policies = graph.metric_policies.get(node.ident, [])
         policy_text = ', '.join(graph.policy_names.get(p, p) for p in dict.fromkeys(policies))
         if not policy_text:
-            policy_text = ('none found enabled in the source export' if graph.policy_data_available
-                           else 'source policy data unavailable')
+            if graph.policy_data_available:
+                policy_text = ('not found in policies.xml; verify on the source instance which '
+                               'policies enable these super metrics')
+            elif graph.policy_file_present:
+                policy_text = ('the policy file could not be read as expected; verify on the source '
+                               'instance which policies enable these super metrics')
+            else:
+                policy_text = 'source policy data unavailable'
         lines.extend(['', f'Super metric: {node.name}',
                       '  Resource kinds: ' + (', '.join(kinds) if kinds else 'none declared'),
                       '  Enabled in source policies: ' + policy_text,

@@ -41,3 +41,22 @@ def test_policy_enablement_checklist_and_dashboard_notice(tmp_path):
     assert 'Custom group: Group' in checklist and 'Source policy: Production' in checklist
     assert checklist == result.checklist
     assert checklist.rstrip() in bundle.render(result)
+
+
+def _checklist(policies):
+    members = {'supermetrics.json': json.dumps({SM: {'name': 'Metric', 'formula': '',
+                                                     'resourceKinds': []}}).encode()}
+    if policies is not None:
+        members['policies.xml'] = policies
+    g = graph.build_graph(members)
+    return bundle.post_import_checklist(g, selection.close(g, ['supermetric:' + SM]))
+
+
+def test_checklist_never_claims_no_policy_enables_a_metric():
+    parsed_but_empty = _checklist(b'<PolicyContent><Policies><Policy id="p1" name="Production"/>'
+                                  b'</Policies></PolicyContent>')
+    assert 'not found in policies.xml; verify on the source instance' in parsed_but_empty
+    assert 'none found' not in parsed_but_empty
+    unreadable = _checklist(b'<Unexpected><Thing/></Unexpected>')
+    assert 'policy file could not be read as expected' in unreadable
+    assert 'source policy data unavailable' in _checklist(None)

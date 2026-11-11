@@ -178,11 +178,10 @@ def _prune_properties(data, entries, selected, kind, member, notes):
         key = re.split(r'\s|[=:]', stripped, maxsplit=1)[0]
         matches = set()
         for i, entry in enumerate(entries):
-            identifiers = [entry.ident, entry.name if entry.name != '(unnamed)' else '']
-            if key in explicit[i] or any(
+            ident = entry.ident
+            if key in explicit[i] or (
                 ident and len(ident) >= 4 and re.search(
-                    r'(?<![A-Za-z0-9])' + re.escape(ident) + r'(?![A-Za-z0-9])', key)
-                for ident in identifiers):
+                    r'(?<![A-Za-z0-9])' + re.escape(ident) + r'(?![A-Za-z0-9])', key)):
                 matches.add(i)
         if matches and matches.isdisjoint(selected):
             dropped += 1
