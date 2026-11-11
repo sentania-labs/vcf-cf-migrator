@@ -141,7 +141,9 @@ can choose another target user or keep source owners and directory sharing in
 Review bundle. With the CLI, use `--target-owner USER` or
 `--keep-directory-ownership`. Other users and source directories must exist on
 the target or their dashboards will be skipped. By default, directory-group
-sharing is removed and must be set again there. The build report identifies any
+sharing is removed and must be set again there. If the same dashboard ID is
+selected under more than one owner, the build is refused until you choose one
+copy or keep source owners. The build report identifies any
 rewritten tokens and lists the target objects and adapter kinds to check.
 
 Policies are not included. When the bundle contains super metrics or custom
