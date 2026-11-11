@@ -476,21 +476,12 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         if len(selected_ids) != len(set(selected_ids)):
             result.notes.append("Some selected dashboards have the same ID under different owners; "
                                 "check the imported dashboards on the target.")
-    for owner in owners:
-        source = members.get(f"dashboardsharings/{owner}")
-        if source:
-            try:
-                groups = json.loads(source)
-            except ValueError:
-                groups = []
-            if any(isinstance(group, dict) and group.get("sourceType") != "LOCAL"
-                   for group in groups if isinstance(groups, list)):
-                affected = [graph.nodes[k].name for k in selection.keys
-                            if (graph.nodes[k].owner, graph.nodes[k].ident)
-                            in graph.directory_shared_dashboards]
-                result.notes.append("Directory sharing removed for: " + ", ".join(affected)
-                                    + ". Set sharing on the target.")
-                break
+    affected = list(dict.fromkeys(
+        graph.nodes[k].name for k in selection.keys
+        if (graph.nodes[k].owner, graph.nodes[k].ident) in graph.directory_shared_dashboards))
+    if affected:
+        result.notes.append("Directory sharing removed for: " + ", ".join(affected)
+                            + ". Set sharing on the target.")
 
     counts = selection.counts(graph)
     if dashboard_count:

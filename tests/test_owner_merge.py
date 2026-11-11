@@ -101,3 +101,18 @@ def test_inconsistent_owner_scaffolding_is_rejected():
         bundle._validate_dashboard_owners({
             'usermappings.json': b'{"sources":[],"users":[{"userId":"a","userName":"admin"}]}',
             'dashboards/b': b'wrong owner'}, {'a': 1})
+
+
+def test_directory_sharing_note_needs_a_selected_dashboard_and_tolerates_junk(tmp_path):
+    for sharing in (b'null', b'7', json.dumps([
+            {'sourceType': 'ACTIVE_DIRECTORY', 'groupName': 'g',
+             'dashboards': [{'dashboardId': 'unselected'}]}]).encode()):
+        members = {'dashboards/a': archive('a', 'resource:id:0_::_', 'Group A'),
+                   'dashboardsharings/a': sharing,
+                   'customgroups.json': json.dumps({'customGroups': [{'name': 'Group A'}]}).encode()}
+        g = graph.build_graph(members)
+        picked = selection.select_all(g)
+        result = bundle.build_bundle(members, list(members), g, picked, tmp_path / 'out.zip')
+        assert not any('Directory sharing' in note for note in result.notes)
+        with zipfile.ZipFile(tmp_path / 'out.zip') as z:
+            assert json.loads(z.read('dashboardsharings/a')) == []
