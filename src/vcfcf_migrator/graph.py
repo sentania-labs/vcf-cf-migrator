@@ -150,6 +150,7 @@ class Node:
     member: str
     index: int
     owner: str = ""
+    stock_or_derived: bool = False
     refs: List[Ref] = field(default_factory=list)
 
     @property
@@ -175,7 +176,7 @@ class Node:
         return {
             "key": self.key, "kind": self.kind, "name": self.name,
             "uuid": self.uuid, "ident": self.ident, "member": self.member,
-            "owner": self.owner or None,
+            "owner": self.owner or None, "stock_or_derived": self.stock_or_derived,
             "refs": [{"kind": r.kind, "ident": r.ident, "via": r.via} for r in self.refs],
         }
 
@@ -197,25 +198,12 @@ class Note:
 
 @dataclass(frozen=True)
 class MissingEdge:
-    """An edge whose target is not in the export.
-
-    Two things can be true of one, and ``is_missing_dependency`` says which.
-    A *missing dependency* is content that would have to be in the bundle for
-    the carried object to work on the target: a view, a super metric, an
-    alert, a symptom. A bundle built without it breaks, so ``build`` refuses a
-    selection that depends on one (issue #31). The other case is content the
-    tool never carries and every VCF Operations instance has anyway, a custom
-    group's policy, which is listed as referenced but not carried and does not
-    stop a build. An export carries custom content only, so an edge to a view
-    or super metric that ships with the product or inside a management pack
-    lands here by construction too; nothing in an export tells that apart from
-    an object that is genuinely gone, and that is why it is refused rather
-    than guessed at. See ``NOT_A_DEPENDENCY`` for the whole table.
-    """
+    """An unresolved reference and its offline classification."""
     source_key: str
     kind: str
     ident: str
     via: str
+    classification: str = 'blocking'
 
 
 @dataclass
@@ -558,9 +546,11 @@ def _dashboard_refs(raw: bytes, unhandled: List[str], resource_entries=None) -> 
                 config = None
             config = config or {}
             view_id = config.get("viewDefinitionId")
-            if isinstance(view_id, str) and view_id and view_id not in seen_views:
-                seen_views.add(view_id)
-                out.append(Ref("view", view_id, "widget viewDefinitionId"))
+            widget_name = widget.get('name') or widget.get('title') or widget.get('id') or '(unnamed)'
+            widget_key = (view_id, str(widget.get('id') or widget_name))
+            if isinstance(view_id, str) and view_id and widget_key not in seen_views:
+                seen_views.add(widget_key)
+                out.append(Ref("view", view_id, f"widget {widget_name} viewDefinitionId", uuid_only=True))
             for token in sorted(dashboard_tokens(widget)):
                 binding = resource_entries.get(token)
                 if binding and binding.get("adapterKindKey") == "Container" and binding.get("name"):
@@ -781,6 +771,16 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
 
 def _build_graph(members: Dict[str, bytes]) -> Graph:
     found, unknown = _containers.discover(members)
+    manifest = _json(members.get('configuration.json', b''))
+    manifest = manifest if isinstance(manifest, dict) else {}
+    # Presence of a type and a matching manifest count supports an offline
+    # inference, not proof that the source export is complete.
+    complete_types = set()
+    for kind, field in (('view', 'views'), ('dashboard', 'dashboards')):
+        relevant = [c for c in found if kind in c.kinds]
+        actual = sum(len(c.entries()) for c in relevant)
+        if relevant and isinstance(manifest.get(field), int) and manifest[field] == actual:
+            complete_types.add(kind)
     graph = Graph(containers=found, unknown_members=unknown)
     mappings = _json(members.get("usermappings.json", b""))
     if isinstance(mappings, dict):
@@ -835,6 +835,8 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
             runlog.content_id(node.uuid)
             shapes: List[str] = []
             if entry.kind == "dashboard" and isinstance(container, _containers.DashboardsContainer):
+                dashboard_doc = _json(entry.raw)
+                node.stock_or_derived = bool(dashboard_doc.get('adapterName')) if isinstance(dashboard_doc, dict) else False
                 node.refs = _dashboard_refs(entry.raw, shapes, resource_entries)
             else:
                 node.refs = list(
@@ -875,6 +877,7 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 # Every retained dashboard copy contributes its dependencies,
                 # even when its display identity is duplicated.
                 if node.kind == 'dashboard':
+                    graph.nodes[node.key].stock_or_derived |= node.stock_or_derived
                     existing = graph.nodes[node.key].refs
                     for ref in node.refs:
                         if ref not in existing:
@@ -901,7 +904,9 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 # two. Membership is checked against a set rather than by
                 # scanning the list, which on a 430-object export with 201
                 # such edges is the difference between linear and quadratic.
-                gap = MissingEdge(node.key, ref.kind, ref.ident, ref.via)
+                classification = ('inferred_dangling' if ref.kind in complete_types
+                                  and ref.kind in ('view', 'dashboard') else 'blocking')
+                gap = MissingEdge(node.key, ref.kind, ref.ident, ref.via, classification)
                 if not ref.optional and gap not in seen_gaps:
                     seen_gaps.add(gap)
                     graph.missing.append(gap)
@@ -972,7 +977,7 @@ def _navigation_widget_gaps(graph, docs, uuid_index):
             for source, target, receivers in navigation.links(doc)[0]:
                 if source not in source_widgets:
                     gaps.append(MissingEdge(key, 'dashboard widget', source,
-                                            'dashboard navigation source widget'))
+                                            'dashboard navigation source widget', 'inert'))
                 destinations = uuid_index.get(('dashboard', target), [])
                 # A missing dashboard already has a blocking gap. Validate
                 # every retained copy, not the union of their widget IDs.
@@ -980,7 +985,7 @@ def _navigation_widget_gaps(graph, docs, uuid_index):
                     for receiver in receivers:
                         if any(receiver not in defined for defined in widgets[destination]):
                             gaps.append(MissingEdge(key, 'dashboard widget', receiver,
-                                                    'dashboard navigation destination widget'))
+                                                    'dashboard navigation destination widget', 'inert'))
         for gap in dict.fromkeys(gaps):
             graph.missing.append(gap)
             runlog.content_id(gap.ident)
@@ -1106,26 +1111,8 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
     return "\n".join(lines) + "\n"
 
 
-# Which target kinds a missing edge can point at without being a missing
-# dependency, each with why. Keyed by the kind the reference was parsed as,
-# which is decided by the field it was read from (a widget's
-# ``viewDefinitionId`` is a view, a group's ``policy`` is a policy), never by
-# the shape of the identifier: an id that looks built-in is a regex opinion,
-# and this table holds only what the parsed document itself says.
-#
-# Everything not in this table is a missing dependency and a build refuses
-# it. That covers the kinds the operator named (dashboard, view, super metric,
-# alert, symptom, recommendation, report) and the two a notification rule
-# needs (its outbound setting and its payload template), which are the admin's
-# own configuration rather than anything an instance ships with. For the
-# named kinds the honest position is that the classification cannot be made:
-# an export carries custom content only and names a view or a super metric by
-# identifier alone, so one that ships with the product or a management pack
-# and one left out of the export look the same from here. Refusing is the
-# safe default (Scott, 2026-10-05: "a missing dependency breaks the bundle").
-# On the committed fixture that refuses 2 super metrics, 2 views (one absent
-# view, once per owner's copy of the dashboard naming it), 1 alert and 1
-# outbound setting, and lets 1 policy through.
+# Policies are never carried. Other references may be non-blocking when
+# evidence supports a dangling source reference or an inert navigation link.
 NOT_A_DEPENDENCY: Dict[str, str] = {
     "policy": ("policies.xml is in the export but is a member this tool never carries "
                "into a bundle; check the group policy assignment and super metric enablement on the target"),
@@ -1135,7 +1122,7 @@ NOT_A_DEPENDENCY: Dict[str, str] = {
 def is_missing_dependency(gap: MissingEdge) -> bool:
     """Whether a bundle built without this target would break on the target,
     which is what makes a build refuse the selection."""
-    return gap.kind not in NOT_A_DEPENDENCY
+    return gap.kind not in NOT_A_DEPENDENCY and gap.classification == 'blocking'
 
 
 def missing_reason(gap: MissingEdge) -> str:
@@ -1148,6 +1135,14 @@ def missing_reason(gap: MissingEdge) -> str:
     the product or was left out, so the line says why the build refuses it
     rather than printing "not in this export" and letting the admin guess.
     """
+    if gap.classification == 'inferred_dangling':
+        effect = ('the widget may show that the view does not exist' if gap.kind == 'view'
+                  else 'the navigation link may be absent')
+        return runlog.prose('inferred to be already missing on the source because this export includes '
+                            'this content type; the export may be incomplete, so verify the source. '
+                            + effect + ' unless the target has it')
+    if gap.classification == 'inert':
+        return runlog.prose('this navigation widget reference is inert; the affected link or selection may not work')
     if gap.kind in NOT_A_DEPENDENCY:
         return runlog.prose(NOT_A_DEPENDENCY[gap.kind])
     if gap.kind == 'dashboard widget':
@@ -1168,11 +1163,10 @@ def missing_reason(gap: MissingEdge) -> str:
         return runlog.prose(f"it is not in this export; {what}, not something every "
                             "instance ships with, so the rule that names it cannot be "
                             "carried without it")
-    return runlog.prose(f"it is not in this export; an export carries custom content only "
-                        f"and names the {gap.kind} it needs by identifier alone, so nothing "
-                        "here tells one that ships with the product or a management pack "
-                        "apart from one left out of the export, and a bundle built without "
-                        "it is refused rather than guessed at")
+    return runlog.prose(f"it is not in this export; completeness has not been established for "
+                        f"this {gap.kind}, so one that ships with the product or a management pack "
+                        "cannot be distinguished from one left out of the export, and a bundle "
+                        "built without it is refused rather than guessed at")
 
 
 def missing_line(graph: "Graph", gap: MissingEdge) -> str:
@@ -1205,7 +1199,7 @@ def as_dict(graph: Graph) -> dict:
         "edges": {k: v for k, v in sorted(graph.edges.items()) if v},
         "roots": [n.key for n in graph.roots()],
         "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via,
-                     "missing_dependency": is_missing_dependency(m),
+                     "missing_dependency": is_missing_dependency(m), "classification": m.classification,
                      "reason": str(missing_reason(m))}
                     for m in graph.missing],
         "ambiguous": [n.text for n in graph.ambiguous],

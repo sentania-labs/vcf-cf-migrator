@@ -107,6 +107,8 @@ def action(path, label, fields=None, primary=False, pressed=None):
 
 def identity(state, node):
     detail = node.kind
+    if node.kind == 'dashboard' and node.stock_or_derived:
+        detail += ' · stock or derived from stock'
     if state.name_counts.get((node.kind, node.name), 0) > 1:
         detail += " · " + (node.uuid or node.ident)
         if node.owner:
@@ -338,6 +340,8 @@ def review(state):
         if shared:
             out.append("<p class='note'>Directory sharing will be removed for: "
                        + e(", ".join(shared)) + ". Set sharing on the target.</p>")
+    if any(state.graph.nodes[k].stock_or_derived for k in selection.keys):
+        out.append("<p class='note'>Stock or derived dashboards stay selectable. Importing one can replace the dashboard with the same ID on the target.</p>")
     if selection.missing_dependencies():
         out.append("<div class='err'><strong>Build is blocked by missing references</strong>"
                    '<p>Remove the affected selections or open an export that includes their dependencies. '

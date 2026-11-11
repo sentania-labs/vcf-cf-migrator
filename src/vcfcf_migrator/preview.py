@@ -92,11 +92,7 @@ WIDGET_ELSEWHERE_CODES = (
     # decode. A widget with no ``config`` and a 4kB state blob is configured;
     # saying it carries nothing was simply false.
     "widget-state-not-read",
-    # A view the export does not carry. An export declares ``type=CUSTOM`` and
-    # carries custom content only, so a widget pointing at a view shipped in a
-    # management pack points outside every export by construction: 99 of the
-    # view uuids named this way across the corpus are pak content. Nothing in
-    # an export distinguishes a built-in from one that is genuinely gone.
+    # A view the export does not carry; the source export may be incomplete.
     "widget-view-not-carried",
     # A widget that drives others and has no content of its own to draw. It
     # is the dashboard's control, not an empty widget.
@@ -710,20 +706,14 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
     view_id = str(cfg.get("viewDefinitionId") or "")
     node = _find_node(graph, "view", view_id) if view_id else None
     if node is None:
-        # Not emptiness. An export declares type=CUSTOM and carries custom
-        # content only, so a widget pointing at a view that ships inside a
-        # management pack points outside every export by construction; 99 of
-        # the view uuids named this way across the corpus are pak content.
-        # Nothing in an export tells a built-in apart from one that is
-        # genuinely gone, and this page must not pretend otherwise.
+        # Missing content can be inferred from an export, not verified here.
         return _mark_widget_elsewhere(
             ctx.get("preview"), ctx.get("title") or "",
             str((ctx.get("widget") or {}).get("type") or ""),
             "widget-view-not-carried",
             f"this widget shows view {view_id or '(none named)'}, which this export does "
-            "not carry: an export holds custom content only, so the view may ship with a "
-            "management pack or with the product. It will show whatever the target already "
-            "has, and an export cannot tell the two apart")
+            "not carry. It may already be missing on the source, or the export may be incomplete. "
+            "Check the source and target before import.")
     try:
         root = _xml_doc(raw_document(graph, node))
     except PreviewError as e:
@@ -2295,11 +2285,9 @@ def build(graph: Graph, node: Node) -> Preview:
         if by_code.get("widget-view-not-carried"):
             number = by_code["widget-view-not-carried"]
             preview.notes.append(
-                f"{_plural(number, 'widget')} show a view this export does not carry, so "
-                "they will show whatever the target already has; an export carries custom "
-                "content only, so a view that ships with a management pack or with the "
-                "product is never in one, and nothing here tells that apart from a view "
-                "that is genuinely gone")
+                f"{_plural(number, 'widget')} show a view this export does not carry. "
+                "It may already be missing on the source, or the export may be incomplete; "
+                "check the source and target.")
         if by_code.get("widget-state-not-read"):
             number = by_code["widget-state-not-read"]
             preview.notes.append(

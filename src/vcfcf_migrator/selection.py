@@ -20,13 +20,10 @@ they are named the way the export names them
 A line that matches nothing is refused: continuing would write a bundle
 quietly missing what the admin asked for.
 
-A closed selection that still depends on content the export does not carry is
-refused too, by ``refuse_missing_dependencies``, which both ``build`` and the
-page's Build button call before the writer. There is no flag and no checkbox
-past it. Scott, 2026-10-05 (issue #31): "there should be no override - a
-missing dependency breaks the bundle - it's something we need to guard
-against." What counts as a missing dependency, and what is merely referenced
-but not carried, is ``graph.is_missing_dependency``.
+A build refuses missing dependencies the bundle may have been able to carry.
+Inferred source-dangling views and dashboards and inert navigation widget
+references are reported without blocking. Offline completeness is uncertain.
+
 """
 from __future__ import annotations
 
@@ -364,14 +361,13 @@ def render(graph: Graph, selection: Selection) -> str:
     if not_carried:
         lines.append(f"referenced but not carried: {len(not_carried)}")
         for gap in not_carried:
-            lines.append(f"  {missing_line(graph, gap)}, so it will be missing on import "
-                         "unless the target already has it")
+            lines.append(f"  {missing_line(graph, gap)}")
     return "\n".join(lines) + "\n"
 
 
 def _gap_dict(gap: MissingEdge) -> dict:
     return {"source": gap.source_key, "kind": gap.kind, "ident": gap.ident, "via": gap.via,
-            "missing_dependency": is_missing_dependency(gap),
+            "missing_dependency": is_missing_dependency(gap), "classification": gap.classification,
             "reason": str(missing_reason(gap))}
 
 

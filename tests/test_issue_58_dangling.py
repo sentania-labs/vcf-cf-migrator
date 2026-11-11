@@ -1,0 +1,47 @@
+"""Source-dangling references are reported with their evidence limits."""
+import io
+import json
+import zipfile
+
+from vcfcf_migrator import bundle, graph, selection
+from vcfcf_migrator.ui import PageState
+from vcfcf_migrator.workspace import identity, review
+
+
+def _members(include_views=True, count=1):
+    dashboard = {'id': 'd', 'name': 'Stock copy', 'adapterName': 'Example', 'widgets': [
+        {'id': 'w1', 'name': 'First', 'config': {'viewDefinitionId': 'missing'}},
+        {'id': 'w2', 'name': 'Second', 'config': {'viewDefinitionId': 'missing'}}]}
+    members = {'dashboard/dashboard.json': json.dumps({'dashboards': [dashboard]}).encode(),
+               'configuration.json': json.dumps({'type': 'ALL', 'dashboards': 1, 'views': count}).encode()}
+    if include_views:
+        raw = io.BytesIO()
+        with zipfile.ZipFile(raw, 'w') as z:
+            z.writestr('content.xml', b'<Views><ViewDef id="present"><Title>Present</Title></ViewDef></Views>')
+        members['views.zip'] = raw.getvalue()
+    return members
+
+
+def test_view_in_complete_type_is_reported_per_widget_without_blocking(tmp_path):
+    members = _members()
+    g = graph.build_graph(members)
+    picked = selection.close(g, ['dashboard:d'])
+    assert not picked.missing_dependencies()
+    assert {gap.via for gap in picked.not_carried()} == {
+        'widget First viewDefinitionId', 'widget Second viewDefinitionId'}
+    assert all(gap.classification == 'inferred_dangling' for gap in picked.not_carried())
+    assert 'export may be incomplete' in selection.render(g, picked)
+    out = tmp_path / 'bundle.zip'
+    bundle.build_bundle(members, list(members), g, picked, out)
+    state = PageState()
+    state.graph, state.selection, state.picked, state.name_counts = g, picked, ['dashboard:d'], {}
+    assert 'stock or derived from stock' in identity(state, g.nodes['dashboard:d'])
+    assert 'can replace the dashboard with the same ID' in review(state)
+
+
+def test_missing_or_inconsistent_view_type_blocks():
+    for members in (_members(include_views=False), _members(count=2)):
+        g = graph.build_graph(members)
+        picked = selection.close(g, ['dashboard:d'])
+        assert len(picked.missing_dependencies()) == 2
+        assert all(gap.classification == 'blocking' for gap in picked.missing_dependencies())

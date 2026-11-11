@@ -411,8 +411,8 @@ def test_an_edge_out_of_the_export_is_named_and_counted_not_an_error(graph):
     # Seven: the five M4a exercised, plus the absent view named by a widget,
     # once for each owner's copy of the dashboard that names it. Two widgets
     # on one copy naming the same absent view is one line, not two.
-    assert len(graph.missing) == 7
-    assert sum(1 for m in graph.missing if m.ident == ABSENT_VIEW_ID) == 2
+    assert len(graph.missing) == 9
+    assert sum(1 for m in graph.missing if m.ident == ABSENT_VIEW_ID) == 4
     # A policy is in the export; it is the bundle that will not hold it, and
     # the line has to say which of the two is true.
     assert "policies.xml is in the export but is a member this tool never carries" in text
@@ -998,11 +998,12 @@ def test_two_widgets_naming_one_absent_object_are_one_missing_edge(graph):
     to tell the admin about, not two. It is still one row per owner's copy of
     the dashboard, because those are two documents."""
     rows = [m for m in graph.missing if m.ident == ABSENT_VIEW_ID]
-    assert len(rows) == 2
+    assert len(rows) == 4
+    assert len({m.via for m in rows}) == 2
     assert {m.source_key for m in rows} == {
         f"dashboard:{DASHBOARD_ID}@{OWNER}", f"dashboard:{DASHBOARD_ID}@{OWNER_2}"}
     text = _graph.render_tree(graph)
-    assert text.count(f"view [{ABSENT_VIEW_ID}] wanted by") == 2
+    assert text.count(f"view [{ABSENT_VIEW_ID}] wanted by") == 4
 
 
 def test_every_bundle_entry_carries_the_pinned_stamp(tmp_path, export_zip):

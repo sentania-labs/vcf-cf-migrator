@@ -933,8 +933,8 @@ def test_a_view_the_export_does_not_carry_is_not_called_nothing(built):
     assert codes.count("widget-view-not-carried") == 2
     page = _preview.render_page(graph, node)
     assert "which this export does not carry" in page
-    assert "will show whatever the target already has" in page
-    assert "an export cannot tell the two apart" in page
+    assert "may already be missing on the source" in page
+    assert "export may be incomplete" in page
     assert any("show a view this export does not carry" in note for note in preview.notes)
 
 
