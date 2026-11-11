@@ -152,6 +152,8 @@ class Node:
     owner: str = ""
     stock_or_derived: bool = False
     refs: List[Ref] = field(default_factory=list)
+    description: str = ''
+    modified: str = ''
 
     @property
     def key(self) -> str:
@@ -213,6 +215,8 @@ class Graph:
     unknown_members: List[str] = field(default_factory=list)
     directory_owners: set = field(default_factory=set)
     owner_names: Dict[str, str] = field(default_factory=dict)
+    _label_cache: Dict[str, str] = field(default_factory=dict, repr=False)
+    _label_cache_size: int = field(default=-1, repr=False)
     directory_shared_dashboards: set = field(default_factory=set)
     locally_shared_dashboards: set = field(default_factory=set)
     ownership_source_known: bool = False
@@ -258,6 +262,86 @@ class Graph:
         return [n for n in self.ambiguous + self.unhandled if n.source_key == key]
 
 
+
+
+def object_label(graph: Graph, node: Node) -> str:
+    """One consistent human label, adding details only to distinguish peers."""
+    if graph._label_cache_size != len(graph.nodes):
+        groups = {}
+        for item in graph.nodes.values():
+            groups.setdefault((item.kind, item.name), []).append(item)
+        labels = {}
+        for peers in groups.values():
+            if len(peers) == 1:
+                labels[peers[0].key] = peers[0].name
+                continue
+            details = {item.key: ([f"owner {graph.owner_names.get(item.owner, 'Unknown owner')}"]
+                                  if item.owner else []) for item in peers}
+            def signature(item):
+                return tuple(details[item.key])
+            for field_name in ('modified', 'description'):
+                partitions = {}
+                for item in peers:
+                    partitions.setdefault(signature(item), []).append(item)
+                for same in partitions.values():
+                    values = {getattr(item, field_name) for item in same}
+                    if len(same) > 1 and len(values) > 1 and any(values):
+                        for item in same:
+                            details[item.key].append(getattr(item, field_name) or 'not recorded')
+            partitions = {}
+            for item in peers:
+                partitions.setdefault(signature(item), []).append(item)
+            for same in partitions.values():
+                if len(same) < 2:
+                    continue
+                ids = [item.uuid or item.ident for item in same]
+                width = 4
+                while width < max(map(len, ids), default=0) and len({v[-width:] for v in ids}) < len(ids):
+                    width += 1
+                suffixes = [v[-width:] for v in ids]
+                for index, (item, suffix) in enumerate(zip(same, suffixes), 1):
+                    detail = ('id …' + suffix) if suffix else 'copy ' + str(index)
+                    if suffixes.count(suffix) > 1:
+                        detail += f', copy {index}'
+                    details[item.key].append(detail)
+            for item in peers:
+                labels[item.key] = (item.name + ' (' + ' · '.join(details[item.key]) + ')'
+                                    if details[item.key] else item.name)
+        graph._label_cache, graph._label_cache_size = labels, len(graph.nodes)
+    return graph._label_cache.get(node.key, node.name)
+
+
+def _display_metadata(raw: bytes):
+    """Read optional human descriptions and modification dates from a document."""
+    doc = _json(raw)
+    if isinstance(doc, dict):
+        description = doc.get('description') or doc.get('Description') or ''
+        modified = next((doc.get(key) for key in ('lastModified', 'lastModifiedTime',
+                         'modifiedTime', 'lastUpdated') if doc.get(key)), '')
+    else:
+        root = _xml(raw)
+        description = (root.findtext('Description') or '') if root is not None else ''
+        modified = ((root.get('lastModified') or root.findtext('LastModified') or '')
+                    if root is not None else '')
+    description = ' '.join(description.split()) if isinstance(description, str) else ''
+    # Render timestamps in the user's local time when the export provides a
+    # timezone. Unknown or unavailable timezone data falls back to other labels.
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        if isinstance(modified, (int, float)) and not isinstance(modified, bool):
+            seconds = modified / 1000 if modified > 100000000000 else modified
+            modified = datetime.fromtimestamp(seconds, ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M %Z')
+        elif isinstance(modified, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', modified.strip()):
+            modified = modified.strip()
+        elif isinstance(modified, str) and modified.strip():
+            date = datetime.fromisoformat(modified.strip().replace('Z', '+00:00'))
+            modified = date.astimezone(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M %Z') if date.tzinfo else ''
+        else:
+            modified = ''
+    except (ImportError, KeyError, ValueError, OverflowError, OSError):
+        modified = ''
+    return description, modified
 
 def dashboard_supermetrics(graph: Graph, key: str) -> List[Node]:
     """Super metrics reachable from one dashboard, including through views."""
@@ -536,23 +620,17 @@ def is_directory_group(group) -> bool:
 
 
 def same_id_dashboard_lines(graph: Graph, keys: Sequence[str], keep_ownership: bool = False) -> List[str]:
-    """One line per dashboard ID that the selection carries under more than
-    one owner. Merging the owners would leave two documents with one ID, so
-    nothing is reported when the owners are kept apart."""
+    """Name copies that cannot be merged into the same target owner."""
     if keep_ownership:
         return []
-    owners: Dict[str, List[str]] = {}
-    names: Dict[str, str] = {}
+    copies = {}
     for key in keys:
         node = graph.nodes.get(key)
-        if node is None or node.kind != "dashboard" or not node.owner:
-            continue
-        names.setdefault(node.ident, node.name)
-        if node.owner not in owners.setdefault(node.ident, []):
-            owners[node.ident].append(node.owner)
-    return [f"Dashboard {names[ident]} exists under owners {', '.join(graph.owner_names.get(owner, 'Unknown owner') for owner in found)}; "
-            "choose one copy to carry"
-            for ident, found in owners.items() if len(found) > 1]
+        if node and node.kind == 'dashboard' and node.owner:
+            copies.setdefault(node.ident, []).append(node)
+    return ['Dashboard copies ' + ', '.join(object_label(graph, n) for n in nodes)
+            + ' have the same ID; choose one copy to carry'
+            for nodes in copies.values() if len({n.owner for n in nodes}) > 1]
 
 
 def dashboard_binding_lines(graph: Graph, key: str) -> List[str]:
@@ -562,7 +640,10 @@ def dashboard_binding_lines(graph: Graph, key: str) -> List[str]:
         return []
     adapters = set()
     lines = []
-    group_names = {n.name for n in graph.nodes.values() if n.kind == 'customgroup'}
+    groups = {}
+    for node in graph.nodes.values():
+        if node.kind == 'customgroup':
+            groups.setdefault(node.name, []).append(node)
     for row in rows:
         binding = row['entry']
         widget = row['widget']
@@ -579,8 +660,11 @@ def dashboard_binding_lines(graph: Graph, key: str) -> List[str]:
         details = ' / '.join(part for part in (adapter, kind, name) if part) or 'an unnamed resource'
         if row['family'] != 'resource':
             lines.append(f"Widget {widget}: requires {details} on the target; the dashboard may stay loading if it is absent.")
-        elif adapter == 'Container' and name in group_names:
-            lines.append(f"Widget {widget}: custom group {name} is included; check its target policy and adapter.")
+        elif adapter == 'Container' and name in groups:
+            labels = ', '.join(object_label(graph, node) for node in groups[name])
+            noun = 'custom group' if len(groups[name]) == 1 else 'custom groups'
+            verb = 'is' if len(groups[name]) == 1 else 'are'
+            lines.append(f"Widget {widget}: {noun} {labels} {verb} included; check the target policy and adapter.")
         elif name.lower().endswith(' world') or kind.lower().endswith('world'):
             lines.append(f"Widget {widget}: {details} looks like a world object (inferred); its adapter and at least one collecting instance are needed on the target.")
         else:
@@ -968,9 +1052,10 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                   if isinstance(container, _containers.DashboardsContainer) else None)
         resource_entries = tables['resource'] if tables is not None else None
         for entry in container.entries():
+            description, modified = _display_metadata(entry.raw)
             node = Node(kind=entry.kind, ident=entry.ident, name=entry.name,
                         uuid=entry.uuid, member=container.member, index=entry.index,
-                        owner=entry.owner)
+                        owner=entry.owner, description=description, modified=modified)
             # Identifiers reach the log through here, where the tool knows they
             # came out of a content document rather than out of a user record.
             runlog.content_id(node.ident)
@@ -1327,7 +1412,7 @@ def missing_reason(gap: MissingEdge) -> str:
 def human_missing_line(graph: Graph, gap: MissingEdge) -> str:
     """Describe an unresolved reference without internal field names."""
     node = graph.nodes.get(gap.source_key)
-    source = node.name if node else 'Selected content'
+    source = object_label(graph, node) if node else 'Selected content'
     via = gap.via
     if via.startswith('widget ') and via.endswith(' viewDefinitionId'):
         widget = via[len('widget '):-len(' viewDefinitionId')]

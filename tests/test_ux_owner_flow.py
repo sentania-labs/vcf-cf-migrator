@@ -189,3 +189,121 @@ def test_cli_collision_identifies_owners_without_raw_ids(tmp_path, capsys):
     assert 'choose one copy' in output
     assert 'owner-secret-1' not in output and 'owner-secret-2' not in output
     assert not out.exists()
+
+
+def test_same_named_owners_are_distinct_in_keep_source_warnings_and_report(tmp_path, config_dir):
+    state = PageState(str(make_source(tmp_path, same=True)))
+    bridge = Bridge(state)
+    choose(bridge, 'dashboard:same@owner-secret-1')
+    choose(bridge, 'dashboard:same@owner-secret-2')
+    page = visible(bridge.act('/owner', {'owner_mode': 'source'})['html'])
+    alice, bob = 'Overview (owner Alice)', 'Overview (owner Bob)'
+    assert alice in page and bob in page
+    private = page.split('No sharing will remain for:', 1)[1].split('These dashboards will be private', 1)[0]
+    assert bob in private and alice not in private
+    assert 'will be skipped unless the same users and directories exist on the target: ' + alice + ', ' + bob in page
+    out = tmp_path / 'both-owners.zip'
+    page = visible(bridge.act('/build', {'out': str(out)})['html'])
+    assert out.exists()
+    assert 'Source owners and directory sharing are kept for: ' + alice + ', ' + bob in page
+    assert 'No sharing remains for: ' + bob in page
+    state.log.close()
+
+
+def test_duplicate_view_descriptions_and_unique_short_ids_in_real_ui(tmp_path, config_dir):
+    ids = ['11111111-1111-4111-8111-11111111abcd', '22222222-2222-4222-8222-22222222abcd',
+           '33333333-3333-4333-8333-33333331abcd', '44444444-4444-4444-8444-44444442abcd']
+    xml = ('<Views>'
+           f'<ViewDef id="{ids[0]}"><Title>CPU Overview</Title><Description>Production servers</Description></ViewDef>'
+           f'<ViewDef id="{ids[1]}"><Title>CPU Overview</Title><Description>Development servers</Description></ViewDef>'
+           f'<ViewDef id="{ids[2]}"><Title>Capacity</Title><Description>Same description</Description></ViewDef>'
+           f'<ViewDef id="{ids[3]}"><Title>Capacity</Title><Description>Same description</Description></ViewDef>'
+           '</Views>')
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, 'w') as z:
+        z.writestr('content.xml', xml)
+    source = tmp_path / 'views.zip'
+    with zipfile.ZipFile(source, 'w') as z:
+        z.writestr('configuration.json', json.dumps({'type': 'ALL', 'views': 4}))
+        z.writestr('views.zip', inner.getvalue())
+    state = PageState(str(source))
+    bridge = Bridge(state)
+    inventory = visible(state.render())
+    production = 'CPU Overview (Production servers)'
+    development = 'CPU Overview (Development servers)'
+    assert production in inventory and development in inventory
+    assert 'CPU Overview (id' not in inventory
+    assert 'Capacity (id …1abcd)' in inventory and 'Capacity (id …2abcd)' in inventory
+    for ident in ids:
+        choose(bridge, 'view:' + ident)
+    page = visible(bridge.act('/tab', {'tab': 'review'})['html'])
+    assert production in page and development in page
+    out = tmp_path / 'views-out.zip'
+    page = visible(bridge.act('/build', {'out': str(out)})['html'])
+    assert out.exists() and 'Capacity (id …1abcd)' in page and 'Capacity (id …2abcd)' in page
+    assert 'For support, Capacity (id …1abcd) has full ID:' in page
+    assert ids[2] in page and ids[3] in page
+    state.log.close()
+
+
+def test_report_lists_kept_and_pruned_localization_without_marker_pattern(tmp_path, config_dir):
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, 'w') as z:
+        z.writestr('dashboard/dashboard.json', json.dumps({'entries': {
+                    'resource': [{'internalId': 'resource:id:0_::_', 'name': 'Old cluster', 'adapterKindKey': 'VMWARE'}],
+                    'resourceKind': [{'internalId': 'resourceKind:id:0_::_', 'adapterKindKey': 'Example', 'resourceKindKey': 'Old kind'}]},
+                    'dashboards': [{'id': 'keep-dashboard', 'name': 'Keep', 'widgets': []},
+                                   {'id': 'other-dashboard', 'name': 'Other', 'widgets': []}]}))
+        z.writestr('dashboard/resources/resources.properties',
+                   'keep-dashboard.title=Keep\nother-dashboard.title=Other\nshared=Shared\nescaped\\ name=Value\ncontinued\\\n  key=Value\n!comment\\\ncomment-next=Value\n')
+    source = tmp_path / 'without-marker.zip'
+    with zipfile.ZipFile(source, 'w') as z:
+        z.writestr('configuration.json', json.dumps({'type': 'ALL', 'dashboards': 2}))
+        z.writestr('dash-export.zip', nested.getvalue())
+        z.writestr('customgroups.json', json.dumps({'customGroups': [
+            {'name': 'Keep group', 'resourceKind': 'Keep type'},
+            {'name': 'Other group', 'resourceKind': 'Other type'}],
+            'customGroupTypes': [{'resourceKind': 'Keep type'}, {'resourceKind': 'Other type'}]}))
+    state = PageState(str(source))
+    bridge = Bridge(state)
+    choose(bridge, 'dashboard:keep-dashboard')
+    choose(bridge, 'customgroup:Keep group')
+    bridge.act('/tab', {'tab': 'review'})
+    out = tmp_path / 'subset.zip'
+    html = bridge.act('/build', {'out': str(out)})['html']
+    page = visible(html)
+    assert out.exists() and '<details open><summary>Bundle report' in html
+    assert 'Localization entries kept because they could not be matched: shared' in page
+    assert 'escaped\\ name' in page and 'continuedkey' in page and 'comment-next' in page
+    assert 'localization keys for unselected objects: other-dashboard.title' in page
+    assert 'unused custom group types: Other type' in page
+    assert 'unused object entries: VMWARE / Old cluster' in page
+    assert 'unused resource kind entries: Example / Old kind' in page
+    assert 'source export is missing its format marker' in page
+    assert '<digits>' not in page and 'L.v1' not in page
+    assert 'dashboard/resources/resources.properties' not in page
+    state.log.close()
+
+
+def test_duplicate_labels_use_available_modification_dates_in_review(tmp_path, config_dir):
+    first = '11111111-1111-4111-8111-111111111111'
+    second = '22222222-2222-4222-8222-222222222222'
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, 'w') as z:
+        z.writestr('content.xml', '<Views>'
+                   f'<ViewDef id="{first}" lastModified="2026-01-15T12:00:00Z"><Title>CPU</Title></ViewDef>'
+                   f'<ViewDef id="{second}" lastModified="2026-01-15T18:00:00Z"><Title>CPU</Title></ViewDef>'
+                   '</Views>')
+    source = tmp_path / 'dates.zip'
+    with zipfile.ZipFile(source, 'w') as z:
+        z.writestr('configuration.json', json.dumps({'type': 'ALL', 'views': 2}))
+        z.writestr('views.zip', inner.getvalue())
+    state = PageState(str(source))
+    bridge = Bridge(state)
+    choose(bridge, 'view:' + first)
+    choose(bridge, 'view:' + second)
+    page = visible(bridge.act('/tab', {'tab': 'review'})['html'])
+    assert 'CPU (2026-01-15 06:00 CST)' in page
+    assert 'CPU (2026-01-15 12:00 CST)' in page
+    assert 'CPU (id …' not in page
+    state.log.close()

@@ -40,6 +40,7 @@ from vcfcf_migrator.graph import (
     is_missing_dependency,
     missing_line,
     human_missing_line,
+    object_label,
     missing_reason,
     dashboard_supermetrics,
     dashboard_binding_lines,
@@ -331,7 +332,7 @@ def ownership_messages(graph: Graph, selection: Selection, target_user='admin', 
                   if graph.nodes[k].kind == 'dashboard' and graph.nodes[k].owner]
     if not dashboards:
         return []
-    names = ', '.join(dict.fromkeys(n.name for n in dashboards))
+    names = ', '.join(dict.fromkeys(object_label(graph, n) for n in dashboards))
     if keep_ownership:
         owners = ', '.join(dict.fromkeys(graph.owner_names.get(n.owner, 'Unknown owner') for n in dashboards))
         lines = [f'The bundle will keep source owners: {owners}.',
@@ -341,16 +342,16 @@ def ownership_messages(graph: Graph, selection: Selection, target_user='admin', 
         lines = [f'Dashboard ownership will map to {label} on the target.']
         if target_user != 'admin':
             lines.append(f'These dashboards will be skipped unless the exact user {target_user} exists on the target: {names}.')
-    directory = [n.name for n in dashboards if n.owner in graph.directory_owners]
+    directory = [object_label(graph, n) for n in dashboards if n.owner in graph.directory_owners]
     if directory:
         lines.append('Directory-owned dashboards: ' + ', '.join(dict.fromkeys(directory)) + '.')
     elif not graph.ownership_source_known:
         lines.append('Ownership source could not be determined from the export.')
-    shared = [n.name for n in dashboards if (n.owner, n.ident) in graph.directory_shared_dashboards]
+    shared = [object_label(graph, n) for n in dashboards if (n.owner, n.ident) in graph.directory_shared_dashboards]
     if shared and not keep_ownership:
         lines.append('Directory sharing will be removed for: ' + ', '.join(dict.fromkeys(shared))
                      + '. Set sharing on the target.')
-    absent = [n.name for n in dashboards
+    absent = [object_label(graph, n) for n in dashboards
               if (n.owner, n.ident) not in graph.locally_shared_dashboards
               and not (keep_ownership and (n.owner, n.ident) in graph.directory_shared_dashboards)]
     if absent:
@@ -365,7 +366,7 @@ def human_warnings(graph: Graph, notes, kind: str):
     for text in notes:
         note = next((n for n in available if n.text == text), None)
         node = graph.nodes.get(note.source_key) if note else None
-        name = node.name if node else 'Selected content'
+        name = object_label(graph, node) if node else 'Selected content'
         if kind == 'ambiguous':
             yield f'{name}: several items share a referenced name; all are included.'
         else:
@@ -384,20 +385,20 @@ def render(graph: Graph, selection: Selection, target_user='admin', keep_ownersh
         count = len(dashboard_supermetrics(graph, node.key))
         if count:
             noun = 'super metric' if count == 1 else 'super metrics'
-            lines.append(f"{node.name} uses {count} {noun} that must be enabled in a policy on the target.")
+            lines.append(f"{object_label(graph, node)} uses {count} {noun} that must be enabled in a policy on the target.")
     for node in dashboards:
         binding_lines = dashboard_binding_lines(graph, node.key)
         if binding_lines:
-            lines.append(f"Target requirements for dashboard {node.name}:")
+            lines.append(f"Target requirements for dashboard {object_label(graph, node)}:")
             lines.extend('  ' + line for line in binding_lines)
-    selected_metrics = [graph.nodes[k].name for k in selection.keys if graph.nodes[k].kind == 'supermetric']
+    selected_metrics = [object_label(graph, graph.nodes[k]) for k in selection.keys if graph.nodes[k].kind == 'supermetric']
     if selected_metrics:
         lines.append('Enable these super metrics in a policy on the target: ' + ', '.join(selected_metrics)
                      + '. Source policy information may be incomplete; verify it on the source.')
     if selection.added:
         lines.append(f"Automatically included: {len(selection.added)}")
         for add in selection.added:
-            lines.append(f"  {graph.nodes[add.key].name} was included automatically")
+            lines.append(f"  {object_label(graph, graph.nodes[add.key])} was included automatically")
     if selection.ambiguous:
         lines.append(f"references by name that several objects answer to: "
                      f"{len(selection.ambiguous)}")

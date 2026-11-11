@@ -154,6 +154,27 @@ def _localization_keys(raw, kind):
             if k.lower() == 'localizationkey' and v}
 
 
+
+def _continued_property(line):
+    body = line.rstrip('\r\n')
+    return (len(body) - len(body.rstrip('\\'))) % 2 == 1
+
+
+def _property_key(record):
+    """Return a property's key spelling without including its value."""
+    logical = ''
+    for index, line in enumerate(record.splitlines()):
+        part = line.lstrip() if index else line.lstrip(' \t\f')
+        if _continued_property(part):
+            part = part[:-1]
+        logical += part
+    escaped = False
+    for index, char in enumerate(logical):
+        if not escaped and (char in '=:' or char.isspace()):
+            return logical[:index]
+        escaped = char == '\\' and not escaped
+    return logical
+
 def _prune_properties(data, entries, selected, kind, member, notes):
     """Keep selected and unattributed properties; drop only known other keys."""
     selected = set(selected)
@@ -161,19 +182,22 @@ def _prune_properties(data, entries, selected, kind, member, notes):
     lines = data.decode('latin-1').splitlines(keepends=True)
     records = []
     for line in lines:
-        if records and records[-1].rstrip('\r\n').endswith('\\'):
+        if (records and not records[-1].lstrip().startswith(('#', '!'))
+                and _continued_property(records[-1])):
             records[-1] += line
         else:
             records.append(line)
     kept = []
-    dropped = 0
+    dropped = []
     unknown = []
     for record in records:
         stripped = record.lstrip()
-        if not stripped.strip() or stripped.startswith(('#', '!')) or '\\' in record:
+        if not stripped.strip() or stripped.startswith(('#', '!')):
             kept.append(record)
-            if stripped.strip() and not stripped.startswith(('#', '!')):
-                unknown.append('(escaped or continued key)')
+            continue
+        if '\\' in record:
+            kept.append(record)
+            unknown.append(_property_key(record) or '(unnamed entry)')
             continue
         key = re.split(r'\s|[=:]', stripped, maxsplit=1)[0]
         matches = set()
@@ -184,13 +208,14 @@ def _prune_properties(data, entries, selected, kind, member, notes):
                     r'(?<![A-Za-z0-9])' + re.escape(ident) + r'(?![A-Za-z0-9])', key)):
                 matches.add(i)
         if matches and matches.isdisjoint(selected):
-            dropped += 1
+            dropped.append(key)
         else:
             kept.append(record)
             if not matches:
                 unknown.append(key)
     if dropped:
-        notes.append(f'{member}: pruned {dropped} localization keys for unselected objects')
+        notes.append(f'{member}: pruned {len(dropped)} localization keys for unselected objects: '
+                     + ', '.join(dict.fromkeys(dropped)))
     if unknown:
         notes.append(f'{member}: kept unattributed localization keys: ' + ', '.join(dict.fromkeys(unknown)))
     return ''.join(kept).encode('latin-1')
@@ -416,12 +441,16 @@ class CustomGroupsContainer(JsonContainer):
             elif value.key == 'customGroupTypes' and not unknown_type:
                 items = rawdoc.json_items(self.text, value.start)
                 kept = []
+                removed = []
                 for item in items:
                     doc = json.loads(item.raw(self.text))
                     if not isinstance(doc, dict) or not doc.get('resourceKind') or doc['resourceKind'] in types:
                         kept.append(item.raw(self.text))
-                if len(kept) != len(items):
-                    self.notes.append(f'{self.member}: pruned {len(items) - len(kept)} unused custom group types')
+                    else:
+                        removed.append(str(doc['resourceKind']))
+                if removed:
+                    self.notes.append(f'{self.member}: pruned {len(removed)} unused custom group types: '
+                                      + ', '.join(removed))
                 raw = rawdoc.build_array(kept)
             elif value.key == 'customGroupTypes' and unknown_type:
                 self.notes.append(f'{self.member}: kept custom group types because a selected group has no type')
@@ -545,7 +574,11 @@ class DashboardsContainer(JsonContainer):
                                 or not isinstance(item.get('internalId'), str)
                                 or item['internalId'] in tokens[kind]]
                         if len(kept) != len(table):
-                            self.notes.append(f'{self.member}: pruned {len(table) - len(kept)} unused {kind} entries')
+                            removed = [item for item in table if item not in kept]
+                            names = [' / '.join(str(item.get(k)) for k in ('adapterKindKey', 'resourceKindKey', 'name')
+                                                if item.get(k)) or 'unnamed item' for item in removed]
+                            self.notes.append(f'{self.member}: pruned {len(removed)} unused {kind} entries: '
+                                              + ', '.join(names))
                         entries[kind] = kept
                     raw = json.dumps(entries, ensure_ascii=False)
             pairs.append((value.key or '', raw))

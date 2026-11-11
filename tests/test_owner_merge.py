@@ -154,7 +154,7 @@ def test_same_dashboard_id_under_two_owners_is_refused_and_nothing_is_written(tm
     g = graph.build_graph(members)
     picked = selection.select_all(g)
     out = tmp_path / 'out.zip'
-    with pytest.raises(ValueError, match='exists under owners Owner 1, Owner 2; choose one copy'):
+    with pytest.raises(ValueError, match='same ID; choose one copy'):
         bundle.build_bundle(members, list(members), g, picked, out)
     assert not out.exists()
     one = selection.close(g, ['dashboard:same@a'])

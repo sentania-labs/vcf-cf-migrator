@@ -8,7 +8,7 @@ from vcfcf_migrator import preview
 from vcfcf_migrator import wording
 from vcfcf_migrator.releases import RELEASE_PAGE
 from vcfcf_migrator.cli import version_lines
-from vcfcf_migrator.graph import KIND_ORDER, same_id_dashboard_lines
+from vcfcf_migrator.graph import KIND_ORDER, same_id_dashboard_lines, object_label
 from vcfcf_migrator.uipage import e, _button, anchor
 
 KIND_LABELS = {
@@ -105,34 +105,15 @@ def action(path, label, fields=None, primary=False, pressed=None):
     return f"<form method='post' action='{path}'>{hidden}{button}</form>"
 
 
-def _name_count(state, node):
-    counts = getattr(state, 'name_counts', None)
-    if counts is not None:
-        return counts.get((node.kind, node.name), 0)
-    return sum(1 for item in state.graph.nodes.values()
-               if item.kind == node.kind and item.name == node.name) if state.graph else 0
-
-
 def identity(state, node):
     detail = node.kind
     if node.kind == 'dashboard' and node.stock_or_derived:
         detail += ' · stock or derived from stock'
-    if _name_count(state, node) > 1:
-        owner = state.graph.owner_names.get(node.owner, 'Unknown owner') if node.owner else ''
-        if owner:
-            detail += " · owner " + owner
-        twins = [n for n in state.graph.nodes.values()
-                 if n.kind == node.kind and n.name == node.name and n.owner == node.owner]
-        short = (node.uuid or node.ident)[-4:]
-        if len(twins) > 1 and short:
-            detail += " · id …" + short
     return detail
 
 
 def display_name(state, node):
-    if _name_count(state, node) > 1:
-        return node.name + " (" + identity(state, node) + ")"
-    return node.name
+    return object_label(state.graph, node)
 
 
 def header(state):
@@ -256,13 +237,13 @@ def inventory(state):
                    f"<input type='hidden' name='key' value='{e(node.key)}'>"
                    f"<input type='hidden' name='on' value='{'0' if checked else '1'}'>"
                    f"<input type='checkbox' id='tick-{e(anchor(node.key))}' class='tick' name='tick'{' checked' if checked else ''} "
-                   f"aria-label='{e(('Automatically required: ' if required else 'deselect ' if checked else 'select ') + node.name)}' "
+                   f"aria-label='{e(('Automatically required: ' if required else 'deselect ' if checked else 'select ') + display_name(state, node))}' "
                    + (f"disabled aria-describedby='required-{e(anchor(node.key))}' " if required else '') +
                    "onchange='this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()'>"
                    f"<noscript>{_button('Remove' if checked else 'Add')}</noscript></form>"
                    "<form method='post' action='/preview'>"
                    f"<input type='hidden' name='key' value='{e(node.key)}'>"
-                   f"<button class='name-button' id='inspect-{e(anchor(node.key))}'>{e(node.name)}</button>"
+                   f"<button class='name-button' id='inspect-{e(anchor(node.key))}'>{e(display_name(state, node))}</button>"
                    f"<span class='kindtag'>{e(detail)}</span></form>"
                    f"<span class='status{' warn' if gaps else ''}'>{e(status)}</span>"
                    + (f"<div class='required-help' id='required-{e(anchor(node.key))}'>Required by your selections: "
@@ -278,7 +259,7 @@ def inspector(state):
     node = state.graph.nodes.get(state.preview_key)
     if node is None:
         return ''.join(out) + '<p>Select an object name to inspect its preview, dependencies and details.</p></div></aside>'
-    out.append(f'<h3>{e(node.name)}</h3>')
+    out.append(f'<h3>{e(display_name(state, node))}</h3>')
     out.append("<nav class='toolbar' aria-label='Object inspector'>")
     for key, label in [('preview', 'Preview'), ('dependencies', 'Dependencies'), ('details', 'Details')]:
         out.append(action('/inspector-tab', label, {'panel': key}, state.inspector_tab == key, pressed=state.inspector_tab == key))
@@ -384,9 +365,9 @@ def review(state):
             continue
         requirements = dashboard_binding_lines(state.graph, key)
         if requirements:
-            out.append('<h3>Target requirements for ' + e(node.name) + '</h3><ul>'
+            out.append('<h3>Target requirements for ' + e(display_name(state, node)) + '</h3><ul>'
                        + ''.join('<li>' + e(line) + '</li>' for line in requirements) + '</ul>')
-    metrics = [state.graph.nodes[k].name for k in selection.keys if state.graph.nodes[k].kind == 'supermetric']
+    metrics = [display_name(state, state.graph.nodes[k]) for k in selection.keys if state.graph.nodes[k].kind == 'supermetric']
     if metrics:
         out.append("<p class='note'>Enable these super metrics in a policy on the target: "
                    + e(', '.join(metrics)) + ". Source policy information may be incomplete; verify it on the source.</p>")
@@ -428,7 +409,7 @@ def review(state):
         noun = 'super metric' if metric_count == 1 else 'super metrics'
         metric_note = (f"<small>Uses {metric_count} {noun} that must be enabled in a policy on the target.</small>"
                        if metric_count else '')
-        out.append(f"<div class='review-row'><span>{e(node.name)} <small>{e(identity(state, node))}</small>{metric_note}</span>"
+        out.append(f"<div class='review-row'><span>{e(display_name(state, node))} <small>{e(identity(state, node))}</small>{metric_note}</span>"
                    + action('/remove-pick', 'Remove from selection', {'key': key}) + '</div>')
     out.append(f'<details><summary>{len(selection.added)} automatically required objects</summary><ul>')
     for addition in selection.added:
@@ -445,7 +426,7 @@ def review(state):
         if state.show_in_folder:
             out.append(action('/show-in-folder', 'Show in folder'))
     if state.build_report:
-        out.append("<h2>Last build</h2><details><summary>Bundle report</summary>"
+        out.append("<h2>Last build</h2><details open><summary>Bundle report</summary>"
                    f'<pre>{e(state.build_report)}</pre></details>')
     return ''.join(out) + '</div></main>'
 

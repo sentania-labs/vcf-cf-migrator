@@ -30,7 +30,7 @@ from vcfcf_migrator import rawdoc
 from vcfcf_migrator import runlog
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator.containers import Container, zip_directory_entry, zip_entry
-from vcfcf_migrator.graph import (Graph, dashboard_binding_lines, is_directory_group,
+from vcfcf_migrator.graph import (Graph, dashboard_binding_lines, is_directory_group, object_label,
                                   same_id_dashboard_lines)
 from vcfcf_migrator.selection import Selection, refuse_missing_dependencies, content_kind_label
 
@@ -89,13 +89,13 @@ def post_import_checklist(graph, selection):
                                'instance which policies enable these super metrics')
             else:
                 policy_text = 'source policy data unavailable'
-        lines.extend(['', f'Super metric: {node.name}',
+        lines.extend(['', f'Super metric: {object_label(graph, node)}',
                       '  Resource kinds: ' + (', '.join(kinds) if kinds else 'none declared'),
                       '  Enabled in source policies: ' + policy_text,
                       '  Enable it in a policy on the target.'])
     for node in groups:
         policies = [r.ident for r in node.refs if r.kind == 'policy']
-        lines.extend(['', f'Custom group: {node.name}',
+        lines.extend(['', f'Custom group: {object_label(graph, node)}',
                       '  Source policy: ' + (', '.join(graph.policy_names.get(p, f'Unknown policy (ID: {p})') for p in policies)
                                              if policies else 'not specified'),
                       '  Check its policy assignment on the target.'])
@@ -229,7 +229,7 @@ def _merge_owner_archives(archives, sharings):
             rewritten = rewrite(original)
             dashboards.append(rewritten)
             if rewritten != original:
-                changed.append(entry.name)
+                changed.append((entry.ident, container.owner))
         sharing = sharings.get(container.owner, b'[]').decode('utf-8')
         merged_sharings.extend(json.loads(rewrite(sharing)))
         for name, data in container.extra.items():
@@ -364,10 +364,14 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     result = BuildResult(path=str(out_path))
     for key in selection.keys:
         node = graph.nodes.get(key)
+        if node is not None:
+            label = object_label(graph, node)
+            if 'id …' in label and (node.uuid or node.ident):
+                result.notes.append(f'For support, {label} has full ID: {node.uuid or node.ident}')
         if node is not None and node.kind == 'dashboard':
             lines = dashboard_binding_lines(graph, key)
             if lines:
-                result.notes.append('Target requirements for dashboard ' + node.name + ':\n  '
+                result.notes.append('Target requirements for dashboard ' + object_label(graph, node) + ':\n  '
                                     + '\n  '.join(lines))
     picked = _picked_indexes(graph.containers, selection.keys)
     # A container can carry duplicate dashboard IDs; the graph represents
@@ -418,7 +422,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     else:
         runlog.warn("marker.absent",
                     reason=runlog.prose("the source carried no <digits>L.v1 marker, so the bundle has none"))
-        result.notes.append("the source carried no <digits>L.v1 marker, so the bundle has none")
+        result.notes.append("The source export is missing its format marker. The target may reject this bundle; create a new export before importing.")
 
     owners = [o for o in by_owner if o]
     # The keys go through the layer like everything else. This line used to
@@ -430,7 +434,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                          "the same way"))
     if owners:
         dashboard_count = sum(by_owner.values())
-        names = ', '.join(dict.fromkeys(graph.nodes[k].name for k in selection.keys
+        names = ', '.join(dict.fromkeys(object_label(graph, graph.nodes[k]) for k in selection.keys
                                         if graph.nodes[k].kind == 'dashboard' and graph.nodes[k].owner))
         if keep_ownership:
             try:
@@ -480,7 +484,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                           reason=runlog.prose("narrowed to the dashboards the bundle carries"))
             continue
         written[member] = b"[]"
-        affected_names = [graph.nodes[k].name for k in selection.keys
+        affected_names = [object_label(graph, graph.nodes[k]) for k in selection.keys
                           if graph.nodes[k].kind == 'dashboard' and graph.nodes[k].owner == owner]
         result.notes.append('No sharing remains for: ' + ', '.join(affected_names)
                             + '. These dashboards will be private; set sharing on the target.')
@@ -508,9 +512,12 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         written[f"dashboardsharings/{target_owner}"] = sharing
         by_owner = {target_owner: sum(by_owner.values())}
         if changed:
-            result.notes.append("Resource references were adjusted when combining dashboards: " + ", ".join(changed))
+            changed_names = [object_label(graph, graph.nodes[f'dashboard:{ident}@{owner}'])
+                             for ident, owner in changed if f'dashboard:{ident}@{owner}' in graph.nodes]
+            result.notes.append("Resource references were adjusted when combining dashboards: "
+                                + ", ".join(changed_names))
     affected = list(dict.fromkeys(
-        graph.nodes[k].name for k in selection.keys
+        object_label(graph, graph.nodes[k]) for k in selection.keys
         if (graph.nodes[k].owner, graph.nodes[k].ident) in graph.directory_shared_dashboards))
     if affected and not keep_ownership:
         result.notes.append("Directory sharing removed for: " + ", ".join(affected)
@@ -645,7 +652,7 @@ def render(result: BuildResult) -> str:
             note = note.split(': pruned ', 1)[1]
             note = 'Removed ' + note.replace('resourceKind entries', 'resource kind entries').replace('resource entries', 'object entries')
         elif ': kept unattributed localization keys:' in note:
-            note = 'Some localization entries could not be matched and were kept.'
+            note = 'Localization entries kept because they could not be matched: ' + note.split(': kept unattributed localization keys:', 1)[1].strip()
         elif note.startswith('members this tool does not understand'):
             note = 'Some unsupported content was not included.'
         lines.append(note)
