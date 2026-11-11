@@ -325,14 +325,21 @@ def _display_metadata(raw: bytes):
                     if root is not None else '')
     description = ' '.join(description.split()) if isinstance(description, str) else ''
     from datetime import datetime, timezone
+    import os
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
     def local_label(moment):
         try:
-            local = moment.astimezone()
+            zone_name = os.environ.get('TZ')
+            if zone_name is not None:
+                zone = ZoneInfo(zone_name.lstrip(':') or 'UTC')
+                local = moment.astimezone(zone)
+            else:
+                local = moment.astimezone()
             label = local.strftime('%Y-%m-%d %H:%M %Z').strip()
             if local.tzname():
                 return label
-        except (ValueError, OverflowError, OSError):
+        except (ValueError, OverflowError, OSError, ZoneInfoNotFoundError):
             pass
         return moment.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
 

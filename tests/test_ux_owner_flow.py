@@ -241,8 +241,12 @@ def test_duplicate_view_descriptions_and_unique_short_ids_in_real_ui(tmp_path, c
     out = tmp_path / 'views-out.zip'
     page = visible(bridge.act('/build', {'out': str(out)})['html'])
     assert out.exists() and 'Capacity (id …1abcd)' in page and 'Capacity (id …2abcd)' in page
-    assert 'For support, Capacity (id …1abcd) has full ID:' in page
-    assert ids[2] in page and ids[3] in page
+    assert ids[2] not in page and ids[3] not in page
+    saved = (tmp_path / 'views-out-build-report.txt').read_text(encoding='utf-8')
+    assert 'Build report saved to:' in page
+    assert state.build_report in saved
+    assert 'Support details\n' in saved
+    assert ids[2] in saved and ids[3] in saved
     state.log.close()
 
 
@@ -282,6 +286,10 @@ def test_report_lists_kept_and_pruned_localization_without_marker_pattern(tmp_pa
     assert 'source export is missing its format marker' in page
     assert '<digits>' not in page and 'L.v1' not in page
     assert 'dashboard/resources/resources.properties' not in page
+    saved = (tmp_path / 'subset-build-report.txt').read_text(encoding='utf-8')
+    assert state.build_report == saved
+    assert 'unused custom group types: Other type' in saved
+    assert 'Localization entries kept because they could not be matched: shared' in saved
     state.log.close()
 
 
@@ -296,7 +304,18 @@ def test_duplicate_labels_use_available_modification_dates_in_review(tmp_path, c
         time.tzset()
 
 
-def _check_dates_in_review(tmp_path):
+def test_duplicate_labels_fall_back_to_utc_for_unknown_timezone(tmp_path, config_dir, monkeypatch):
+    import time
+    monkeypatch.setenv('TZ', 'Invalid/Unknown')
+    time.tzset()
+    try:
+        _check_dates_in_review(tmp_path, ('12:00 UTC', '18:00 UTC'))
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def _check_dates_in_review(tmp_path, times=('06:00 CST', '12:00 CST')):
     first = '11111111-1111-4111-8111-111111111111'
     second = '22222222-2222-4222-8222-222222222222'
     inner = io.BytesIO()
@@ -314,7 +333,7 @@ def _check_dates_in_review(tmp_path):
     choose(bridge, 'view:' + first)
     choose(bridge, 'view:' + second)
     page = visible(bridge.act('/tab', {'tab': 'review'})['html'])
-    assert 'CPU (2026-01-15 06:00 CST)' in page
-    assert 'CPU (2026-01-15 12:00 CST)' in page
+    assert f'CPU (2026-01-15 {times[0]})' in page
+    assert f'CPU (2026-01-15 {times[1]})' in page
     assert 'CPU (id …' not in page
     state.log.close()

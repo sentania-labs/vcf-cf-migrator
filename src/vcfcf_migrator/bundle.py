@@ -60,6 +60,7 @@ class BuildResult:
     directories: List[str] = field(default_factory=list)
     checklist_path: str = ''
     checklist: str = ''
+    support_details: List[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {"path": self.path, "counts": self.counts, "members": self.members,
@@ -367,7 +368,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         if node is not None:
             label = object_label(graph, node)
             if 'id …' in label and (node.uuid or node.ident):
-                result.notes.append(f'For support, {label} has full ID: {node.uuid or node.ident}')
+                result.support_details.append(f'{label}: {node.uuid or node.ident}')
         if node is not None and node.kind == 'dashboard':
             lines = dashboard_binding_lines(graph, key)
             if lines:

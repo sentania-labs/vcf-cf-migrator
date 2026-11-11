@@ -498,6 +498,17 @@ class PageState:
                                                self.owner_mode == 'source')
                              + _bundle.render(result))
         self.built_path = str(Path(result.path).resolve())
+        report_path = Path(self.built_path).with_name(Path(self.built_path).stem + '-build-report.txt')
+        self.build_report += f'Build report saved to: {report_path}\n'
+        saved_report = self.build_report
+        if result.support_details:
+            saved_report += '\nSupport details\n' + '\n'.join(result.support_details) + '\n'
+        try:
+            report_path.write_text(saved_report, encoding='utf-8')
+        except OSError as e:
+            self.build_report = self.build_report.rsplit('Build report saved to:', 1)[0]
+            self.error = f'Bundle saved to {self.built_path}, but the build report could not be saved: {e}'
+            return
         self.message = f"bundle built and saved to {self.built_path}"
         if self.source_snapshot is not None:
             self.message += f". {BUILD_PASSWORD_REMINDER}"
