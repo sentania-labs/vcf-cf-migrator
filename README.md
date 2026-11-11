@@ -32,8 +32,8 @@ the archive, drag **VCF Content Migrator.app** to **Applications**, and open it.
 The app opens its own window without a Terminal window. Mac app downloads are
 signed and notarized, with the notarization ticket attached to the app.
 
-On Windows, extract and double-click `vcfcf-migrator.exe`. On Linux, extract the
-archive, open a terminal in the extracted folder, and run:
+On Windows, extract and double-click the Authenticode-signed `vcfcf-migrator.exe`.
+On Linux, extract the archive, open a terminal in the extracted folder, and run:
 
 ```sh
 ./vcfcf-migrator

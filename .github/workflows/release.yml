@@ -83,6 +83,24 @@ jobs:
           notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
           notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
 
+      - name: Refuse to start without Windows signing secrets
+        env:
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_PROFILE: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          missing=0
+          for name in ARTIFACT_SIGNING_ENDPOINT ARTIFACT_SIGNING_ACCOUNT ARTIFACT_SIGNING_PROFILE AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing signing secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -177,6 +195,25 @@ jobs:
       - name: Build the Mac application
         if: runner.os == 'macOS'
         run: python packaging/build_macos.py
+
+      - name: Sign the Windows executable
+        if: runner.os == 'Windows'
+        uses: sentania-labs/.github/.github/actions/windows-sign@899421db1380620b2d4e2d8ac8b6acf16fe15b99 # windows-sign fix merged on main
+        with:
+          files: ${{ github.workspace }}\dist\vcfcf-migrator.exe
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Verify Authenticode signature
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature 'dist/vcfcf-migrator.exe'
+          if ($signature.Status -ne 'Valid') { throw "Authenticode verification failed: $($signature.Status)" }
 
       # ---- macOS signing and notarization -------------------------------
       # The org's shared actions (sentania-labs/.github) do the work; their

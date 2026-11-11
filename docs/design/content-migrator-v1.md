@@ -543,7 +543,7 @@ Three things about that are worth keeping:
   step is idempotent per tag. Scott, verbatim: "if we can't ship a
   signed apple build - we shoudl fail early and rerun later." Hence the
   preflight in the validate job, which refuses the release before
-  anything is built if any of the six signing secrets is missing.
+  anything is built if a required signing secret is missing.
 
 A note for anyone changing the release workflow: the post-notarization
 `spctl -a -t exec` check is advisory, and v0.2.2 is why. On a
@@ -560,10 +560,11 @@ bare Mach-O, and which passed silently on both legs, is
 running unless they meet a prevalence, age, or trusted list criterion".
 Unblock-File did not help and neither did moving it out of the profile
 directory, because the rule is about how many machines have seen the
-file, not about where it sits or its zone marker. Windows remains
-unsigned and the README points Windows users at the wheel instead.
+file, not about where it sits or its zone marker. The Windows release
+executable is now signed using Azure Artifact Signing and verified before
+smoke testing and packaging.
 
-Signing Windows is a larger decision than signing macOS, because since
+The original Windows signing decision was larger than signing macOS, because since
 mid-2023 the CA/Browser Forum requires the private key for a
 publicly-trusted code signing certificate to live on FIPS 140-2 Level 2
 hardware. A `.pfx` in a repository secret, which is exactly how the
@@ -754,7 +755,7 @@ Open, as of v0.3.0:
 - **Whether any of it is worth rewriting public history for.** It has
   been public since 2026-09-14 and is an object id, not a secret. The
   recommendation on file is no: scrub going forward.
-- **Windows code signing.** Deferred by Scott, verbatim: "i'm going to
+- **Windows code signing.** Originally deferred, now implemented. Scott said: "i'm going to
   skip windows signing right now and just update my PC to let me
   override it for now." Research links and the hardware-key constraint
   are in §Getting the binaries to actually run.
