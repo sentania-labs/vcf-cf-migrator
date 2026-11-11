@@ -2,7 +2,7 @@ Dashboard navigation now includes linked dashboards automatically. Missing desti
 
 The app shows a small link beside its version when a newer stable release is available. The check runs quietly in the background; clicking the link opens the release page in your browser. You choose when to download and install an update.
 
-Download the archive for your computer and extract it. On Mac, move **VCF Content Migrator.app** to Applications and open it. On Windows, open `vcfcf-migrator.exe`; on Linux, run `./vcfcf-migrator`.
+Download the archive for your computer and extract it. On Mac, move **VCF Content Migrator.app** to Applications and open it. On Windows, open the Authenticode-signed `vcfcf-migrator.exe`; on Linux, run `./vcfcf-migrator`.
 
 | Computer | Download |
 | --- | --- |
@@ -32,3 +32,5 @@ Policies are not carried; check their assignments on the target.
 
 For installation details, command-line use, and current limitations, see the README for this release.
 Python users can install the `.whl` with pip instead.
+
+Verify downloads with `SHA256SUMS`. Uploaded release assets have build provenance attestations; verify each with `gh attestation verify FILE --repo sentania-labs/vcf-cf-migrator`. GitHub-generated source archives are not covered.
