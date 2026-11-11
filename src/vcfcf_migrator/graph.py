@@ -871,10 +871,10 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
     # Presence of a type and a matching manifest count supports an offline
     # inference, not proof that the source export is complete.
     complete_types = set()
-    for kind, field in (('view', 'views'), ('dashboard', 'dashboards')):
+    for kind, count_key in (('view', 'views'), ('dashboard', 'dashboards')):
         relevant = [c for c in found if kind in c.kinds]
         actual = sum(len(c.entries()) for c in relevant)
-        if relevant and isinstance(manifest.get(field), int) and manifest[field] == actual:
+        if relevant and isinstance(manifest.get(count_key), int) and manifest[count_key] == actual:
             complete_types.add(kind)
     graph = Graph(containers=found, unknown_members=unknown)
     mappings = _json(members.get("usermappings.json", b""))

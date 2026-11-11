@@ -527,7 +527,6 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     # Directory entries, in the place the source put them: before the members
     # that sit under them, which is where every corpus export writes them.
     needed_dirs = directory_entries(ordered, directories)
-    positions = directory_order or {}
     placed: List[str] = []
     for name in ordered:
         for entry in needed_dirs:
