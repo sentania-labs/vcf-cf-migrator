@@ -375,7 +375,7 @@ def render(graph: Graph, selection: Selection, target_user='admin', keep_ownersh
     lines = [f"Selected: {len(selection.picked)}; included with dependencies: {len(selection.keys)}"]
     dashboards = [graph.nodes[k] for k in selection.keys if graph.nodes[k].kind == "dashboard"]
     lines.extend(ownership_messages(graph, selection, target_user, keep_ownership))
-    for line in same_id_dashboard_lines(graph, selection.keys):
+    for line in same_id_dashboard_lines(graph, selection.keys, keep_ownership):
         lines.append(line + ". The build is refused until only one is selected.")
     counts = selection.counts(graph)
     if counts:

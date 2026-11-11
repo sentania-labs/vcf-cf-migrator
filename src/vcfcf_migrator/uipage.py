@@ -240,7 +240,7 @@ def _messages(state) -> str:
 
 def _build_form(state) -> str:
     from vcfcf_migrator.graph import same_id_dashboard_lines
-    collisions = same_id_dashboard_lines(state.graph, state.selection.keys) if state.selection else []
+    collisions = same_id_dashboard_lines(state.graph, state.selection.keys, state.owner_mode == 'source') if state.selection else []
     ready = bool(state.selection and state.selection.keys and not state.selection.missing_dependencies() and not collisions)
     reasons = []
     if not (state.selection and state.selection.keys):

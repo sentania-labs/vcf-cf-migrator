@@ -535,9 +535,12 @@ def is_directory_group(group) -> bool:
     return bool(source_type) and source_type != "LOCAL"
 
 
-def same_id_dashboard_lines(graph: Graph, keys: Sequence[str]) -> List[str]:
+def same_id_dashboard_lines(graph: Graph, keys: Sequence[str], keep_ownership: bool = False) -> List[str]:
     """One line per dashboard ID that the selection carries under more than
-    one owner. Merging the owners would leave two documents with one ID."""
+    one owner. Merging the owners would leave two documents with one ID, so
+    nothing is reported when the owners are kept apart."""
+    if keep_ownership:
+        return []
     owners: Dict[str, List[str]] = {}
     names: Dict[str, str] = {}
     for key in keys:

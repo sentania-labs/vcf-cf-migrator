@@ -338,7 +338,7 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
         raise ValueError('Enter a target user name')
     target_user = target_user.strip()
     refuse_missing_dependencies(graph, selection)
-    same_id = same_id_dashboard_lines(graph, selection.keys)
+    same_id = same_id_dashboard_lines(graph, selection.keys, keep_ownership)
     if same_id:
         raise ValueError('; '.join(same_id))
     return _write_bundle(members, member_order, graph, selection, out_path, marker,

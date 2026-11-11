@@ -357,7 +357,7 @@ def review(state):
                    + _button('Update owner choice') + '</form>')
         for line in ownership_messages(state.graph, selection, state.target_user, mode == 'source'):
             out.append("<p class='note'>" + e(line) + '</p>')
-    collisions = same_id_dashboard_lines(state.graph, selection.keys)
+    collisions = same_id_dashboard_lines(state.graph, selection.keys, state.owner_mode == 'source')
     if collisions:
         out.append("<div class='err'><strong>Choose one copy of each dashboard before building.</strong>")
         for line in collisions:

@@ -160,3 +160,48 @@ def test_same_dashboard_id_under_two_owners_is_refused_and_nothing_is_written(tm
     one = selection.close(g, ['dashboard:same@a'])
     bundle.build_bundle(members, list(members), g, one, out)
     assert out.exists()
+
+
+def _same_id_members():
+    return {'dashboards/a': archive('same', 'resource:id:0_::_', 'Group A'),
+            'dashboards/b': archive('same', 'resource:id:0_::_', 'Group A'),
+            'usermappings.json': json.dumps({'sources': [{'id': 'directory'}], 'users': [
+                {'userId': 'a', 'userName': 'someone', 'userSourceId': 'directory'},
+                {'userId': 'b', 'userName': 'someone-else', 'userSourceId': 'directory'}]}).encode(),
+            'customgroups.json': json.dumps({'customGroups': [{'name': 'Group A'}]}).encode()}
+
+
+def test_same_dashboard_id_under_two_owners_builds_when_source_owners_are_kept(tmp_path):
+    members = _same_id_members()
+    g = graph.build_graph(members)
+    picked = selection.select_all(g)
+    assert 'The build is refused' not in selection.render(g, picked, keep_ownership=True)
+    assert 'The build is refused' in selection.render(g, picked)
+    out = tmp_path / 'kept.zip'
+    bundle.build_bundle(members, list(members), g, picked, out, keep_ownership=True)
+    with zipfile.ZipFile(out) as z:
+        assert {'dashboards/a', 'dashboards/b'} <= set(z.namelist())
+        assert {u['userId'] for u in json.loads(z.read('usermappings.json'))['users']} == {'a', 'b'}
+
+
+def test_same_dashboard_id_under_two_owners_is_refused_for_a_chosen_single_owner(tmp_path):
+    import pytest
+    members = _same_id_members()
+    g = graph.build_graph(members)
+    out = tmp_path / 'other.zip'
+    with pytest.raises(ValueError, match='choose one copy'):
+        bundle.build_bundle(members, list(members), g, selection.select_all(g), out, target_user='someone')
+    assert not out.exists()
+
+
+def test_review_and_build_button_follow_the_owner_choice_for_same_id_dashboards():
+    from vcfcf_migrator.ui import PageState
+    from vcfcf_migrator.uipage import _build_form
+    members = _same_id_members()
+    g = graph.build_graph(members)
+    state = PageState()
+    state.graph, state.selection = g, selection.select_all(g)
+    state.owner_mode = 'admin'
+    assert 'disabled' in _build_form(state)
+    state.owner_mode = 'source'
+    assert 'disabled' not in _build_form(state)
