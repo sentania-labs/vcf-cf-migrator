@@ -45,18 +45,7 @@ corpus carries them, and leaving one out lets a closed selection still produce
 a bundle referencing something it does not carry, which is the one failure
 mode subsetting can introduce on its own.
 
-Four deliberate exclusions, each a decision rather than an oversight:
-
-* **The container's own ``entries.resource``.** The dashboard container writes
-  the same binding in two more places than a widget does: ``entries.resource``
-  at the top of the owner's file, and ``entryKeys.resource`` on each dashboard.
-  The per-dashboard one is read. The container-level one is not: it sits
-  outside every dashboard document, shared by all of that owner's dashboards,
-  so attributing its names to any one of them would carry a group into a
-  bundle that does not use it. Safe because all six group names it carries
-  across the corpus are also bound by a widget scope in the same container,
-  which is followed, and the block is copied verbatim into the rebuilt inner
-  zip either way.
+Three deliberate exclusions, each a decision rather than an oversight:
 
 * **Prose.** ``PROSE_KEYS`` is skipped for every kind, not only for super
   metrics: these exports quote another object's uuid in a description
@@ -447,7 +436,26 @@ def _resource_names(node, where: str, unhandled: List[str]) -> List[str]:
     return out
 
 
-def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
+RESOURCE_TOKEN_RE = re.compile(r"resource:id:\d+_::_")
+
+
+def dashboard_tokens(value, kind="resource"):
+    """Tokens used in a parsed widget subtree, including embedded filter paths."""
+    pattern = RESOURCE_TOKEN_RE if kind == "resource" else re.compile(r"resourceKind:id:\d+_::_")
+    return {match.group() for _, text in _json_strings(value, skip_prose=False)
+            for match in pattern.finditer(text)}
+
+
+def dashboard_resource_entries(container):
+    """File-local token bindings, keyed by their unchanged internal ID."""
+    doc = _json(container.text.encode("utf-8"))
+    entries = doc.get("entries", {}) if isinstance(doc, dict) else {}
+    resources = entries.get("resource", []) if isinstance(entries, dict) else []
+    return {item["internalId"]: item for item in resources
+            if isinstance(item, dict) and isinstance(item.get("internalId"), str)} if isinstance(resources, list) else {}
+
+
+def _dashboard_refs(raw: bytes, unhandled: List[str], resource_entries=None) -> List[Ref]:
     """A dashboard's views, metrics, group scopes and navigation destinations.
 
     ``widgets`` is walked **wherever the key appears**, not only at the top and
@@ -479,7 +487,7 @@ def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
         unhandled.append("dashboard: a document that is not a JSON object")
         return []
     out: List[Ref] = []
-    seen_views, seen_groups = set(), set()
+    seen_views = set()
     metric_values: List[str] = []
     links, errors = navigation.links(doc)
     out.extend(Ref('dashboard', target, 'dashboard navigation', uuid_only=True)
@@ -491,10 +499,12 @@ def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
     widget_ids = {w["id"] for lst in widget_lists if isinstance(lst, list)
                   for w in lst if isinstance(w, dict) and isinstance(w.get("id"), str)}
 
-    def add_group(name: str, where: str) -> None:
-        if name not in seen_groups:
-            seen_groups.add(name)
-            out.append(Ref("customgroup", name, where, optional=True))
+    def add_group(name: str, where: str, optional: bool = True) -> None:
+        ref = Ref("customgroup", name, where, optional=optional)
+        if ref not in out:
+            out.append(ref)
+
+    resource_entries = resource_entries or {}
 
     for widgets in widget_lists:
         if widgets is None:
@@ -524,9 +534,19 @@ def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
             if isinstance(view_id, str) and view_id and view_id not in seen_views:
                 seen_views.add(view_id)
                 out.append(Ref("view", view_id, "widget viewDefinitionId"))
-            for name in _resource_names(config.get("resource"),
-                                        "dashboard widget config.resource", unhandled):
-                add_group(name, "widget resource scope, by name")
+            for token in sorted(dashboard_tokens(widget)):
+                binding = resource_entries.get(token)
+                if binding and binding.get("adapterKindKey") == "Container" and binding.get("name"):
+                    add_group(binding["name"], "widget resource token", optional=False)
+            scope = config.get("resource")
+            scopes = scope if isinstance(scope, list) else [scope]
+            for item in scopes:
+                if dashboard_tokens(item) & resource_entries.keys():
+                    continue
+                for name in _resource_names(item, "dashboard widget config.resource", unhandled):
+                    kinds = [item.get(k) for k in ("adapterKindKey", "resourceKindId") if isinstance(item, dict)]
+                    add_group(name, "widget resource scope, by name", optional=not any(
+                        isinstance(k, str) and "Container" in k for k in kinds))
             metric_values.extend(v for _k, v in _json_strings(widget))
 
     if "widgets" not in doc:
@@ -746,6 +766,8 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                              "in it can be selected and none of it is carried"))
 
     for container in found:
+        resource_entries = (dashboard_resource_entries(container)
+                            if isinstance(container, _containers.DashboardsContainer) else None)
         for entry in container.entries():
             node = Node(kind=entry.kind, ident=entry.ident, name=entry.name,
                         uuid=entry.uuid, member=container.member, index=entry.index,
@@ -755,8 +777,11 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
             runlog.content_id(node.ident)
             runlog.content_id(node.uuid)
             shapes: List[str] = []
-            node.refs = list(
-                _REF_EXTRACTORS.get(entry.kind, lambda _e, _n: [])(entry, shapes))
+            if entry.kind == "dashboard" and isinstance(container, _containers.DashboardsContainer):
+                node.refs = _dashboard_refs(entry.raw, shapes, resource_entries)
+            else:
+                node.refs = list(
+                    _REF_EXTRACTORS.get(entry.kind, lambda _e, _n: [])(entry, shapes))
             for ref in node.refs:
                 runlog.content_id(ref.ident)
             runlog.debug("node.found", kind=node.kind, uuid=node.uuid or "",

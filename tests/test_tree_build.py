@@ -1053,3 +1053,36 @@ def test_the_entry_stamp_holds_on_the_platform_that_would_break_it(monkeypatch):
     assert entry.create_system == 3, "a bundle built on Windows must match one built here"
     assert entry.date_time == ZIP_EPOCH
     assert entry.compress_type == zipfile.ZIP_DEFLATED
+
+
+def test_dashboard_resource_tokens_resolve_with_owner_table():
+    """Widget tokens use the current table binding, including filter paths."""
+    names = ["Scoreboard group", "Filter group", "Renamed group"]
+    tokens = [f"resource:id:{i}_::_" for i in range(3)]
+    dashboard = {"id": "dashboard-one", "name": "Dashboard", "widgets": [
+        {"id": "score", "config": {"metric": {"resourceMetrics": [
+            {"resourceId": tokens[0], "resourceName": names[0]}]}}},
+        {"id": "filter", "config": {"tagFilter": {"path": "prefix/" + tokens[1],
+                                                      "value": {"tag": tokens[1]}}}},
+        {"id": "view", "config": {"resource": {"resourceId": tokens[2],
+                                                    "resourceName": "Old name"}}},
+    ]}
+    entries = [{"internalId": token, "name": name, "adapterKindKey": "Container",
+                "resourceKindKey": "Function"} for token, name in zip(tokens, names)]
+    entries.append({"internalId": "resource:id:9_::_", "name": "Unrelated",
+                    "adapterKindKey": "Container"})
+    members = {"dashboard/dashboard.json": json.dumps({"entries": {"resource": entries},
+                                             "dashboards": [dashboard]}).encode(),
+               "customgroups.json": json.dumps({"customGroups": [{"name": n} for n in names],
+                                                "customGroupTypes": []}).encode()}
+    graph = _graph.build_graph(members)
+    assert _edge_idents(graph, "dashboard:dashboard-one", "customgroup") == set(names)
+    assert not graph.missing_for("dashboard:dashboard-one")
+
+
+def test_missing_explicit_container_scope_is_reported():
+    dashboard = {"id": "d", "name": "Dashboard", "widgets": [{"id": "w", "config": {
+        "resource": {"adapterKindKey": "Container", "resourceName": "Missing group"}}}]}
+    graph = _graph.build_graph({"dashboard/dashboard.json": json.dumps({"dashboards": [dashboard]}).encode()})
+    assert [(m.kind, m.ident) for m in graph.missing_for("dashboard:d")] == [
+        ("customgroup", "Missing group")]
