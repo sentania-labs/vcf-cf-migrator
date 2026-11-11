@@ -26,6 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        python: ["3.9", "3.12"]
         include:
           # Ubuntu 26.04 images do not offer Python 3.9 in setup-python.
           - python: "3.9"
