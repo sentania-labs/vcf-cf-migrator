@@ -364,13 +364,22 @@ def review(state):
         if warnings:
             out.append(f'<h3>{title}</h3><ul>' + ''.join(f'<li>{e(w)}</li>' for w in warnings) + '</ul>')
     out.append('<p class="note">This checks the export, not whether the target will accept the bundle.</p><h3>You selected</h3>')
+    from vcfcf_migrator.graph import dashboard_supermetrics
     for key in state.picked:
         node = state.graph.nodes[key]
-        out.append(f"<div class='review-row'><span>{e(node.name)} <small>{e(identity(state, node))}</small></span>"
+        metric_count = len(dashboard_supermetrics(state.graph, key)) if node.kind == 'dashboard' else 0
+        noun = 'super metric' if metric_count == 1 else 'super metrics'
+        metric_note = (f"<small>Uses {metric_count} {noun} that must be enabled in a policy on the target.</small>"
+                       if metric_count else '')
+        out.append(f"<div class='review-row'><span>{e(node.name)} <small>{e(identity(state, node))}</small>{metric_note}</span>"
                    + action('/remove-pick', 'Remove from selection', {'key': key}) + '</div>')
     out.append(f'<details><summary>{len(selection.added)} automatically required objects</summary><ul>')
     for addition in selection.added:
-        out.append(f'<li>{e(display_name(state, state.graph.nodes[addition.key]))}</li>')
+        node = state.graph.nodes[addition.key]
+        count = len(dashboard_supermetrics(state.graph, addition.key)) if node.kind == 'dashboard' else 0
+        noun = 'super metric' if count == 1 else 'super metrics'
+        note = f' uses {count} {noun} that must be enabled in a policy on the target' if count else ''
+        out.append(f'<li>{e(display_name(state, node))}{note}</li>')
     out.append('</ul></details>')
     from vcfcf_migrator.uipage import _build_form
     out.append(_build_form(state))

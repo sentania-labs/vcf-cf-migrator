@@ -43,6 +43,7 @@ from vcfcf_migrator.graph import (
     is_missing_dependency,
     missing_line,
     missing_reason,
+    dashboard_supermetrics,
 )
 
 
@@ -319,9 +320,8 @@ def select_all(graph: Graph) -> Selection:
 def render(graph: Graph, selection: Selection) -> str:
     lines = [f"selected: {len(selection.picked)} named, "
              f"{len(selection.keys)} after closure"]
-    dashboards = [graph.nodes[k] for k in selection.keys
-                  if graph.nodes[k].kind == "dashboard" and graph.nodes[k].owner]
-    if dashboards:
+    dashboards = [graph.nodes[k] for k in selection.keys if graph.nodes[k].kind == "dashboard"]
+    if any(n.owner for n in dashboards):
         lines.append("Dashboard ownership will map to admin on the target.")
         directory = [n.name for n in dashboards if n.owner in graph.directory_owners]
         if directory:
@@ -335,6 +335,11 @@ def render(graph: Graph, selection: Selection) -> str:
     counts = selection.counts(graph)
     if counts:
         lines.append("carrying: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    for node in dashboards:
+        count = len(dashboard_supermetrics(graph, node.key))
+        if count:
+            noun = 'super metric' if count == 1 else 'super metrics'
+            lines.append(f"{node.name} uses {count} {noun} that must be enabled in a policy on the target.")
     if selection.added:
         lines.append(f"pulled in by dependency: {len(selection.added)}")
         for add in selection.added:

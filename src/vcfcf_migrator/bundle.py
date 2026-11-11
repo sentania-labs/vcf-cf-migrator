@@ -57,12 +57,42 @@ class BuildResult:
     skipped_members: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     directories: List[str] = field(default_factory=list)
+    checklist_path: str = ''
+    checklist: str = ''
 
     def as_dict(self) -> dict:
         return {"path": self.path, "counts": self.counts, "members": self.members,
                 "skipped_members": self.skipped_members, "notes": self.notes,
-                "directories": self.directories}
+                "directories": self.directories, "checklist_path": self.checklist_path,
+                "checklist": self.checklist}
 
+
+
+def post_import_checklist(graph, selection):
+    metrics = [graph.nodes[k] for k in selection.keys if graph.nodes[k].kind == 'supermetric']
+    groups = [graph.nodes[k] for k in selection.keys if graph.nodes[k].kind == 'customgroup']
+    if not metrics and not groups:
+        return ''
+    lines = ['Post-import checklist', '',
+             'Policies are not included. Check policy assignments and enable super metrics on the target.']
+    for node in metrics:
+        kinds = graph.metric_kinds.get(node.ident, [])
+        policies = graph.metric_policies.get(node.ident, [])
+        policy_text = ', '.join(graph.policy_names.get(p, p) for p in dict.fromkeys(policies))
+        if not policy_text:
+            policy_text = ('none found enabled in the source export' if graph.policy_data_available
+                           else 'source policy data unavailable')
+        lines.extend(['', f'Super metric: {node.name}',
+                      '  Resource kinds: ' + (', '.join(kinds) if kinds else 'none declared'),
+                      '  Enabled in source policies: ' + policy_text,
+                      '  Enable it in a policy on the target.'])
+    for node in groups:
+        policies = [r.ident for r in node.refs if r.kind == 'policy']
+        lines.extend(['', f'Custom group: {node.name}',
+                      '  Source policy: ' + (', '.join(graph.policy_names.get(p, p) for p in policies)
+                                             if policies else 'not specified'),
+                      '  Check its policy assignment on the target.'])
+    return '\n'.join(lines) + '\n'
 
 def _entry_key(kind: str, ident: str, owner: str) -> str:
     if kind == "dashboard" and owner:
@@ -557,6 +587,11 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                          "file format before it reads a document"))
 
     out_path = Path(out_path)
+    result.checklist = post_import_checklist(graph, selection)
+    if result.checklist:
+        result.checklist_path = str(out_path.with_name(out_path.stem + '-post-import.txt'))
+        result.notes.append('Post-import policy checklist: ' + result.checklist_path)
+        result.notes.append(result.checklist.rstrip())
     try:
         if out_path.parent and str(out_path.parent):
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -568,6 +603,8 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                     continue
                 z.writestr(zip_entry(name), written[name])
         out_path.write_bytes(buf.getvalue())
+        if result.checklist:
+            Path(result.checklist_path).write_text(result.checklist, encoding='utf-8')
     except OSError as e:
         runlog.error("bundle.unwritable", path=str(out_path), reason=str(e),
                      members=len(ordered))

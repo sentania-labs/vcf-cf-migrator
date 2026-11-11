@@ -225,6 +225,10 @@ class Graph:
     unknown_members: List[str] = field(default_factory=list)
     directory_owners: set = field(default_factory=set)
     directory_shared_dashboards: set = field(default_factory=set)
+    policy_names: Dict[str, str] = field(default_factory=dict)
+    metric_policies: Dict[str, List[str]] = field(default_factory=dict)
+    metric_kinds: Dict[str, List[str]] = field(default_factory=dict)
+    policy_data_available: bool = False
     missing: List[MissingEdge] = field(default_factory=list)
     # By-name references that several different objects answer to; every match
     # is carried, and the admin is told rather than left to find out.
@@ -260,6 +264,27 @@ class Graph:
     def notes_for(self, key: str) -> List[Note]:
         return [n for n in self.ambiguous + self.unhandled if n.source_key == key]
 
+
+
+def dashboard_supermetrics(graph: Graph, key: str) -> List[Node]:
+    """Super metrics reachable from one dashboard, including through views."""
+    stack = list(graph.edges.get(key, []))
+    seen = set()
+    metrics = []
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        node = graph.nodes.get(current)
+        if node is None:
+            continue
+        if node.kind == 'dashboard':
+            continue
+        if node.kind == 'supermetric':
+            metrics.append(node)
+        stack.extend(graph.edges.get(current, []))
+    return metrics
 
 def _resolve_index(nodes: Dict[str, Node]) -> Dict[Tuple[str, str], List[str]]:
     """(kind, identifier) -> node keys, for every identifier an object can be
@@ -772,6 +797,21 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
             for dash in group.get("dashboards", []) or []:
                 if isinstance(dash, dict) and dash.get("dashboardId"):
                     graph.directory_shared_dashboards.add((owner, str(dash["dashboardId"])))
+    policy_root = _xml(members.get("policies.xml", b""))
+    graph.policy_data_available = policy_root is not None
+    if policy_root is not None:
+        for policy in policy_root.iter():
+            if policy.tag.split('}')[-1].lower() != 'policy':
+                continue
+            ident = policy.get('id') or policy.get('uuid') or ''
+            name = policy.get('name') or policy.findtext('Name') or ident
+            if not ident:
+                continue
+            graph.policy_names[ident] = name
+            for metric in policy.iter():
+                if (metric.tag.split('}')[-1].lower() == 'supermetric'
+                        and (metric.get('enabled') or '').lower() == 'true' and metric.get('id')):
+                    graph.metric_policies.setdefault(metric.get('id'), []).append(ident)
     dashboard_docs = {}
     for container in found:
         runlog.detail("container.found", member=container.member,
@@ -799,6 +839,14 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
             else:
                 node.refs = list(
                     _REF_EXTRACTORS.get(entry.kind, lambda _e, _n: [])(entry, shapes))
+            if node.kind == 'supermetric':
+                metric_doc = _json(entry.raw)
+                kinds = metric_doc.get('resourceKinds', []) if isinstance(metric_doc, dict) else []
+                graph.metric_kinds[node.ident] = [
+                    ' / '.join(str(k.get(part)) for part in ('adapterKindKey', 'resourceKindKey')
+                               if k.get(part)) for k in kinds if isinstance(k, dict)] if isinstance(kinds, list) else []
+                node.refs.extend(Ref('policy', policy, 'source policy enables super metric')
+                                 for policy in dict.fromkeys(graph.metric_policies.get(node.ident, [])))
             for ref in node.refs:
                 runlog.content_id(ref.ident)
             runlog.debug("node.found", kind=node.kind, uuid=node.uuid or "",
@@ -1080,7 +1128,7 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
 # outbound setting, and lets 1 policy through.
 NOT_A_DEPENDENCY: Dict[str, str] = {
     "policy": ("policies.xml is in the export but is a member this tool never carries "
-               "into a bundle; check the group policy assignment on the target"),
+               "into a bundle; check the group policy assignment and super metric enablement on the target"),
 }
 
 
