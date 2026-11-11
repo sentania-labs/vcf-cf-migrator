@@ -8,7 +8,7 @@ from vcfcf_migrator import preview
 from vcfcf_migrator import wording
 from vcfcf_migrator.releases import RELEASE_PAGE
 from vcfcf_migrator.cli import version_lines
-from vcfcf_migrator.graph import KIND_ORDER
+from vcfcf_migrator.graph import KIND_ORDER, same_id_dashboard_lines, object_label
 from vcfcf_migrator.uipage import e, _button, anchor
 
 KIND_LABELS = {
@@ -107,17 +107,13 @@ def action(path, label, fields=None, primary=False, pressed=None):
 
 def identity(state, node):
     detail = node.kind
-    if state.name_counts.get((node.kind, node.name), 0) > 1:
-        detail += " · " + (node.uuid or node.ident)
-        if node.owner:
-            detail += " · owner " + node.owner
+    if node.kind == 'dashboard' and node.stock_or_derived:
+        detail += ' · stock or derived from stock'
     return detail
 
 
 def display_name(state, node):
-    if state.name_counts.get((node.kind, node.name), 0) > 1:
-        return node.name + " (" + identity(state, node) + ")"
-    return node.name
+    return object_label(state.graph, node)
 
 
 def header(state):
@@ -241,13 +237,13 @@ def inventory(state):
                    f"<input type='hidden' name='key' value='{e(node.key)}'>"
                    f"<input type='hidden' name='on' value='{'0' if checked else '1'}'>"
                    f"<input type='checkbox' id='tick-{e(anchor(node.key))}' class='tick' name='tick'{' checked' if checked else ''} "
-                   f"aria-label='{e(('Automatically required: ' if required else 'deselect ' if checked else 'select ') + node.name)}' "
+                   f"aria-label='{e(('Automatically required: ' if required else 'deselect ' if checked else 'select ') + display_name(state, node))}' "
                    + (f"disabled aria-describedby='required-{e(anchor(node.key))}' " if required else '') +
                    "onchange='this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()'>"
                    f"<noscript>{_button('Remove' if checked else 'Add')}</noscript></form>"
                    "<form method='post' action='/preview'>"
                    f"<input type='hidden' name='key' value='{e(node.key)}'>"
-                   f"<button class='name-button' id='inspect-{e(anchor(node.key))}'>{e(node.name)}</button>"
+                   f"<button class='name-button' id='inspect-{e(anchor(node.key))}'>{e(display_name(state, node))}</button>"
                    f"<span class='kindtag'>{e(detail)}</span></form>"
                    f"<span class='status{' warn' if gaps else ''}'>{e(status)}</span>"
                    + (f"<div class='required-help' id='required-{e(anchor(node.key))}'>Required by your selections: "
@@ -263,7 +259,7 @@ def inspector(state):
     node = state.graph.nodes.get(state.preview_key)
     if node is None:
         return ''.join(out) + '<p>Select an object name to inspect its preview, dependencies and details.</p></div></aside>'
-    out.append(f'<h3>{e(node.name)}</h3>')
+    out.append(f'<h3>{e(display_name(state, node))}</h3>')
     out.append("<nav class='toolbar' aria-label='Object inspector'>")
     for key, label in [('preview', 'Preview'), ('dependencies', 'Dependencies'), ('details', 'Details')]:
         out.append(action('/inspector-tab', label, {'panel': key}, state.inspector_tab == key, pressed=state.inspector_tab == key))
@@ -325,39 +321,111 @@ def review(state):
     selection = state.selection
     if not selection or not selection.keys:
         return ''.join(out) + '<p>Select at least one object before building.</p></div></main>'
+    dashboards = [state.graph.nodes[k] for k in selection.keys
+                  if state.graph.nodes[k].kind == "dashboard" and state.graph.nodes[k].owner]
+    if dashboards:
+        from vcfcf_migrator.selection import ownership_messages
+        mode = state.owner_mode
+        out.append("<h3>Dashboard owner on the target</h3><form method='post' action='/owner'>"
+                   "<label for='owner-mode'>Choose how to map owners</label>"
+                   "<select id='owner-mode' name='owner_mode'>"
+                   + ''.join(f"<option value='{value}'{' selected' if mode == value else ''}>{label}</option>"
+                             for value, label in [('admin', 'Local admin (default)'),
+                                                  ('other', 'Another target user'),
+                                                  ('source', 'Keep source owners and directory sharing')])
+                   + "</select><label for='target-user'>Other target user name</label>"
+                   + f"<input id='target-user' name='target_user' value='{e(state.target_user if mode == 'other' else '')}'>"
+                   + _button('Update owner choice') + '</form>')
+        for line in ownership_messages(state.graph, selection, state.target_user, mode == 'source'):
+            out.append("<p class='note'>" + e(line) + '</p>')
+    collisions = same_id_dashboard_lines(state.graph, selection.keys, state.owner_mode == 'source')
+    from vcfcf_migrator.bundle import merge_preview
+    refusals, merge_notes = merge_preview(state.graph, selection, state.owner_mode == 'source')
+    for line in merge_notes:
+        out.append("<p class='note'>" + e(line) + '</p>')
+    if refusals:
+        out.append("<div class='err'><strong>These dashboards cannot be combined.</strong>"
+                   + ''.join('<p>' + e(line) + '</p>' for line in refusals)
+                   + "<p>Choose another owner option or remove one of the dashboards.</p></div>")
+    if collisions:
+        out.append("<div class='err'><strong>Choose one copy of each dashboard before building.</strong>")
+        for line in collisions:
+            out.append('<p>' + e(line) + '</p>')
+        seen = set()
+        for key in selection.keys:
+            node = state.graph.nodes[key]
+            if node.kind != 'dashboard':
+                continue
+            if sum(1 for k in selection.keys if state.graph.nodes[k].kind == 'dashboard'
+                   and state.graph.nodes[k].ident == node.ident and state.graph.nodes[k].owner != node.owner) == 0:
+                continue
+            for pick in affected_picks(state, key):
+                if pick.key not in seen:
+                    seen.add(pick.key)
+                    out.append(action('/remove-pick', 'Remove ' + display_name(state, pick), {'key': pick.key}))
+        out.append('</div>')
+    if any(state.graph.nodes[k].stock_or_derived for k in selection.keys):
+        out.append("<p class='note'>Stock or derived dashboards stay selectable. Importing one can replace the dashboard with the same ID on the target.</p>")
+    from vcfcf_migrator.graph import dashboard_binding_lines
+    for key in selection.keys:
+        node = state.graph.nodes[key]
+        if node.kind != 'dashboard':
+            continue
+        requirements = dashboard_binding_lines(state.graph, key)
+        if requirements:
+            out.append('<h3>Target requirements for ' + e(display_name(state, node)) + '</h3><ul>'
+                       + ''.join('<li>' + e(line) + '</li>' for line in requirements) + '</ul>')
+    metrics = [display_name(state, state.graph.nodes[k]) for k in selection.keys if state.graph.nodes[k].kind == 'supermetric']
+    if metrics:
+        out.append("<p class='note'>Enable these super metrics in a policy on the target: "
+                   + e(', '.join(metrics)) + ". Source policy information may be incomplete; verify it on the source.</p>")
     if selection.missing_dependencies():
         out.append("<div class='err'><strong>Build is blocked by missing references</strong>"
                    '<p>Remove the affected selections or open an export that includes their dependencies. '
                    'A target instance might already have these objects, but this export cannot verify that.</p><ul>')
         for gap in selection.missing_dependencies():
             source = state.graph.nodes[gap.source_key]
-            out.append(f'<li>{e(display_name(state, source))} requires {e(gap.kind)} {e(gap.ident)}. '
-                       'This reference is missing from the export. Affected selections:')
+            from vcfcf_migrator.graph import human_missing_line
+            out.append(f'<li>{e(human_missing_line(state.graph, gap))} Affected selections:')
             for pick in affected_picks(state, gap.source_key):
                 out.append("<div class='blocker-actions'>"
                            + action('/preview', display_name(state, pick), {'key': pick.key, 'panel': 'dependencies'})
                            + action('/remove-pick', 'Remove affected selection', {'key': pick.key}) + '</div>')
             out.append('</li>')
         out.append('</ul></div>')
-    else:
-        out.append("<p class='msg'>Ready to build. All recorded dependencies are included.</p>")
+    elif not collisions and not refusals:
+        if selection.not_carried() or metrics or merge_notes or any(state.graph.dashboard_bindings.get(k) for k in selection.keys):
+            out.append("<p class='msg'>Ready to build with warnings. Review the information above.</p>")
+        else:
+            out.append("<p class='msg'>Ready to build. All recorded dependencies are included.</p>")
     if selection.not_carried():
-        from vcfcf_migrator.graph import missing_line
-        out.append('<h3>Referenced but not carried</h3><ul>' + ''.join(
-            f'<li>{e(missing_line(state.graph, gap))}</li>'
+        from vcfcf_migrator.graph import human_missing_line
+        out.append('<h3>References to check</h3><ul>' + ''.join(
+            f'<li>{e(human_missing_line(state.graph, gap))}</li>'
             for gap in selection.not_carried()) + '</ul>')
-    for warnings, title in [(selection.ambiguous, 'Ambiguous references'),
-                            (selection.unhandled, 'References not understood')]:
+    from vcfcf_migrator.selection import human_warnings
+    for warnings, title, kind in [(selection.ambiguous, 'Ambiguous references', 'ambiguous'),
+                                  (selection.unhandled, 'References not understood', 'unhandled')]:
         if warnings:
-            out.append(f'<h3>{title}</h3><ul>' + ''.join(f'<li>{e(w)}</li>' for w in warnings) + '</ul>')
+            out.append(f'<h3>{title}</h3><ul>' + ''.join(
+                f'<li>{e(w)}</li>' for w in human_warnings(state.graph, warnings, kind)) + '</ul>')
     out.append('<p class="note">This checks the export, not whether the target will accept the bundle.</p><h3>You selected</h3>')
+    from vcfcf_migrator.graph import dashboard_supermetrics
     for key in state.picked:
         node = state.graph.nodes[key]
-        out.append(f"<div class='review-row'><span>{e(node.name)} <small>{e(identity(state, node))}</small></span>"
+        metric_count = len(dashboard_supermetrics(state.graph, key)) if node.kind == 'dashboard' else 0
+        noun = 'super metric' if metric_count == 1 else 'super metrics'
+        metric_note = (f"<small>Uses {metric_count} {noun} that must be enabled in a policy on the target.</small>"
+                       if metric_count else '')
+        out.append(f"<div class='review-row'><span>{e(display_name(state, node))} <small>{e(identity(state, node))}</small>{metric_note}</span>"
                    + action('/remove-pick', 'Remove from selection', {'key': key}) + '</div>')
     out.append(f'<details><summary>{len(selection.added)} automatically required objects</summary><ul>')
     for addition in selection.added:
-        out.append(f'<li>{e(display_name(state, state.graph.nodes[addition.key]))}</li>')
+        node = state.graph.nodes[addition.key]
+        count = len(dashboard_supermetrics(state.graph, addition.key)) if node.kind == 'dashboard' else 0
+        noun = 'super metric' if count == 1 else 'super metrics'
+        note = f' uses {count} {noun} that must be enabled in a policy on the target' if count else ''
+        out.append(f'<li>{e(display_name(state, node))}{note}</li>')
     out.append('</ul></details>')
     from vcfcf_migrator.uipage import _build_form
     out.append(_build_form(state))
@@ -366,7 +434,7 @@ def review(state):
         if state.show_in_folder:
             out.append(action('/show-in-folder', 'Show in folder'))
     if state.build_report:
-        out.append("<h2>Last build</h2><details><summary>Bundle report</summary>"
+        out.append("<h2>Last build</h2><details open><summary>Bundle report</summary>"
                    f'<pre>{e(state.build_report)}</pre></details>')
     return ''.join(out) + '</div></main>'
 

@@ -45,18 +45,7 @@ corpus carries them, and leaving one out lets a closed selection still produce
 a bundle referencing something it does not carry, which is the one failure
 mode subsetting can introduce on its own.
 
-Four deliberate exclusions, each a decision rather than an oversight:
-
-* **The container's own ``entries.resource``.** The dashboard container writes
-  the same binding in two more places than a widget does: ``entries.resource``
-  at the top of the owner's file, and ``entryKeys.resource`` on each dashboard.
-  The per-dashboard one is read. The container-level one is not: it sits
-  outside every dashboard document, shared by all of that owner's dashboards,
-  so attributing its names to any one of them would carry a group into a
-  bundle that does not use it. Safe because all six group names it carries
-  across the corpus are also bound by a widget scope in the same container,
-  which is followed, and the block is copied verbatim into the rebuilt inner
-  zip either way.
+Three deliberate exclusions, each a decision rather than an oversight:
 
 * **Prose.** ``PROSE_KEYS`` is skipped for every kind, not only for super
   metrics: these exports quote another object's uuid in a description
@@ -161,7 +150,10 @@ class Node:
     member: str
     index: int
     owner: str = ""
+    stock_or_derived: bool = False
     refs: List[Ref] = field(default_factory=list)
+    description: str = ''
+    modified: str = ''
 
     @property
     def key(self) -> str:
@@ -186,7 +178,7 @@ class Node:
         return {
             "key": self.key, "kind": self.kind, "name": self.name,
             "uuid": self.uuid, "ident": self.ident, "member": self.member,
-            "owner": self.owner or None,
+            "owner": self.owner or None, "stock_or_derived": self.stock_or_derived,
             "refs": [{"kind": r.kind, "ident": r.ident, "via": r.via} for r in self.refs],
         }
 
@@ -208,25 +200,12 @@ class Note:
 
 @dataclass(frozen=True)
 class MissingEdge:
-    """An edge whose target is not in the export.
-
-    Two things can be true of one, and ``is_missing_dependency`` says which.
-    A *missing dependency* is content that would have to be in the bundle for
-    the carried object to work on the target: a view, a super metric, an
-    alert, a symptom. A bundle built without it breaks, so ``build`` refuses a
-    selection that depends on one (issue #31). The other case is content the
-    tool never carries and every VCF Operations instance has anyway, a custom
-    group's policy, which is listed as referenced but not carried and does not
-    stop a build. An export carries custom content only, so an edge to a view
-    or super metric that ships with the product or inside a management pack
-    lands here by construction too; nothing in an export tells that apart from
-    an object that is genuinely gone, and that is why it is refused rather
-    than guessed at. See ``NOT_A_DEPENDENCY`` for the whole table.
-    """
+    """An unresolved reference and its offline classification."""
     source_key: str
     kind: str
     ident: str
     via: str
+    classification: str = 'blocking'
 
 
 @dataclass
@@ -234,6 +213,19 @@ class Graph:
     nodes: Dict[str, Node] = field(default_factory=dict)
     containers: List[Container] = field(default_factory=list)
     unknown_members: List[str] = field(default_factory=list)
+    directory_owners: set = field(default_factory=set)
+    owner_names: Dict[str, str] = field(default_factory=dict)
+    _label_cache: Dict[str, str] = field(default_factory=dict, repr=False)
+    _label_cache_size: int = field(default=-1, repr=False)
+    directory_shared_dashboards: set = field(default_factory=set)
+    locally_shared_dashboards: set = field(default_factory=set)
+    ownership_source_known: bool = False
+    policy_names: Dict[str, str] = field(default_factory=dict)
+    metric_policies: Dict[str, List[str]] = field(default_factory=dict)
+    metric_kinds: Dict[str, List[str]] = field(default_factory=dict)
+    policy_data_available: bool = False
+    policy_file_present: bool = False
+    dashboard_bindings: Dict[str, List[dict]] = field(default_factory=dict)
     missing: List[MissingEdge] = field(default_factory=list)
     # By-name references that several different objects answer to; every match
     # is carried, and the admin is told rather than left to find out.
@@ -269,6 +261,122 @@ class Graph:
     def notes_for(self, key: str) -> List[Note]:
         return [n for n in self.ambiguous + self.unhandled if n.source_key == key]
 
+
+
+
+def object_label(graph: Graph, node: Node) -> str:
+    """One consistent human label, adding details only to distinguish peers."""
+    if graph._label_cache_size != len(graph.nodes):
+        groups = {}
+        for item in graph.nodes.values():
+            groups.setdefault((item.kind, item.name), []).append(item)
+        labels = {}
+        for peers in groups.values():
+            if len(peers) == 1:
+                labels[peers[0].key] = peers[0].name
+                continue
+            details = {item.key: ([f"owner {graph.owner_names.get(item.owner, 'Unknown owner')}"]
+                                  if item.owner else []) for item in peers}
+            def signature(item):
+                return tuple(details[item.key])
+            for field_name in ('modified', 'description'):
+                partitions = {}
+                for item in peers:
+                    partitions.setdefault(signature(item), []).append(item)
+                for same in partitions.values():
+                    values = {getattr(item, field_name) for item in same}
+                    if len(same) > 1 and len(values) > 1 and any(values):
+                        for item in same:
+                            details[item.key].append(getattr(item, field_name) or 'not recorded')
+            partitions = {}
+            for item in peers:
+                partitions.setdefault(signature(item), []).append(item)
+            for same in partitions.values():
+                if len(same) < 2:
+                    continue
+                ids = [item.uuid or item.ident for item in same]
+                width = 4
+                while width < max(map(len, ids), default=0) and len({v[-width:] for v in ids}) < len(ids):
+                    width += 1
+                suffixes = [v[-width:] for v in ids]
+                for index, (item, suffix) in enumerate(zip(same, suffixes), 1):
+                    detail = ('id …' + suffix) if suffix else 'copy ' + str(index)
+                    if suffixes.count(suffix) > 1:
+                        detail += f', copy {index}'
+                    details[item.key].append(detail)
+            for item in peers:
+                labels[item.key] = (item.name + ' (' + ' · '.join(details[item.key]) + ')'
+                                    if details[item.key] else item.name)
+        graph._label_cache, graph._label_cache_size = labels, len(graph.nodes)
+    return graph._label_cache.get(node.key, node.name)
+
+
+def _display_metadata(raw: bytes):
+    """Read optional human descriptions and modification dates from a document."""
+    doc = _json(raw)
+    if isinstance(doc, dict):
+        description = doc.get('description') or doc.get('Description') or ''
+        modified = next((doc.get(key) for key in ('lastModified', 'lastModifiedTime',
+                         'modifiedTime', 'lastUpdated') if doc.get(key)), '')
+    else:
+        root = _xml(raw)
+        description = (root.findtext('Description') or '') if root is not None else ''
+        modified = ((root.get('lastModified') or root.findtext('LastModified') or '')
+                    if root is not None else '')
+    description = ' '.join(description.split()) if isinstance(description, str) else ''
+    from datetime import datetime, timezone
+    import os
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    def local_label(moment):
+        try:
+            zone_name = os.environ.get('TZ')
+            if zone_name is not None:
+                zone = ZoneInfo(zone_name.lstrip(':') or 'UTC')
+                local = moment.astimezone(zone)
+            else:
+                local = moment.astimezone()
+            label = local.strftime('%Y-%m-%d %H:%M %Z').strip()
+            if local.tzname():
+                return label
+        except (ValueError, OverflowError, OSError, ZoneInfoNotFoundError):
+            pass
+        return moment.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+
+    try:
+        if isinstance(modified, (int, float)) and not isinstance(modified, bool):
+            seconds = modified / 1000 if modified > 100000000000 else modified
+            modified = local_label(datetime.fromtimestamp(seconds, timezone.utc))
+        elif isinstance(modified, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', modified.strip()):
+            modified = modified.strip()
+        elif isinstance(modified, str) and modified.strip():
+            date = datetime.fromisoformat(modified.strip().replace('Z', '+00:00'))
+            modified = local_label(date) if date.tzinfo else ''
+        else:
+            modified = ''
+    except (ValueError, OverflowError, OSError):
+        modified = ''
+    return description, modified
+
+def dashboard_supermetrics(graph: Graph, key: str) -> List[Node]:
+    """Super metrics reachable from one dashboard, including through views."""
+    stack = list(graph.edges.get(key, []))
+    seen = set()
+    metrics = []
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        node = graph.nodes.get(current)
+        if node is None:
+            continue
+        if node.kind == 'dashboard':
+            continue
+        if node.kind == 'supermetric':
+            metrics.append(node)
+        stack.extend(graph.edges.get(current, []))
+    return metrics
 
 def _resolve_index(nodes: Dict[str, Node]) -> Dict[Tuple[str, str], List[str]]:
     """(kind, identifier) -> node keys, for every identifier an object can be
@@ -447,7 +555,141 @@ def _resource_names(node, where: str, unhandled: List[str]) -> List[str]:
     return out
 
 
-def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
+TOKEN_PATTERNS = {kind: re.compile(re.escape(kind) + r":id:\d+_::_")
+                  for kind in ("resource", "resourceKind", "adapterKind")}
+
+
+def dashboard_tokens(value, kind="resource"):
+    """Tokens used in a parsed widget subtree, including embedded filter paths."""
+    return {match.group() for _, text in _json_strings(value, skip_prose=False)
+            for match in TOKEN_PATTERNS[kind].finditer(text)}
+
+
+def dashboard_entry_tables(container):
+    """File-local token bindings, keyed by family and unchanged internal ID."""
+    doc = _json(container.text.encode("utf-8"))
+    entries = doc.get("entries", {}) if isinstance(doc, dict) else {}
+    result = {}
+    for kind in TOKEN_PATTERNS:
+        table = entries.get(kind, []) if isinstance(entries, dict) else []
+        result[kind] = {item["internalId"]: item for item in table
+                        if isinstance(item, dict) and isinstance(item.get("internalId"), str)
+                        } if isinstance(table, list) else {}
+    return result
+
+
+def _own_widget_tokens(widget, kind):
+    def strip_children(value):
+        if isinstance(value, dict):
+            return {k: strip_children(v) for k, v in value.items() if k != 'widgets'}
+        if isinstance(value, list):
+            return [strip_children(v) for v in value]
+        return value
+    return dashboard_tokens(strip_children(widget), kind)
+
+
+def _ordinal(n: int) -> str:
+    suffix = 'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{suffix}"
+
+
+def _widget_label(widget: dict, position: int) -> str:
+    """A widget's name, or its type and place on the dashboard when it has none."""
+    named = widget.get('name') or widget.get('title')
+    if named:
+        return str(named)
+    kind = widget.get('type')
+    return f"{kind if isinstance(kind, str) and kind else 'Widget'}, {_ordinal(position)} widget"
+
+
+def _dashboard_widget_labels(doc) -> List[tuple]:
+    """Every widget object in the document with its label, in document order."""
+    out = []
+    for widgets in _json_values(doc, 'widgets'):
+        if not isinstance(widgets, list):
+            continue
+        for widget in widgets:
+            if isinstance(widget, dict):
+                out.append((widget, _widget_label(widget, len(out) + 1)))
+    return out
+
+
+def _dashboard_bindings(doc, tables):
+    result = []
+    for widget, label in _dashboard_widget_labels(doc):
+        for kind in TOKEN_PATTERNS:
+            for token in sorted(_own_widget_tokens(widget, kind)):
+                binding = tables[kind].get(token)
+                row = {'widget': label, 'token': token, 'family': kind, 'entry': binding}
+                if row not in result:
+                    result.append(row)
+    return result
+
+
+def is_directory_group(group) -> bool:
+    """A sharing group whose source type is present and is not LOCAL."""
+    if not isinstance(group, dict):
+        return False
+    source_type = group.get("sourceType")
+    return bool(source_type) and source_type != "LOCAL"
+
+
+def same_id_dashboard_lines(graph: Graph, keys: Sequence[str], keep_ownership: bool = False) -> List[str]:
+    """Name copies that cannot be merged into the same target owner."""
+    if keep_ownership:
+        return []
+    copies = {}
+    for key in keys:
+        node = graph.nodes.get(key)
+        if node and node.kind == 'dashboard' and node.owner:
+            copies.setdefault(node.ident, []).append(node)
+    return ['Dashboard copies ' + ', '.join(object_label(graph, n) for n in nodes)
+            + ' have the same ID; choose one copy to carry'
+            for nodes in copies.values() if len({n.owner for n in nodes}) > 1]
+
+
+def dashboard_binding_lines(graph: Graph, key: str) -> List[str]:
+    """Explain target requirements without asserting target presence."""
+    rows = graph.dashboard_bindings.get(key, [])
+    if not rows:
+        return []
+    adapters = set()
+    lines = []
+    groups = {}
+    for node in graph.nodes.values():
+        if node.kind == 'customgroup':
+            groups.setdefault(node.name, []).append(node)
+    for row in rows:
+        binding = row['entry']
+        widget = row['widget']
+        if not isinstance(binding, dict):
+            lines.append(f"Widget {widget}: an object or kind could not be identified in this export; check the source.")
+            continue
+        adapter = str(binding.get('adapterKindKey') or binding.get('adapterKind') or '')
+        kind = str(binding.get('resourceKindKey') or binding.get('resourceKind') or '')
+        name = str(binding.get('name') or '')
+        if row['family'] == 'adapterKind' and not adapter:
+            adapter = name
+        if adapter:
+            adapters.add(adapter)
+        details = ' / '.join(part for part in (adapter, kind, name) if part) or 'an unnamed resource'
+        if row['family'] != 'resource':
+            lines.append(f"Widget {widget}: requires {details} on the target; the dashboard may stay loading if it is absent.")
+        elif adapter == 'Container' and name in groups:
+            labels = ', '.join(object_label(graph, node) for node in groups[name])
+            noun = 'custom group' if len(groups[name]) == 1 else 'custom groups'
+            verb = 'is' if len(groups[name]) == 1 else 'are'
+            lines.append(f"Widget {widget}: {noun} {labels} {verb} included; check the target policy and adapter.")
+        elif name.lower().endswith(' world') or kind.lower().endswith('world'):
+            lines.append(f"Widget {widget}: {details} looks like a world object (inferred); its adapter and at least one collecting instance are needed on the target.")
+        else:
+            lines.append(f"Widget {widget}: {details} will not resolve unless the target has this object; the dashboard may stay loading.")
+    if adapters:
+        lines.insert(0, 'Required adapter kinds: ' + ', '.join(sorted(adapters)))
+    lines.append('Target presence has not been checked.')
+    return lines
+
+def _dashboard_refs(raw: bytes, unhandled: List[str], resource_entries=None) -> List[Ref]:
     """A dashboard's views, metrics, group scopes and navigation destinations.
 
     ``widgets`` is walked **wherever the key appears**, not only at the top and
@@ -479,22 +721,30 @@ def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
         unhandled.append("dashboard: a document that is not a JSON object")
         return []
     out: List[Ref] = []
-    seen_views, seen_groups = set(), set()
+    seen_views = set()
     metric_values: List[str] = []
     links, errors = navigation.links(doc)
-    out.extend(Ref('dashboard', target, 'dashboard navigation', uuid_only=True)
-               for target in dict.fromkeys(target for _, target, _ in links))
     out.extend(Ref('dashboard navigation', error, 'dashboard navigation')
                for error in dict.fromkeys(errors))
 
     widget_lists = [v for v in _json_values(doc, "widgets")]
     widget_ids = {w["id"] for lst in widget_lists if isinstance(lst, list)
                   for w in lst if isinstance(w, dict) and isinstance(w.get("id"), str)}
+    labelled = _dashboard_widget_labels(doc)
+    widget_labels = {id(w): label for w, label in labelled}
+    widget_names = {w['id']: label for w, label in labelled if isinstance(w.get('id'), str)}
+    for source, target, _receivers in links:
+        ref = Ref('dashboard', target, 'navigation from widget ' + widget_names.get(source, 'an unknown widget'),
+                  uuid_only=True)
+        if ref not in out:
+            out.append(ref)
 
-    def add_group(name: str, where: str) -> None:
-        if name not in seen_groups:
-            seen_groups.add(name)
-            out.append(Ref("customgroup", name, where, optional=True))
+    def add_group(name: str, where: str, optional: bool = True) -> None:
+        ref = Ref("customgroup", name, where, optional=optional)
+        if ref not in out:
+            out.append(ref)
+
+    resource_entries = resource_entries or {}
 
     for widgets in widget_lists:
         if widgets is None:
@@ -521,12 +771,24 @@ def _dashboard_refs(raw: bytes, unhandled: List[str]) -> List[Ref]:
                 config = None
             config = config or {}
             view_id = config.get("viewDefinitionId")
-            if isinstance(view_id, str) and view_id and view_id not in seen_views:
-                seen_views.add(view_id)
-                out.append(Ref("view", view_id, "widget viewDefinitionId"))
-            for name in _resource_names(config.get("resource"),
-                                        "dashboard widget config.resource", unhandled):
-                add_group(name, "widget resource scope, by name")
+            widget_name = widget_labels.get(id(widget), 'a widget')
+            widget_key = (view_id, str(widget.get('id') or widget_name))
+            if isinstance(view_id, str) and view_id and widget_key not in seen_views:
+                seen_views.add(widget_key)
+                out.append(Ref("view", view_id, f"widget {widget_name} viewDefinitionId", uuid_only=True))
+            for token in sorted(dashboard_tokens(widget)):
+                binding = resource_entries.get(token)
+                if binding and binding.get("adapterKindKey") == "Container" and binding.get("name"):
+                    add_group(binding["name"], "widget resource token", optional=False)
+            scope = config.get("resource")
+            scopes = scope if isinstance(scope, list) else [scope]
+            for item in scopes:
+                if dashboard_tokens(item) & resource_entries.keys():
+                    continue
+                for name in _resource_names(item, "dashboard widget config.resource", unhandled):
+                    kinds = [item.get(k) for k in ("adapterKindKey", "resourceKindId") if isinstance(item, dict)]
+                    add_group(name, "widget resource scope, by name", optional=not any(
+                        isinstance(k, str) and "Container" in k for k in kinds))
             metric_values.extend(v for _k, v in _json_strings(widget))
 
     if "widgets" not in doc:
@@ -734,7 +996,62 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
 
 def _build_graph(members: Dict[str, bytes]) -> Graph:
     found, unknown = _containers.discover(members)
+    manifest = _json(members.get('configuration.json', b''))
+    manifest = manifest if isinstance(manifest, dict) else {}
+    # Presence of a type and a matching manifest count supports an offline
+    # inference, not proof that the source export is complete.
+    complete_types = set()
+    for kind, count_key in (('view', 'views'), ('dashboard', 'dashboards')):
+        relevant = [c for c in found if kind in c.kinds]
+        actual = sum(len(c.entries()) for c in relevant)
+        if relevant and isinstance(manifest.get(count_key), int) and manifest[count_key] == actual:
+            complete_types.add(kind)
     graph = Graph(containers=found, unknown_members=unknown)
+    mappings = _json(members.get("usermappings.json", b""))
+    if isinstance(mappings, dict):
+        users = mappings.get("users") or []
+        graph.owner_names = {str(user.get('userId')): str(user.get('userName') or user.get('displayName'))
+                             for user in users if isinstance(user, dict) and user.get('userId')
+                             and (user.get('userName') or user.get('displayName'))}
+        graph.directory_owners = {str(user.get("userId")) for user in users
+                                  if isinstance(user, dict) and user.get("userSourceId")}
+        graph.ownership_source_known = bool(mappings.get("sources")) or bool(graph.directory_owners)
+    owner_ids = sorted({c.owner for c in found if isinstance(c, _containers.DashboardsContainer) and c.owner})
+    for index, owner in enumerate(owner_ids, 1):
+        if not graph.owner_names.get(owner) or graph.owner_names[owner] == owner:
+            graph.owner_names[owner] = f'Owner {index}'
+    for index, owner in enumerate(owner_ids, 1):
+        if sum(1 for other in owner_ids if graph.owner_names[other] == graph.owner_names[owner]) > 1:
+            graph.owner_names[owner] += f' (owner {index})'
+    for member, data in members.items():
+        if not member.startswith("dashboardsharings/"):
+            continue
+        owner = member.split("/", 1)[1]
+        groups = _json(data)
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                continue
+            target = (graph.directory_shared_dashboards if is_directory_group(group)
+                      else graph.locally_shared_dashboards)
+            for dash in group.get("dashboards", []) or []:
+                if isinstance(dash, dict) and dash.get("dashboardId"):
+                    target.add((owner, str(dash["dashboardId"])))
+    policy_root = _xml(members.get("policies.xml", b""))
+    graph.policy_file_present = "policies.xml" in members
+    if policy_root is not None:
+        for policy in policy_root.iter():
+            if policy.tag.split('}')[-1].lower() != 'policy':
+                continue
+            ident = policy.get('id') or policy.get('uuid') or ''
+            name = policy.get('name') or policy.findtext('Name') or ident
+            if not ident:
+                continue
+            graph.policy_names[ident] = name
+            graph.policy_data_available = True
+            for metric in policy.iter():
+                if (metric.tag.split('}')[-1].lower() == 'supermetric'
+                        and (metric.get('enabled') or '').lower() == 'true' and metric.get('id')):
+                    graph.metric_policies.setdefault(metric.get('id'), []).append(ident)
     dashboard_docs = {}
     for container in found:
         runlog.detail("container.found", member=container.member,
@@ -746,17 +1063,34 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                              "in it can be selected and none of it is carried"))
 
     for container in found:
+        tables = (dashboard_entry_tables(container)
+                  if isinstance(container, _containers.DashboardsContainer) else None)
+        resource_entries = tables['resource'] if tables is not None else None
         for entry in container.entries():
+            description, modified = _display_metadata(entry.raw)
             node = Node(kind=entry.kind, ident=entry.ident, name=entry.name,
                         uuid=entry.uuid, member=container.member, index=entry.index,
-                        owner=entry.owner)
+                        owner=entry.owner, description=description, modified=modified)
             # Identifiers reach the log through here, where the tool knows they
             # came out of a content document rather than out of a user record.
             runlog.content_id(node.ident)
             runlog.content_id(node.uuid)
             shapes: List[str] = []
-            node.refs = list(
-                _REF_EXTRACTORS.get(entry.kind, lambda _e, _n: [])(entry, shapes))
+            if entry.kind == "dashboard" and isinstance(container, _containers.DashboardsContainer):
+                dashboard_doc = _json(entry.raw)
+                node.stock_or_derived = bool(dashboard_doc.get('adapterName')) if isinstance(dashboard_doc, dict) else False
+                node.refs = _dashboard_refs(entry.raw, shapes, resource_entries)
+            else:
+                node.refs = list(
+                    _REF_EXTRACTORS.get(entry.kind, lambda _e, _n: [])(entry, shapes))
+            if node.kind == 'supermetric':
+                metric_doc = _json(entry.raw)
+                kinds = metric_doc.get('resourceKinds', []) if isinstance(metric_doc, dict) else []
+                graph.metric_kinds[node.ident] = [
+                    ' / '.join(str(k.get(part)) for part in ('adapterKindKey', 'resourceKindKey')
+                               if k.get(part)) for k in kinds if isinstance(k, dict)] if isinstance(kinds, list) else []
+                node.refs.extend(Ref('policy', policy, 'source policy enables super metric')
+                                 for policy in dict.fromkeys(graph.metric_policies.get(node.ident, [])))
             for ref in node.refs:
                 runlog.content_id(ref.ident)
             runlog.debug("node.found", kind=node.kind, uuid=node.uuid or "",
@@ -773,6 +1107,10 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                     graph.unhandled.append(note)
             if node.kind == 'dashboard':
                 dashboard_docs.setdefault(node.key, []).append(_json(entry.raw))
+                binding_rows = graph.dashboard_bindings.setdefault(node.key, [])
+                for row in _dashboard_bindings(_json(entry.raw), tables):
+                    if row not in binding_rows:
+                        binding_rows.append(row)
             if node.key in graph.nodes:
                 runlog.detail("node.duplicate", kind=node.kind, uuid=node.uuid or "",
                               name=node.name, member=container.member,
@@ -785,6 +1123,7 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 # Every retained dashboard copy contributes its dependencies,
                 # even when its display identity is duplicated.
                 if node.kind == 'dashboard':
+                    graph.nodes[node.key].stock_or_derived |= node.stock_or_derived
                     existing = graph.nodes[node.key].refs
                     for ref in node.refs:
                         if ref not in existing:
@@ -811,7 +1150,11 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 # two. Membership is checked against a set rather than by
                 # scanning the list, which on a 430-object export with 201
                 # such edges is the difference between linear and quadratic.
-                gap = MissingEdge(node.key, ref.kind, ref.ident, ref.via)
+                classification = ('target_binding' if node.kind == 'dashboard' and ref.kind == 'customgroup'
+                                  else 'inferred_dangling' if node.kind == 'dashboard'
+                                  and ref.kind in complete_types
+                                  and ref.kind in ('view', 'dashboard') else 'blocking')
+                gap = MissingEdge(node.key, ref.kind, ref.ident, ref.via, classification)
                 if not ref.optional and gap not in seen_gaps:
                     seen_gaps.add(gap)
                     graph.missing.append(gap)
@@ -882,7 +1225,7 @@ def _navigation_widget_gaps(graph, docs, uuid_index):
             for source, target, receivers in navigation.links(doc)[0]:
                 if source not in source_widgets:
                     gaps.append(MissingEdge(key, 'dashboard widget', source,
-                                            'dashboard navigation source widget'))
+                                            'dashboard navigation source widget', 'inert'))
                 destinations = uuid_index.get(('dashboard', target), [])
                 # A missing dashboard already has a blocking gap. Validate
                 # every retained copy, not the union of their widget IDs.
@@ -890,7 +1233,7 @@ def _navigation_widget_gaps(graph, docs, uuid_index):
                     for receiver in receivers:
                         if any(receiver not in defined for defined in widgets[destination]):
                             gaps.append(MissingEdge(key, 'dashboard widget', receiver,
-                                                    'dashboard navigation destination widget'))
+                                                    'dashboard navigation destination widget', 'inert'))
         for gap in dict.fromkeys(gaps):
             graph.missing.append(gap)
             runlog.content_id(gap.ident)
@@ -1016,36 +1359,18 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
     return "\n".join(lines) + "\n"
 
 
-# Which target kinds a missing edge can point at without being a missing
-# dependency, each with why. Keyed by the kind the reference was parsed as,
-# which is decided by the field it was read from (a widget's
-# ``viewDefinitionId`` is a view, a group's ``policy`` is a policy), never by
-# the shape of the identifier: an id that looks built-in is a regex opinion,
-# and this table holds only what the parsed document itself says.
-#
-# Everything not in this table is a missing dependency and a build refuses
-# it. That covers the kinds the operator named (dashboard, view, super metric,
-# alert, symptom, recommendation, report) and the two a notification rule
-# needs (its outbound setting and its payload template), which are the admin's
-# own configuration rather than anything an instance ships with. For the
-# named kinds the honest position is that the classification cannot be made:
-# an export carries custom content only and names a view or a super metric by
-# identifier alone, so one that ships with the product or a management pack
-# and one left out of the export look the same from here. Refusing is the
-# safe default (Scott, 2026-10-05: "a missing dependency breaks the bundle").
-# On the committed fixture that refuses 2 super metrics, 2 views (one absent
-# view, once per owner's copy of the dashboard naming it), 1 alert and 1
-# outbound setting, and lets 1 policy through.
+# Policies are never carried. Other references may be non-blocking when
+# evidence supports a dangling source reference or an inert navigation link.
 NOT_A_DEPENDENCY: Dict[str, str] = {
     "policy": ("policies.xml is in the export but is a member this tool never carries "
-               "into a bundle; check the group policy assignment on the target"),
+               "into a bundle; check the group policy assignment and super metric enablement on the target"),
 }
 
 
 def is_missing_dependency(gap: MissingEdge) -> bool:
     """Whether a bundle built without this target would break on the target,
     which is what makes a build refuse the selection."""
-    return gap.kind not in NOT_A_DEPENDENCY
+    return gap.kind not in NOT_A_DEPENDENCY and gap.classification == 'blocking'
 
 
 def missing_reason(gap: MissingEdge) -> str:
@@ -1058,6 +1383,16 @@ def missing_reason(gap: MissingEdge) -> str:
     the product or was left out, so the line says why the build refuses it
     rather than printing "not in this export" and letting the admin guess.
     """
+    if gap.classification == 'inferred_dangling':
+        effect = ('the widget may show that the view does not exist' if gap.kind == 'view'
+                  else 'the navigation link may be absent')
+        return runlog.prose('inferred to be already missing on the source because this export includes '
+                            'this content type; the export may be incomplete, so verify the source. '
+                            + effect + ' unless the target has it')
+    if gap.classification == 'target_binding':
+        return runlog.prose('this Container object is not in the custom groups export; the dashboard may stay loading unless the target has it')
+    if gap.classification == 'inert':
+        return runlog.prose('this navigation widget reference is inert; the affected link or selection may not work')
     if gap.kind in NOT_A_DEPENDENCY:
         return runlog.prose(NOT_A_DEPENDENCY[gap.kind])
     if gap.kind == 'dashboard widget':
@@ -1067,6 +1402,10 @@ def missing_reason(gap: MissingEdge) -> str:
     if gap.kind == 'dashboard navigation':
         return runlog.prose('the navigation structure cannot be resolved; repair the '
                             'link on the source and export again; bundle creation is blocked')
+    if gap.kind == 'view' and gap.source_key.startswith('report:'):
+        return runlog.prose('a report section names a view absent from this export; '
+                            'export it as well or remove the report from the selection; '
+                            'bundle creation is blocked')
     if gap.kind == 'dashboard':
         return runlog.prose('the referenced dashboard is absent from this export; '
                             'export it as well or remove the dashboard that needs it; '
@@ -1078,12 +1417,44 @@ def missing_reason(gap: MissingEdge) -> str:
         return runlog.prose(f"it is not in this export; {what}, not something every "
                             "instance ships with, so the rule that names it cannot be "
                             "carried without it")
-    return runlog.prose(f"it is not in this export; an export carries custom content only "
-                        f"and names the {gap.kind} it needs by identifier alone, so nothing "
-                        "here tells one that ships with the product or a management pack "
-                        "apart from one left out of the export, and a bundle built without "
-                        "it is refused rather than guessed at")
+    return runlog.prose(f"it is not in this export; completeness has not been established for "
+                        f"this {gap.kind}, so one that ships with the product or a management pack "
+                        "cannot be distinguished from one left out of the export, and a bundle "
+                        "built without it is refused rather than guessed at")
 
+
+
+def human_missing_line(graph: Graph, gap: MissingEdge) -> str:
+    """Describe an unresolved reference without internal field names."""
+    node = graph.nodes.get(gap.source_key)
+    source = object_label(graph, node) if node else 'Selected content'
+    via = gap.via
+    if via.startswith('widget ') and via.endswith(' viewDefinitionId'):
+        widget = via[len('widget '):-len(' viewDefinitionId')]
+        subject = f'Dashboard {source}, widget {widget}: the view is missing from the export'
+    elif gap.kind == 'dashboard' and via.startswith('navigation from widget '):
+        widget = via[len('navigation from widget '):]
+        subject = f'Dashboard {source}, widget {widget}: a linked dashboard is missing from the export'
+    elif gap.kind == 'dashboard widget':
+        subject = f'Dashboard {source}: a navigation link refers to a missing widget'
+    elif gap.kind == 'view' and node and node.kind == 'report':
+        subject = f'Report {source}: a required view is missing from the export'
+    elif gap.kind == 'policy':
+        subject = f'{source}: check the policy assignment on the target'
+    else:
+        kind = {'supermetric': 'super metric', 'customgroup': 'custom group',
+                'outboundsetting': 'outbound setting', 'notificationtemplate': 'notification template'}.get(gap.kind, gap.kind)
+        name = (f' {gap.ident}' if gap.kind == 'supermetric' and not _UUID_SHAPE.match(gap.ident) else '')
+        subject = f'{source}: a required {kind}{name} is missing from the export'
+    if gap.classification == 'inferred_dangling':
+        return subject + '. This may already be missing on the source. This is an inference; the export may be incomplete. Check the source and target.'
+    if gap.classification == 'inert':
+        return subject + '. The link may not work; check it on the target.'
+    if gap.classification == 'target_binding':
+        return subject + '. The dashboard may remain loading unless the object exists on the target.'
+    if gap.kind == 'policy':
+        return subject + '.'
+    return subject + '. Export the required content or remove the affected selection.'
 
 def missing_line(graph: "Graph", gap: MissingEdge) -> str:
     """One line naming a missing edge: what, wanted by whom, via which field,
@@ -1111,11 +1482,12 @@ def _reachable(graph: Graph, starts: Sequence[Node]) -> set:
 def as_dict(graph: Graph) -> dict:
     return {
         "counts": graph.counts(),
+        "dashboard_bindings": graph.dashboard_bindings,
         "nodes": [n.as_dict() for n in graph.ordered()],
         "edges": {k: v for k, v in sorted(graph.edges.items()) if v},
         "roots": [n.key for n in graph.roots()],
         "missing": [{"source": m.source_key, "kind": m.kind, "ident": m.ident, "via": m.via,
-                     "missing_dependency": is_missing_dependency(m),
+                     "missing_dependency": is_missing_dependency(m), "classification": m.classification,
                      "reason": str(missing_reason(m))}
                     for m in graph.missing],
         "ambiguous": [n.text for n in graph.ambiguous],

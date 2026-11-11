@@ -14,11 +14,9 @@ Every class here does the same two things:
 * ``rebuild(indexes)``: a fresh container holding only those entries, each
   document copied byte for byte.
 
-Container-level material that is not any one object's document (a dashboard
-file's ``entries`` resource table, ``customGroupTypes``,
-``outboundsettings.json``'s ``serviceCredentials``) is copied across verbatim
-whenever the container is written at all; it is scaffolding, and dropping it
-would change how the documents read on import.
+Container-level tables and localization are narrowed when their association
+with selected objects is known. Unattributed material is retained and reported.
+Other scaffolding is copied unchanged.
 
 Containers are recognised by content, never by member name, because UI
 exports and API exports name members differently. The member name the source
@@ -137,6 +135,96 @@ class Container:
         raise NotImplementedError
 
 
+def _localization_keys(raw, kind):
+    """Explicit localization keys used by one parsed document."""
+    if kind == 'view':
+        import xml.etree.ElementTree as ET
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError:
+            return set()
+        return {v for el in root.iter() for k, v in el.attrib.items()
+                if k.lower() == 'localizationkey' and v}
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return set()
+    from vcfcf_migrator.graph import _json_strings
+    return {v for k, v in _json_strings(doc, skip_prose=False)
+            if k.lower() == 'localizationkey' and v}
+
+
+
+def _split_records(text):
+    return re.findall(r'[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+', text)
+
+
+def _continued_property(line):
+    body = line.rstrip('\r\n')
+    return (len(body) - len(body.rstrip('\\'))) % 2 == 1
+
+
+def _property_key(record):
+    """Return a property's key spelling without including its value."""
+    logical = ''
+    for index, line in enumerate(_split_records(record)):
+        part = line.rstrip('\r\n').lstrip(' \t\f')
+        if _continued_property(part):
+            part = part[:-1]
+        logical += part
+    escaped = False
+    for index, char in enumerate(logical):
+        if not escaped and (char in '=:' or char.isspace()):
+            return logical[:index]
+        escaped = char == '\\' and not escaped
+    return logical
+
+def _prune_properties(data, entries, selected, kind, member, notes):
+    """Keep selected and unattributed properties; drop only known other keys."""
+    selected = set(selected)
+    explicit = [_localization_keys(entry.raw, kind) for entry in entries]
+    lines = _split_records(data.decode('latin-1'))
+    records = []
+    for line in lines:
+        if (records and not records[-1].lstrip(' \t\f').startswith(('#', '!'))
+                and _continued_property(records[-1])):
+            records[-1] += line
+        else:
+            records.append(line)
+    kept = []
+    dropped = []
+    unknown = []
+    for record in records:
+        stripped = record.lstrip(' \t\f')
+        if not stripped.strip(' \t\f\r\n') or stripped.startswith(('#', '!')):
+            kept.append(record)
+            continue
+        if '\\' in record:
+            kept.append(record)
+            unknown.append(_property_key(record) or '(unnamed entry)')
+            continue
+        key = re.split(r'[ \t\f\r\n=:]', stripped, maxsplit=1)[0]
+        matches = set()
+        for i, entry in enumerate(entries):
+            ident = entry.ident
+            if key in explicit[i] or (
+                ident and len(ident) >= 4 and re.search(
+                    r'(?<![A-Za-z0-9])' + re.escape(ident) + r'(?![A-Za-z0-9])', key)):
+                matches.add(i)
+        if matches and matches.isdisjoint(selected):
+            dropped.append(key)
+        else:
+            kept.append(record)
+            if not matches:
+                unknown.append(key)
+    if dropped:
+        notes.append(f'{member}: pruned {len(dropped)} localization keys for unselected objects: '
+                     + ', '.join(dict.fromkeys(dropped)))
+    if unknown:
+        notes.append(f'{member}: kept unattributed localization keys: ' + ', '.join(dict.fromkeys(unknown)))
+    return ''.join(kept).encode('latin-1')
+
+
 # ---------------------------------------------------------------------------
 # XML containers
 # ---------------------------------------------------------------------------
@@ -144,13 +232,9 @@ class Container:
 class XmlElementContainer(Container):
     """``views.zip``, ``reports.zip`` and the three ``alertContent`` files.
 
-    ``inner`` is set when the XML sits inside a nested zip (``views.zip``
-    holds ``content.xml``), in which case the rebuilt member is a fresh zip
-    with the same inner name and **every other member of the source zip
-    copied through verbatim**. Every views.zip and reports.zip in all five
-    corpus exports holds ``content.xml`` alone, so no corpus proof exercises
-    this; the dashboard inner zips, which do carry siblings, are what says
-    what a dropped sibling costs, since theirs are the localization bundles.
+    When the XML is in a nested zip, unrelated siblings are copied. View
+    localization keys tied only to unselected views are removed; keys that
+    cannot be attributed are retained and reported.
     """
 
     def __init__(self, member: str, data: bytes, tag: str, kind: str,
@@ -190,6 +274,7 @@ class XmlElementContainer(Container):
         return out
 
     def rebuild(self, indexes: Sequence[int], carried_names=None) -> bytes:
+        self.notes = []
         picked = [self.container.elements[i] for i in sorted(indexes)]
         xml = self.container.rebuild(picked, self.data)
         if self.inner is None:
@@ -198,6 +283,9 @@ class XmlElementContainer(Container):
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr(zip_entry(self.inner), xml)
             for name, data in self.siblings.items():
+                if self.kind == 'view' and name.endswith('.properties'):
+                    data = _prune_properties(data, self.entries(), indexes, 'view',
+                                             self.member + '/' + name, self.notes)
                 z.writestr(zip_entry(name), data)
         return buf.getvalue()
 
@@ -344,11 +432,33 @@ class CustomGroupsContainer(JsonContainer):
         return out
 
     def rebuild(self, indexes: Sequence[int], carried_names=None) -> bytes:
+        self.notes = []
         picked = rawdoc.build_array([self.items[i].raw(self.text) for i in sorted(indexes)])
+        docs = [json.loads(self.items[i].raw(self.text)) for i in indexes]
+        types = {doc.get('resourceKind') for doc in docs if isinstance(doc, dict)}
+        unknown_type = not all(isinstance(doc, dict) and doc.get('resourceKind') for doc in docs)
         pairs = []
         for value in self.top:
-            pairs.append((value.key or "", picked if value.key == "customGroups"
-                          else value.raw(self.text)))
+            raw = value.raw(self.text)
+            if value.key == 'customGroups':
+                raw = picked
+            elif value.key == 'customGroupTypes' and not unknown_type:
+                items = rawdoc.json_items(self.text, value.start)
+                kept = []
+                removed = []
+                for item in items:
+                    doc = json.loads(item.raw(self.text))
+                    if not isinstance(doc, dict) or not doc.get('resourceKind') or doc['resourceKind'] in types:
+                        kept.append(item.raw(self.text))
+                    else:
+                        removed.append(str(doc['resourceKind']))
+                if removed:
+                    self.notes.append(f'{self.member}: pruned {len(removed)} unused custom group types: '
+                                      + ', '.join(removed))
+                raw = rawdoc.build_array(kept)
+            elif value.key == 'customGroupTypes' and unknown_type:
+                self.notes.append(f'{self.member}: kept custom group types because a selected group has no type')
+            pairs.append((value.key or '', raw))
         return rawdoc.build_object(pairs).encode("utf-8")
 
 
@@ -399,15 +509,8 @@ class DashboardsContainer(JsonContainer):
     Reading fewer here than ``inspect`` lists is how ``tree`` came to see no
     dashboard in an export ``inspect`` had just listed dashboards from.
 
-    Only the ``dashboards`` array is subset. The same dashboard uuid can
-    appear under two owners (five such pairs on one corpus export), and each
-    copy is its own entry, so selecting both keeps both. An archive with no
-    owner in its name gets an empty owner, which is a dashboard node with no
-    ``@owner`` suffix rather than a guess.
-
-    Every other member of the archive (the localisation ``.properties``
-    files) is copied verbatim: they are the container's, not any one
-    dashboard's, and dropping them would change how a carried dashboard reads.
+    Dashboard documents stay byte-exact. Shared resource tables and
+    attributable localization are narrowed to the carried dashboards.
     """
 
     kinds = ("dashboard",)
@@ -447,9 +550,42 @@ class DashboardsContainer(JsonContainer):
         return out
 
     def rebuild(self, indexes: Sequence[int], carried_names=None) -> bytes:
+        from vcfcf_migrator.graph import _json_values, dashboard_tokens
+        self.notes = []
         picked = rawdoc.build_array([self.items[i].raw(self.text) for i in sorted(indexes)])
-        pairs = [(v.key or "", picked if v.key == "dashboards" else v.raw(self.text))
-                 for v in self.top]
+        tokens = {'resource': set(), 'resourceKind': set()}
+        for i in indexes:
+            dashboard = json.loads(self.items[i].raw(self.text))
+            for widgets in _json_values(dashboard, 'widgets'):
+                if isinstance(widgets, list):
+                    for widget in widgets:
+                        if isinstance(widget, dict):
+                            for kind in tokens:
+                                tokens[kind].update(dashboard_tokens(widget, kind))
+        pairs = []
+        for value in self.top:
+            raw = value.raw(self.text)
+            if value.key == 'dashboards':
+                raw = picked
+            elif value.key == 'entries':
+                entries = json.loads(raw)
+                if isinstance(entries, dict):
+                    for kind in tokens:
+                        table = entries.get(kind)
+                        if not isinstance(table, list):
+                            continue
+                        kept = [item for item in table if not isinstance(item, dict)
+                                or not isinstance(item.get('internalId'), str)
+                                or item['internalId'] in tokens[kind]]
+                        if len(kept) != len(table):
+                            removed = [item for item in table if item not in kept]
+                            names = [' / '.join(str(item.get(k)) for k in ('adapterKindKey', 'resourceKindKey', 'name')
+                                                if item.get(k)) or 'unnamed item' for item in removed]
+                            self.notes.append(f'{self.member}: pruned {len(removed)} unused {kind} entries: '
+                                              + ', '.join(names))
+                        entries[kind] = kept
+                    raw = json.dumps(entries, ensure_ascii=False)
+            pairs.append((value.key or '', raw))
         inner = rawdoc.build_object(pairs).encode("utf-8")
         if not self.archive:
             return inner
@@ -457,6 +593,9 @@ class DashboardsContainer(JsonContainer):
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr(zip_entry(self.INNER), inner)
             for name, data in self.extra.items():
+                if name.endswith('.properties'):
+                    data = _prune_properties(data, self.entries(), indexes, 'dashboard',
+                                             self.member + '/' + name, self.notes)
                 z.writestr(zip_entry(name), data)
         return buf.getvalue()
 

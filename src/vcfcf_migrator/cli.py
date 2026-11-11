@@ -137,6 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="selection file: one uuid or kind:uuid per line, # comments allowed")
     sp.add_argument("--select-all", action="store_true",
                     help="carry every content object the export holds")
+    owner = sp.add_mutually_exclusive_group()
+    owner.add_argument('--target-owner', metavar='USER', default='admin',
+                       help='map dashboards to this target user (default: admin)')
+    owner.add_argument('--keep-directory-ownership', action='store_true',
+                       help='keep source owners and directory sharing; the same users and directories must exist on the target')
     sp.add_argument("--out", metavar="BUNDLE", required=True, help="bundle zip to write")
     sp.add_argument("--json", action="store_true", help="emit the build report as JSON")
 
@@ -300,19 +305,29 @@ def cmd_build(args) -> int:
         print("vcfcf-migrator build: no bundle written", file=sys.stderr)
         return 1
 
+    args.target_owner = args.target_owner.strip()
+    for line in _selection.ownership_messages(graph, picked, args.target_owner,
+                                                args.keep_directory_ownership):
+        print(line, file=sys.stderr)
     try:
         result = _bundle.build_bundle(members.data, members.order, graph, picked,
                                       args.out, marker=members.marker,
                                       directories=members.directories,
-                                      directory_order=members.directory_order)
+                                      directory_order=members.directory_order,
+                                      target_user=args.target_owner,
+                                      keep_ownership=args.keep_directory_ownership)
     except OSError as e:
         print(f"vcfcf-migrator build: cannot write {args.out}: {e}", file=sys.stderr)
+        return 1
+    except (ValueError, RawDocError) as e:
+        print(f"vcfcf-migrator build: {e}; no bundle written", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps({"selection": _selection.as_dict(graph, picked),
                           "build": result.as_dict()}, indent=2))
     else:
-        sys.stdout.write(_selection.render(graph, picked))
+        sys.stdout.write(_selection.render(graph, picked, args.target_owner,
+                                           args.keep_directory_ownership))
         sys.stdout.write(_bundle.render(result))
     return 0
 

@@ -70,32 +70,24 @@ def test_uuid_cannot_resolve_to_a_dashboard_with_that_name(tmp_path):
     _, g = load(path)
     chosen = pick(g, 'a')
     assert len(chosen.keys) == 1
-    assert [(m.kind, m.ident) for m in chosen.missing_dependencies()] == [('dashboard', 'absent')]
+    assert [(m.kind, m.ident) for m in chosen.not_carried()] == [('dashboard', 'absent')]
     assert read_export(path).navigation_gaps == 1
 
 
-def test_missing_dashboard_blocks_cli_and_ui_without_touching_output(tmp_path, config_dir, capsys):
+def test_missing_dashboard_is_reported_and_builds(tmp_path, config_dir, capsys):
     path = export_file(tmp_path, {'owner-a': [dashboard('a', 'missing'), dashboard('safe')]})
-    out = tmp_path / 'bundle.zip'; out.write_bytes(b'keep this existing file')
+    out = tmp_path / 'bundle.zip'
     picks = tmp_path / 'picks.txt'; picks.write_text('a\n')
-    assert main(['build', str(path), '--select', str(picks), '--out', str(out)]) != 0
-    output = capsys.readouterr()
-    assert 'missing' in output.out + output.err
-    assert out.read_bytes() == b'keep this existing file'
+    assert main(['build', str(path), '--select', str(picks), '--out', str(out)]) == 0
+    assert 'may already be missing on the source' in capsys.readouterr().out
+    assert out.exists()
     state = PageState(str(path))
     try:
         key = next(n.key for n in state.graph.nodes.values() if n.uuid == 'a')
         state.toggle(key, on=True)
-        assert state.selection.missing_dependencies()
+        assert not state.selection.missing_dependencies()
         state.tab = 'review'
-        assert 'missing' in state.render().lower()
-        state.build(str(out))
-        assert state.error
-        with pytest.raises(selection.MissingDependency):
-            bundle.build_bundle(state.members.data, state.members.order,
-                                state.graph, state.selection, out)
-        assert out.read_bytes() == b'keep this existing file'
-        assert not pick(state.graph, 'safe').missing_dependencies()
+        assert 'may already be missing on the source' in state.render()
     finally:
         state.log.close()
 
@@ -116,14 +108,12 @@ def test_navigation_gap_count_is_per_entry_across_owner_containers(tmp_path):
     assert read_export(path).navigation_gaps == 1
 
 
-def test_later_duplicate_dashboard_cannot_hide_a_missing_dependency(tmp_path):
+def test_later_duplicate_dashboard_reports_missing_navigation(tmp_path):
     path = export_file(tmp_path, {'owner-a': [dashboard('a'), dashboard('a', 'absent')]})
     members, g = load(path)
     chosen = pick(g, 'a')
-    assert any(m.kind == 'dashboard' and m.ident == 'absent' for m in chosen.missing_dependencies())
-    with pytest.raises(selection.MissingDependency):
-        bundle.build_bundle(members.data, members.order, g, chosen, tmp_path / 'refused.zip')
-    assert not (tmp_path / 'refused.zip').exists()
+    assert any(m.kind == 'dashboard' and m.ident == 'absent' for m in chosen.not_carried())
+    bundle.build_bundle(members.data, members.order, g, chosen, tmp_path / 'carried.zip')
 
 
 def test_later_duplicate_dashboard_adds_its_resolvable_dependency(tmp_path):
@@ -135,6 +125,9 @@ def test_later_duplicate_dashboard_adds_its_resolvable_dependency(tmp_path):
     out = tmp_path / 'carried.zip'
     bundle.build_bundle(members.data, members.order, g, chosen, out)
     with zipfile.ZipFile(out) as outer:
+        manifest = json.loads(outer.read('configuration.json'))
+        assert manifest['dashboards'] == 3
+        assert manifest['dashboardsByOwner'] == [{'owner': 'owner-a', 'count': 3}]
         with zipfile.ZipFile(io.BytesIO(outer.read('dashboards/owner-a'))) as inner:
             docs = json.loads(inner.read('dashboard/dashboard.json'))['dashboards']
     assert [d['id'] for d in docs] == ['a', 'a', 'b']
@@ -145,7 +138,7 @@ def test_missing_widget_in_duplicate_destination_blocks(tmp_path):
     bad = dashboard('b'); bad['widgets'] = []
     path = export_file(tmp_path, {'owner-a': [dashboard('a', 'b'), dashboard('b'), bad]})
     _, g = load(path)
-    assert any(m.kind == 'dashboard widget' for m in pick(g, 'a').missing_dependencies())
+    assert any(m.kind == 'dashboard widget' for m in pick(g, 'a').not_carried())
 
 
 def test_linked_duplicate_destination_keeps_its_other_dependencies(tmp_path):
@@ -170,8 +163,9 @@ def test_missing_widget_blocks_without_claiming_missing_dashboard(tmp_path, brea
         owners['owner-c'] = [bad_copy]
     path = export_file(tmp_path, owners)
     _, g = load(path)
-    gaps = pick(g, 'a').missing_dependencies()
+    gaps = pick(g, 'a').not_carried()
     assert len(gaps) == 1 and gaps[0].kind == 'dashboard widget'
+    assert gaps[0].classification == 'inert'
     assert read_export(path).navigation_gaps == 0
 
 

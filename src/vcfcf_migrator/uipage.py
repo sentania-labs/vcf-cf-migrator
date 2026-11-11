@@ -239,12 +239,21 @@ def _messages(state) -> str:
 
 
 def _build_form(state) -> str:
-    ready = bool(state.selection and state.selection.keys and not state.selection.missing_dependencies())
+    from vcfcf_migrator.graph import same_id_dashboard_lines
+    collisions = same_id_dashboard_lines(state.graph, state.selection.keys, state.owner_mode == 'source') if state.selection else []
+    from vcfcf_migrator.bundle import merge_preview
+    refusals = merge_preview(state.graph, state.selection, state.owner_mode == 'source')[0] if state.selection else []
+    ready = bool(state.selection and state.selection.keys and not state.selection.missing_dependencies()
+                 and not collisions and not refusals)
     reasons = []
     if not (state.selection and state.selection.keys):
         reasons.append("select at least one object")
     if state.selection and state.selection.missing_dependencies():
         reasons.append("resolve the missing references before building")
+    if collisions:
+        reasons.append("choose one copy of each dashboard before building")
+    if refusals:
+        reasons.append("these dashboards cannot be combined; change the owner option or the selection")
     return "".join([
         "<hr style='border:none;border-top:1px solid var(--line2);margin:14px 0'>",
         "<form method='post' action='/build'>",

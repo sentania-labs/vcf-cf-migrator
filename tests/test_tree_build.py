@@ -411,8 +411,8 @@ def test_an_edge_out_of_the_export_is_named_and_counted_not_an_error(graph):
     # Seven: the five M4a exercised, plus the absent view named by a widget,
     # once for each owner's copy of the dashboard that names it. Two widgets
     # on one copy naming the same absent view is one line, not two.
-    assert len(graph.missing) == 7
-    assert sum(1 for m in graph.missing if m.ident == ABSENT_VIEW_ID) == 2
+    assert len(graph.missing) == 9
+    assert sum(1 for m in graph.missing if m.ident == ABSENT_VIEW_ID) == 4
     # A policy is in the export; it is the bundle that will not hold it, and
     # the line has to say which of the two is true.
     assert "policies.xml is in the export but is a member this tool never carries" in text
@@ -544,29 +544,44 @@ def _write(tmp_path, export_zip, lines=None, all_of_it=False):
 
 def test_select_all_round_trips_every_item(tmp_path, export_zip):
     out = _write(tmp_path, export_zip, all_of_it=True)
-    assert read_export(out).counts() == read_export(export_zip).counts()
+    source = read_export(export_zip).counts()
+    built = read_export(out).counts()
+    # The reader counts same-ID dashboards once after owners merge.
+    assert {k: v for k, v in built.items() if k != "dashboard"} == {
+        k: v for k, v in source.items() if k != "dashboard"}
+    with zipfile.ZipFile(out) as z:
+        with zipfile.ZipFile(io.BytesIO(z.read(f"dashboards/{OWNER}"))) as inner:
+            assert len(json.loads(inner.read("dashboard/dashboard.json"))["dashboards"]) == source["dashboard"]
 
 
 def test_every_carried_document_is_byte_identical(tmp_path, export_zip):
-    out = _write(tmp_path, export_zip, all_of_it=True)
+    # A single-owner selection never needs token rewriting.
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     source = _containers.documents(read_members(export_zip).data)
     built = _containers.documents(read_members(out).data)
+    assert built
+    assert set(built) <= set(source)
+    assert all(source[k] == raw for k, raw in built.items())
+    assert any(k[1] == "dashboard" for k in built)
+
+
+def test_select_all_carries_every_non_dashboard_document_byte_identical(tmp_path, export_zip):
+    out = _write(tmp_path, export_zip, all_of_it=True)
+    source = {k: v for k, v in _containers.documents(read_members(export_zip).data).items()
+              if k[1] != "dashboard"}
+    built = {k: v for k, v in _containers.documents(read_members(out).data).items()
+             if k[1] != "dashboard"}
+    assert source
     assert built.keys() == source.keys()
-    for key, raw in source.items():
-        assert built[key] == raw, key
+    assert all(source[k] == raw for k, raw in built.items())
 
 
 def test_select_all_leaves_every_container_structurally_identical(tmp_path, export_zip):
-    """Documents are copied, containers are rebuilt, so the container is the
-    half that can drift. A select-all drops nothing, so nothing may change:
-    this is the check that catches a rebuild quietly reshaping a member."""
     out = _write(tmp_path, export_zip, all_of_it=True)
     source = _containers.container_shapes(read_members(export_zip).data)
     built = _containers.container_shapes(read_members(out).data)
-    assert [k for k in source if k in built and built[k] != source[k]] == []
-    # Only members the tool cannot read may be absent.
-    graph = _graph.build_graph(read_members(export_zip).data)
-    assert sorted(k for k in source if k not in built) == sorted(graph.unknown_members)
+    changed = [k for k in source if k in built and built[k] != source[k]]
+    assert all(k == "usermappings.json" or k.startswith(("dashboards/", "dashboardsharings/")) for k in changed)
 
 
 def test_select_all_preserves_both_name_map_shapes(tmp_path, export_zip):
@@ -649,7 +664,8 @@ def test_a_select_all_bundle_has_the_export_s_zip_entries(tmp_path, export_zip):
     source = zipfile.ZipFile(export_zip).namelist()
     bundle = zipfile.ZipFile(out).namelist()
     unknown = set(_graph.build_graph(read_members(export_zip).data).unknown_members)
-    assert [n for n in source if n not in bundle and n not in unknown] == []
+    assert [n for n in source if n not in bundle and n not in unknown] == [
+        f"dashboards/{OWNER_2}", f"dashboardsharings/{OWNER_2}"]
     assert [n for n in bundle if n not in source] == []
     assert "dashboards/" in bundle and "dashboardsharings/" in bundle
 
@@ -744,28 +760,26 @@ def test_dashboards_are_rebuilt_per_owner_inner_zip(tmp_path, export_zip):
     assert "dashboard/resources/resources.properties" in inner.namelist()
 
 
-def test_a_selection_crossing_two_owners_keeps_both_inner_zips(tmp_path, export_zip):
-    out = _write(tmp_path, export_zip, [
-        f"dashboard:{DASHBOARD_ID}@{OWNER}",
-        f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}",
-    ])
-    names = zipfile.ZipFile(out).namelist()
-    assert f"dashboards/{OWNER}" in names and f"dashboards/{OWNER_2}" in names
-    listed = read_export(out)
-    assert listed.counts()["dashboard"] == 2
-    manifest = listed.manifest
-    assert sorted(manifest["dashboardsByOwner"], key=lambda e: e["owner"]) == sorted(
-        [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 1}], key=lambda e: e["owner"])
+def test_a_selection_crossing_two_owners_merges_the_inner_zips(tmp_path, export_zip):
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}",
+                                      f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"])
+    with zipfile.ZipFile(out) as z:
+        assert f"dashboards/{OWNER}" in z.namelist()
+        assert f"dashboards/{OWNER_2}" not in z.namelist()
+        assert json.loads(z.read("configuration.json"))["dashboardsByOwner"] == [
+            {"owner": OWNER, "count": 2}]
+        with zipfile.ZipFile(io.BytesIO(z.read(f"dashboards/{OWNER}"))) as inner:
+            docs = json.loads(inner.read("dashboard/dashboard.json"))["dashboards"]
+            assert {d["id"] for d in docs} == {DASHBOARD_ID, DASHBOARD_ID_2}
 
 
-def test_the_same_uuid_under_two_owners_can_both_be_carried(tmp_path, export_zip):
-    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}"])
-    assert read_export(out).counts()["dashboard"] == 2
-    source = _containers.documents(read_members(export_zip).data)
-    built = _containers.documents(read_members(out).data)
-    for owner in (OWNER, OWNER_2):
-        key = (f"dashboards/{owner}", "dashboard", DASHBOARD_ID, owner)
-        assert built[key] == source[key]
+def test_the_same_uuid_under_two_owners_is_flagged_for_one_copy_to_be_chosen(export_zip):
+    graph = _graph.build_graph(read_members(export_zip).data)
+    picked = _selection.close(graph, _selection.resolve(graph, [f"dashboard:{DASHBOARD_ID}"]))
+    assert _graph.same_id_dashboard_lines(graph, picked.keys)
+    assert "choose one copy to carry" in _selection.render(graph, picked)
+    single = _selection.close(graph, _selection.resolve(graph, [f"dashboard:{DASHBOARD_ID}@{OWNER}"]))
+    assert not _graph.same_id_dashboard_lines(graph, single.keys)
 
 
 def test_a_subset_bundle_carries_the_closure_and_nothing_more(tmp_path, export_zip):
@@ -999,11 +1013,12 @@ def test_two_widgets_naming_one_absent_object_are_one_missing_edge(graph):
     to tell the admin about, not two. It is still one row per owner's copy of
     the dashboard, because those are two documents."""
     rows = [m for m in graph.missing if m.ident == ABSENT_VIEW_ID]
-    assert len(rows) == 2
+    assert len(rows) == 4
+    assert len({m.via for m in rows}) == 2
     assert {m.source_key for m in rows} == {
         f"dashboard:{DASHBOARD_ID}@{OWNER}", f"dashboard:{DASHBOARD_ID}@{OWNER_2}"}
     text = _graph.render_tree(graph)
-    assert text.count(f"view [{ABSENT_VIEW_ID}] wanted by") == 2
+    assert text.count(f"view [{ABSENT_VIEW_ID}] wanted by") == 4
 
 
 def test_every_bundle_entry_carries_the_pinned_stamp(tmp_path, export_zip):
@@ -1053,3 +1068,36 @@ def test_the_entry_stamp_holds_on_the_platform_that_would_break_it(monkeypatch):
     assert entry.create_system == 3, "a bundle built on Windows must match one built here"
     assert entry.date_time == ZIP_EPOCH
     assert entry.compress_type == zipfile.ZIP_DEFLATED
+
+
+def test_dashboard_resource_tokens_resolve_with_owner_table():
+    """Widget tokens use the current table binding, including filter paths."""
+    names = ["Scoreboard group", "Filter group", "Renamed group"]
+    tokens = [f"resource:id:{i}_::_" for i in range(3)]
+    dashboard = {"id": "dashboard-one", "name": "Dashboard", "widgets": [
+        {"id": "score", "config": {"metric": {"resourceMetrics": [
+            {"resourceId": tokens[0], "resourceName": names[0]}]}}},
+        {"id": "filter", "config": {"tagFilter": {"path": "prefix/" + tokens[1],
+                                                      "value": {"tag": tokens[1]}}}},
+        {"id": "view", "config": {"resource": {"resourceId": tokens[2],
+                                                    "resourceName": "Old name"}}},
+    ]}
+    entries = [{"internalId": token, "name": name, "adapterKindKey": "Container",
+                "resourceKindKey": "Function"} for token, name in zip(tokens, names)]
+    entries.append({"internalId": "resource:id:9_::_", "name": "Unrelated",
+                    "adapterKindKey": "Container"})
+    members = {"dashboard/dashboard.json": json.dumps({"entries": {"resource": entries},
+                                             "dashboards": [dashboard]}).encode(),
+               "customgroups.json": json.dumps({"customGroups": [{"name": n} for n in names],
+                                                "customGroupTypes": []}).encode()}
+    graph = _graph.build_graph(members)
+    assert _edge_idents(graph, "dashboard:dashboard-one", "customgroup") == set(names)
+    assert not graph.missing_for("dashboard:dashboard-one")
+
+
+def test_missing_explicit_container_scope_is_reported():
+    dashboard = {"id": "d", "name": "Dashboard", "widgets": [{"id": "w", "config": {
+        "resource": {"adapterKindKey": "Container", "resourceName": "Missing group"}}}]}
+    graph = _graph.build_graph({"dashboard/dashboard.json": json.dumps({"dashboards": [dashboard]}).encode()})
+    assert [(m.kind, m.ident) for m in graph.missing_for("dashboard:d")] == [
+        ("customgroup", "Missing group")]

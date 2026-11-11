@@ -37,7 +37,7 @@ Interview on 2026-09-14. Each answer is quoted as given.
 | Version handling | 2026-09-15, after the evidence came in: "But those could be settings from the export and not necessarily be version artifacts. Until we have proof drop all version stuff" | **No version handling at all.** No declared source version, no floor, no refusal, no version language in the interface. The tool reads an export and works on it. |
 | Outbound settings | "I believe the secrets are encrypted, so we should just pass them along." then "Yes, endpoints and rules, as exported" | Notification rules and outbound endpoint definitions ride in the bundle exactly as the export carries them, encrypted values included. The tool does not decrypt, edit, or strip them. M4 acceptance includes a real import proving the target accepts the values; if it does not, that is a finding, not a silent drop. |
 | Operator | "Customer-run, no LLM (Recommended)" | Deterministic. No API key, no outbound calls. Shippable as a per-OS binary. |
-| Missing dependencies | 2026-10-05, issue #31: "there should be no override - a missing dependency breaks the bundle - it's something we need to guard against." | **A build refuses a selection that depends on content the export does not carry.** `build` and the page exit non-zero, write nothing and name every missing dependency with its reason; there is no flag and no checkbox past it. A missing dependency is a dashboard, view, super metric, alert, symptom, recommendation or report the export does not hold, or the outbound setting or payload template a rule names. A custom group's policy is referenced but not carried, not a missing dependency: the tool never carries `policies.xml` and every instance has policies of its own. For every other kind nothing in an export tells built-in or management-pack content apart from custom content left out of it (an export carries custom content only and names what it needs by identifier alone), so refusing is the default rather than a guess by identifier shape. On the fixture: 2 super metrics, 2 views, 1 alert and 1 outbound setting refused, 1 policy let through. `corpus-check` keeps its scratch select-all, which is deleted, so the container round trip still runs on real exports; its line counts what a build would refuse. |
+| Missing dependencies | Issue #58 updates issue #31: report source-dangling references and block dependencies the bundle may have been able to carry. | Missing views and dashboards in an export that includes the corresponding type are inferred to be dangling on the source, with the limits of offline evidence stated. Missing navigation widgets are inert. Other missing content remains blocking. Policies are never carried and their assignments must be checked on the target. |
 
 ## Scope
 
@@ -57,8 +57,9 @@ In v1:
 - Selection: pick any node; dependencies are pulled in automatically
   and shown as "required by". Deselecting a dependency that something
   selected still needs is refused with the reason. A selection that
-  depends on content the export does not carry cannot be built at all
-  (#31, see the decisions table).
+  depends on content the export does not carry is blocked unless the
+  reference is inferred to be dangling on the source (see the decisions
+  table).
 - Preview: each dashboard and view rendered with mock data, the same
   renderer the factory uses (`vcfcf_core.dashboards.render`) fed by a
   mock metric provider. Super metrics show the formula and its
@@ -97,10 +98,10 @@ same core:
   source is GUI-only.
 
 **Pass-through is the contract, and it constrains the build path.**
-There is no translation module. The one rule that makes pass-through
-safe: a selected object's document goes into the output bundle as the
+The rule that makes pass-through safe: a selected object's document goes into the output bundle as the
 bytes the export carried, never as a re-serialization of a parsed
-model. Parsing is for the tree and the preview only. Re-rendering a
+model, except for colliding file-local tokens when multiple dashboard owners
+are merged into one target owner. Only those tokens are rewritten. Parsing is for the tree and the preview only. Re-rendering a
 document the tool does not fully understand is how an 8.x field, or a
 9.2 field this tool has never seen, gets silently dropped; copying
 bytes cannot lose a field it does not know about. Where a bundle
@@ -116,7 +117,8 @@ tool rebuilds the containers and copies the documents: the selected
 `ViewDef` element subtree, the selected super metric object, the
 selected dashboard entry, each carried over verbatim into a freshly
 written container holding only what the admin picked. Rewriting the
-container is expected. Rewriting a document is not.
+container is expected. Dashboard token collisions in an owner merge are the
+only exception to document pass-through and are listed in the build report.
 
 A subset also has to be closed, which is what the dependency tree is
 for: selecting a dashboard pulls in its views and their super metrics,

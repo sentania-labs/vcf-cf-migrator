@@ -20,13 +20,10 @@ they are named the way the export names them
 A line that matches nothing is refused: continuing would write a bundle
 quietly missing what the admin asked for.
 
-A closed selection that still depends on content the export does not carry is
-refused too, by ``refuse_missing_dependencies``, which both ``build`` and the
-page's Build button call before the writer. There is no flag and no checkbox
-past it. Scott, 2026-10-05 (issue #31): "there should be no override - a
-missing dependency breaks the bundle - it's something we need to guard
-against." What counts as a missing dependency, and what is merely referenced
-but not carried, is ``graph.is_missing_dependency``.
+A build refuses missing dependencies the bundle may have been able to carry.
+Inferred source-dangling views and dashboards and inert navigation widget
+references are reported without blocking. Offline completeness is uncertain.
+
 """
 from __future__ import annotations
 
@@ -41,8 +38,12 @@ from vcfcf_migrator.graph import (
     MissingEdge,
     Node,
     is_missing_dependency,
-    missing_line,
+    human_missing_line,
+    object_label,
     missing_reason,
+    dashboard_supermetrics,
+    dashboard_binding_lines,
+    same_id_dashboard_lines,
 )
 
 
@@ -292,7 +293,7 @@ def refuse_missing_dependencies(graph: Graph, selection: Selection) -> None:
     gaps = selection.missing_dependencies()
     if not gaps:
         return
-    lines = [missing_line(graph, gap) for gap in gaps]
+    lines = [human_missing_line(graph, gap) for gap in gaps]
     for gap in gaps:
         source = graph.nodes.get(gap.source_key)
         runlog.error("build.missing_dependency", wants=gap.kind, ident=gap.ident,
@@ -316,50 +317,128 @@ def select_all(graph: Graph) -> Selection:
     return close(graph, [n.key for n in graph.ordered()])
 
 
-def render(graph: Graph, selection: Selection) -> str:
-    lines = [f"selected: {len(selection.picked)} named, "
-             f"{len(selection.keys)} after closure"]
+
+
+def content_kind_label(kind: str) -> str:
+    return {'customgroup': 'custom groups', 'supermetric': 'super metrics',
+            'notificationrule': 'notification rules', 'notificationtemplate': 'notification templates',
+            'outboundsetting': 'outbound settings', 'dashboard': 'dashboards', 'view': 'views',
+            'symptom': 'symptoms', 'alert': 'alerts', 'report': 'reports',
+            'recommendation': 'recommendations'}.get(kind, kind)
+
+def ownership_messages(graph: Graph, selection: Selection, target_user='admin', keep_ownership=False):
+    dashboards = [graph.nodes[k] for k in selection.keys
+                  if graph.nodes[k].kind == 'dashboard' and graph.nodes[k].owner]
+    if not dashboards:
+        return []
+    names = ', '.join(dict.fromkeys(object_label(graph, n) for n in dashboards))
+    if keep_ownership:
+        owners = ', '.join(dict.fromkeys(graph.owner_names.get(n.owner, 'Unknown owner') for n in dashboards))
+        lines = [f'The bundle will keep source owners: {owners}.',
+                 f'These dashboards will be skipped unless the same users and directories exist on the target: {names}.']
+    else:
+        label = 'local admin' if target_user == 'admin' else target_user
+        lines = [f'Dashboard ownership will map to {label} on the target.']
+        if target_user != 'admin':
+            lines.append(f'These dashboards will be skipped unless the exact user {target_user} exists on the target: {names}.')
+    directory = [object_label(graph, n) for n in dashboards if n.owner in graph.directory_owners]
+    if directory:
+        lines.append('Directory-owned dashboards: ' + ', '.join(dict.fromkeys(directory)) + '.')
+    elif not graph.ownership_source_known:
+        lines.append('Ownership source could not be determined from the export.')
+    shared = [object_label(graph, n) for n in dashboards if (n.owner, n.ident) in graph.directory_shared_dashboards]
+    if shared and not keep_ownership:
+        lines.append('Directory sharing will be removed for: ' + ', '.join(dict.fromkeys(shared))
+                     + '. Set sharing on the target.')
+    absent = [object_label(graph, n) for n in dashboards
+              if (n.owner, n.ident) not in graph.locally_shared_dashboards
+              and not (keep_ownership and (n.owner, n.ident) in graph.directory_shared_dashboards)]
+    if absent:
+        lines.append('No sharing will remain for: ' + ', '.join(dict.fromkeys(absent))
+                     + '. These dashboards will be private; set sharing on the target.')
+    return lines
+
+
+def human_warnings(graph: Graph, notes, kind: str):
+    """Summarize graph notes without leaking internal fields or identifiers."""
+    available = graph.ambiguous if kind == 'ambiguous' else graph.unhandled
+    for text in notes:
+        note = next((n for n in available if n.text == text), None)
+        node = graph.nodes.get(note.source_key) if note else None
+        name = object_label(graph, node) if node else 'Selected content'
+        if kind == 'ambiguous':
+            yield f'{name}: several items share a referenced name; all are included.'
+        else:
+            yield f'{name}: some references could not be read. Check the source before import.'
+
+def render(graph: Graph, selection: Selection, target_user='admin', keep_ownership=False) -> str:
+    lines = [f"Selected: {len(selection.picked)}; included with dependencies: {len(selection.keys)}"]
+    dashboards = [graph.nodes[k] for k in selection.keys if graph.nodes[k].kind == "dashboard"]
+    lines.extend(ownership_messages(graph, selection, target_user, keep_ownership))
+    from vcfcf_migrator.bundle import merge_preview
+    refusals, merge_notes = merge_preview(graph, selection, keep_ownership)
+    lines.extend(merge_notes)
+    for line in same_id_dashboard_lines(graph, selection.keys, keep_ownership):
+        lines.append(line + ". The build is refused until only one is selected.")
+    for line in refusals:
+        lines.append(line + ". The build is refused until the selection changes.")
     counts = selection.counts(graph)
     if counts:
-        lines.append("carrying: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+        lines.append("Included: " + ", ".join(f"{content_kind_label(k)}: {v}" for k, v in sorted(counts.items())))
+    for node in dashboards:
+        count = len(dashboard_supermetrics(graph, node.key))
+        if count:
+            noun = 'super metric' if count == 1 else 'super metrics'
+            lines.append(f"{object_label(graph, node)} uses {count} {noun} that must be enabled in a policy on the target.")
+    for node in dashboards:
+        binding_lines = dashboard_binding_lines(graph, node.key)
+        if binding_lines:
+            lines.append(f"Target requirements for dashboard {object_label(graph, node)}:")
+            lines.extend('  ' + line for line in binding_lines)
+    selected_metrics = [object_label(graph, graph.nodes[k]) for k in selection.keys if graph.nodes[k].kind == 'supermetric']
+    if selected_metrics:
+        lines.append('Enable these super metrics in a policy on the target: ' + ', '.join(selected_metrics)
+                     + '. Source policy information may be incomplete; verify it on the source.')
     if selection.added:
-        lines.append(f"pulled in by dependency: {len(selection.added)}")
+        lines.append(f"Automatically included: {len(selection.added)}")
         for add in selection.added:
-            lines.append(f"  {add.reason}")
+            lines.append(f"  {object_label(graph, graph.nodes[add.key])} was included automatically")
     if selection.ambiguous:
         lines.append(f"references by name that several objects answer to: "
                      f"{len(selection.ambiguous)}")
-        for note in selection.ambiguous:
+        for note in human_warnings(graph, selection.ambiguous, 'ambiguous'):
             lines.append(f"  {note}")
     if selection.unhandled:
         lines.append(f"field values in a shape this tool does not read: "
                      f"{len(selection.unhandled)}")
-        for note in selection.unhandled:
+        for note in human_warnings(graph, selection.unhandled, 'unhandled'):
             lines.append(f"  {note}")
     blocking = selection.missing_dependencies()
     if blocking:
         lines.append(f"missing dependencies: {len(blocking)}; a build of this selection "
                      "is refused until the export carries them")
         for gap in blocking:
-            lines.append("  " + missing_line(graph, gap))
+            lines.append("  " + human_missing_line(graph, gap))
     not_carried = selection.not_carried()
     if not_carried:
-        lines.append(f"referenced but not carried: {len(not_carried)}")
+        lines.append(f"References to check: {len(not_carried)}")
         for gap in not_carried:
-            lines.append(f"  {missing_line(graph, gap)}, so it will be missing on import "
-                         "unless the target already has it")
+            lines.append(f"  {human_missing_line(graph, gap)}")
     return "\n".join(lines) + "\n"
 
 
 def _gap_dict(gap: MissingEdge) -> dict:
     return {"source": gap.source_key, "kind": gap.kind, "ident": gap.ident, "via": gap.via,
-            "missing_dependency": is_missing_dependency(gap),
+            "missing_dependency": is_missing_dependency(gap), "classification": gap.classification,
             "reason": str(missing_reason(gap))}
 
 
 def as_dict(graph: Graph, selection: Selection) -> dict:
     return {
         "picked": list(selection.picked),
+        "dashboard_requirements": {k: dashboard_binding_lines(graph, k) for k in selection.keys
+                                   if graph.nodes[k].kind == 'dashboard'
+                                   and dashboard_binding_lines(graph, k)},
         "keys": list(selection.keys),
         "counts": selection.counts(graph),
         "added": [{"key": a.key, "reason": a.reason} for a in selection.added],

@@ -12,16 +12,16 @@ import vcfcf_core
 from vcfcf_migrator import __version__
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import graph as _graph
+from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator import settings as _settings
 from vcfcf_migrator import source as _source
-from vcfcf_migrator import uipage
+from vcfcf_migrator import uipage, workspace
 from vcfcf_migrator.export_reader import (
     NotAnExport,
     read_members,
 )
-from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator.wording import BUILD_PASSWORD_REMINDER, plural
 
 def serialized(method):
@@ -84,6 +84,8 @@ class PageState:
         self.preview_expanded = False
         self.inspector_tab = "preview"
         self.build_out = ""
+        self.owner_mode = 'admin'
+        self.target_user = 'admin'
         self.build_report = ""
         self.members = None
         self.graph = None
@@ -214,6 +216,7 @@ class PageState:
             self.source_address = ''
         self.zip_path = zip_path
         self.members, self.graph = members, graph
+        self.owner_mode, self.target_user = 'admin', 'admin'
         self.build_report = ""
         self.preview_key = self.filter_text = self.build_out = ""
         # Which groups are open belongs to the export being looked at: a
@@ -339,17 +342,17 @@ class PageState:
             return
         node = self.graph.nodes.get(key)
         if node is None:
-            self.error = f"this export carries no object {key}"
+            self.error = "This export carries no object by that name."
             return
         if on:
             if key in self.picked:
-                self.message = f"{node.label()} was already selected"
+                self.message = f"{workspace.display_name(self, node)} was already selected"
                 return
             before = self.selection_keys()
             self._set_picked(self.picked + [key])
-            pulled = [self.graph.nodes[k].label() for k in self.selection.keys
+            pulled = [workspace.display_name(self, self.graph.nodes[k]) for k in self.selection.keys
                       if k not in before and k != key and k in self.graph.nodes]
-            self.message = f"selected {node.label()}"
+            self.message = f"selected {workspace.display_name(self, node)}"
             if pulled:
                 self.message += (f"; pulled in {len(pulled)} it depends on: "
                                  + ", ".join(pulled[:6])
@@ -366,7 +369,7 @@ class PageState:
             if needed_by:
                 self.error = self._refusal(node, needed_by)
             else:
-                self.message = f"{node.label()} was not selected"
+                self.message = f"{workspace.display_name(self, node)} was not selected"
             return
         trial = [k for k in self.picked if k != key]
         trial_selection = _selection.close(self.graph, trial)
@@ -377,7 +380,7 @@ class PageState:
         self.picked = trial
         self.selection = trial_selection
         dropped = [k for k in before if k not in self.selection_keys() and k != key]
-        self.message = f"removed {node.label()}"
+        self.message = f"removed {workspace.display_name(self, node)}"
         if dropped:
             self.message += (f"; {plural(len(dropped), 'object')} it had pulled in "
                              + ("is" if len(dropped) == 1 else "are")
@@ -387,8 +390,8 @@ class PageState:
             self.preview_key = ""
 
     def _refusal(self, node, needed_by: List[str]) -> str:
-        names = [self.graph.nodes[k].label() for k in needed_by if k in self.graph.nodes]
-        return (f"refused: {node.label()} cannot be dropped while it is required by "
+        names = [workspace.display_name(self, self.graph.nodes[k]) for k in needed_by if k in self.graph.nodes]
+        return (f"refused: {workspace.display_name(self, node)} cannot be dropped while it is required by "
                 + ", ".join(names[:5])
                 + (f" and {len(names) - 5} more" if len(names) > 5 else "")
                 + ". Remove those first, or leave it in the bundle.")
@@ -416,7 +419,7 @@ class PageState:
             self.preview_key = ""
             return
         if self.graph is None or key not in self.graph.nodes:
-            self.error = f"this export carries no object {key}"
+            self.error = "This export carries no object by that name."
             return
         self.preview_key = key
 
@@ -481,14 +484,31 @@ class PageState:
             result = _bundle.build_bundle(self.members.data, self.members.order, self.graph,
                                           self.selection, out, marker=self.members.marker,
                                           directories=self.members.directories,
-                                          directory_order=self.members.directory_order)
+                                          directory_order=self.members.directory_order,
+                                          target_user=self.target_user,
+                                          keep_ownership=self.owner_mode == 'source')
         except OSError as e:
             self.error = f"cannot write {out}: {e}"
             return
+        except (ValueError, RawDocError) as e:
+            self.error = f"cannot build bundle: {e}; no bundle written"
+            return
         self.tab = "review"
-        self.build_report = (_selection.render(self.graph, self.selection)
+        self.build_report = (_selection.render(self.graph, self.selection, self.target_user,
+                                               self.owner_mode == 'source')
                              + _bundle.render(result))
         self.built_path = str(Path(result.path).resolve())
+        report_path = Path(self.built_path).with_name(Path(self.built_path).stem + '-build-report.txt')
+        self.build_report += f'Build report saved to: {report_path}\n'
+        saved_report = self.build_report
+        if result.support_details:
+            saved_report += '\nSupport details\n' + '\n'.join(result.support_details) + '\n'
+        try:
+            report_path.write_text(saved_report, encoding='utf-8')
+        except OSError as e:
+            self.build_report = self.build_report.rsplit('Build report saved to:', 1)[0]
+            self.error = f'Bundle saved to {self.built_path}, but the build report could not be saved: {e}'
+            return
         self.message = f"bundle built and saved to {self.built_path}"
         if self.source_snapshot is not None:
             self.message += f". {BUILD_PASSWORD_REMINDER}"
@@ -655,6 +675,20 @@ def _act_filter(state: "PageState", form: dict) -> str:
     return ""
 
 
+
+def _act_owner(state: "PageState", form: dict) -> str:
+    mode = form.get('owner_mode', 'admin')
+    if mode not in ('admin', 'other', 'source'):
+        state.error = 'Choose a dashboard owner option.'
+    elif mode == 'other' and not form.get('target_user', '').strip():
+        state.error = 'Enter the target user name.'
+    else:
+        state.owner_mode = mode
+        state.target_user = form.get('target_user', '').strip() if mode == 'other' else 'admin'
+        state.message = 'Dashboard owner choice updated.'
+    state.tab = 'review'
+    return ''
+
 def _act_build(state: "PageState", form: dict) -> str:
     # Keep readiness and the written bundle report on the review screen.
     state.tab = "review"
@@ -743,6 +777,7 @@ ACTIONS = {
     "/clear": _act_clear,
     "/preview": _act_preview,
     "/filter": _act_filter,
+    "/owner": _act_owner,
     "/build": _act_build,
     "/diagnostics": _act_diagnostics,
 }
