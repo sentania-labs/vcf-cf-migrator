@@ -57,8 +57,9 @@ In v1:
 - Selection: pick any node; dependencies are pulled in automatically
   and shown as "required by". Deselecting a dependency that something
   selected still needs is refused with the reason. A selection that
-  depends on content the export does not carry cannot be built at all
-  (#31, see the decisions table).
+  depends on content the export does not carry is blocked unless the
+  reference is inferred to be dangling on the source (see the decisions
+  table).
 - Preview: each dashboard and view rendered with mock data, the same
   renderer the factory uses (`vcfcf_core.dashboards.render`) fed by a
   mock metric provider. Super metrics show the formula and its
