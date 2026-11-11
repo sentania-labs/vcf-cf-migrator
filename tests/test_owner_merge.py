@@ -205,3 +205,63 @@ def test_review_and_build_button_follow_the_owner_choice_for_same_id_dashboards(
     assert 'disabled' in _build_form(state)
     state.owner_mode = 'source'
     assert 'disabled' not in _build_form(state)
+
+
+def _localized(owner, props):
+    body = {'entries': {'resource': []},
+            'dashboards': [{'id': owner, 'name': owner, 'localizationKey': 'K', 'widgets': []}]}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:
+        z.writestr('dashboard/dashboard.json', json.dumps(body).encode())
+        for name, text in props.items():
+            z.writestr(name, text.encode('latin-1'))
+    return buf.getvalue()
+
+
+def _members(first, second):
+    return {'dashboards/a': first, 'dashboards/b': second}
+
+
+def test_renamed_localization_key_reaches_a_locale_file_only_the_later_owner_has():
+    merged, _, changed, notices = bundle._merge_owner_archives(
+        [('dashboards/a', _localized('a', {'res.properties': 'K=a\n'})),
+         ('dashboards/b', _localized('b', {'res.properties': 'K=b\n', 'res_de.properties': 'K=c\n'}))], {})
+    with zipfile.ZipFile(io.BytesIO(merged)) as z:
+        assert z.read('res.properties').decode() == 'K=a\nK.merged2=b\n'
+        assert z.read('res_de.properties').decode() == 'K.merged2=c\n'
+    assert changed == []
+    assert [n[0] for n in notices] == ['localization']
+
+
+def test_non_object_entries_member_is_tolerated_when_merging():
+    body = {'entries': [], 'dashboards': [{'id': 'x', 'name': 'x', 'widgets': []}]}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:
+        z.writestr('dashboard/dashboard.json', json.dumps(body).encode())
+    merged, _, _, _ = bundle._merge_owner_archives(
+        [('dashboards/a', buf.getvalue()), ('dashboards/b', _localized('b', {}))], {})
+    assert merged
+
+
+def test_unmergeable_escaped_localization_is_a_refusal_not_a_warning():
+    members = _members(_localized('a', {'res.properties': 'K=caf\\u00e9\n'}),
+                       _localized('b', {'res.properties': 'K=cafe\\u00e8\n'}))
+    g = graph.build_graph(members)
+    picked = selection.select_all(g)
+    refusals, notes = bundle.merge_preview(g, picked)
+    assert refusals and 'escaped localization' in refusals[0] and notes == []
+    assert 'The build is refused' in selection.render(g, picked)
+    assert bundle.merge_preview(g, picked, keep_ownership=True) == ([], [])
+
+
+def test_build_button_is_disabled_when_owner_merge_is_refused():
+    from vcfcf_migrator.ui import PageState
+    from vcfcf_migrator.uipage import _build_form
+    g = graph.build_graph(_members(_localized('a', {'res.properties': 'K=caf\\u00e9\n'}),
+                                   _localized('b', {'res.properties': 'K=cafe\\u00e8\n'})))
+    state = PageState()
+    state.graph, state.selection = g, selection.select_all(g)
+    state.owner_mode = 'admin'
+    assert 'disabled' in _build_form(state)
+    state.owner_mode = 'source'
+    assert 'disabled' not in _build_form(state)

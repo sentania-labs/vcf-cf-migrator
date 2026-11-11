@@ -377,9 +377,12 @@ def render(graph: Graph, selection: Selection, target_user='admin', keep_ownersh
     dashboards = [graph.nodes[k] for k in selection.keys if graph.nodes[k].kind == "dashboard"]
     lines.extend(ownership_messages(graph, selection, target_user, keep_ownership))
     from vcfcf_migrator.bundle import merge_preview
-    lines.extend(merge_preview(graph, selection, keep_ownership))
+    refusals, merge_notes = merge_preview(graph, selection, keep_ownership)
+    lines.extend(merge_notes)
     for line in same_id_dashboard_lines(graph, selection.keys, keep_ownership):
         lines.append(line + ". The build is refused until only one is selected.")
+    for line in refusals:
+        lines.append(line + ". The build is refused until the selection changes.")
     counts = selection.counts(graph)
     if counts:
         lines.append("Included: " + ", ".join(f"{content_kind_label(k)}: {v}" for k, v in sorted(counts.items())))

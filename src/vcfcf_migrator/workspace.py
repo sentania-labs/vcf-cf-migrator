@@ -340,9 +340,13 @@ def review(state):
             out.append("<p class='note'>" + e(line) + '</p>')
     collisions = same_id_dashboard_lines(state.graph, selection.keys, state.owner_mode == 'source')
     from vcfcf_migrator.bundle import merge_preview
-    merge_notes = merge_preview(state.graph, selection, state.owner_mode == 'source')
+    refusals, merge_notes = merge_preview(state.graph, selection, state.owner_mode == 'source')
     for line in merge_notes:
         out.append("<p class='note'>" + e(line) + '</p>')
+    if refusals:
+        out.append("<div class='err'><strong>These dashboards cannot be combined.</strong>"
+                   + ''.join('<p>' + e(line) + '</p>' for line in refusals)
+                   + "<p>Choose another owner option or remove one of the dashboards.</p></div>")
     if collisions:
         out.append("<div class='err'><strong>Choose one copy of each dashboard before building.</strong>")
         for line in collisions:
@@ -389,7 +393,7 @@ def review(state):
                            + action('/remove-pick', 'Remove affected selection', {'key': pick.key}) + '</div>')
             out.append('</li>')
         out.append('</ul></div>')
-    elif not collisions:
+    elif not collisions and not refusals:
         if selection.not_carried() or metrics or merge_notes or any(state.graph.dashboard_bindings.get(k) for k in selection.keys):
             out.append("<p class='msg'>Ready to build with warnings. Review the information above.</p>")
         else:

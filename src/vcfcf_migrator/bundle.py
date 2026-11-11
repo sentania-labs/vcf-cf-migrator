@@ -169,6 +169,11 @@ def _narrow_sharings(data: bytes, dashboard_ids, keep_directory=False) -> Option
     return rawdoc.build_array(out).encode("utf-8")
 
 
+def _entry_tables(doc):
+    entries = doc.get('entries') if isinstance(doc, dict) else None
+    return entries if isinstance(entries, dict) else {}
+
+
 def _merge_owner_archives(archives, sharings):
     """Merge owner archives, renaming only colliding file-local tokens."""
     import re
@@ -181,7 +186,7 @@ def _merge_owner_archives(archives, sharings):
     property_keys = set()
     for container in containers:
         doc = json.loads(container.text)
-        for table in doc.get('entries', {}).values():
+        for table in _entry_tables(doc).values():
             if isinstance(table, list):
                 declared.update(x.get('internalId') for x in table if isinstance(x, dict)
                                 and isinstance(x.get('internalId'), str))
@@ -203,7 +208,7 @@ def _merge_owner_archives(archives, sharings):
     notices = []
     for container in containers:
         doc = json.loads(container.text)
-        entries = doc.get('entries', {})
+        entries = _entry_tables(doc)
         mapping = {}
         owner_tokens = set()
         for table in entries.values():
@@ -277,6 +282,8 @@ def _merge_owner_archives(archives, sharings):
         for entry in container.entries():
             original = entry.raw.decode('utf-8')
             rewritten = rewrite(original)
+            if rewritten != original:
+                changed.append((entry.ident, container.owner))
             def localize(match):
                 value = json.loads(match.group(2))
                 if value in local_mapping:
@@ -285,15 +292,14 @@ def _merge_owner_archives(archives, sharings):
                 return match.group(0)
             rewritten = re.sub(r'("localizationKey"\s*:\s*)("(?:\\.|[^"\\])*")', localize, rewritten, flags=re.I)
             dashboards.append(rewritten)
-            if rewritten != original:
-                changed.append((entry.ident, container.owner))
         sharing = sharings.get(container.owner, b'[]').decode('utf-8')
         merged_sharings.extend(json.loads(rewrite(sharing)))
         for name, data in container.extra.items():
-            if name in extras and (extras[name] != data or (name.endswith('.properties') and local_mapping)):
+            renamed = name.endswith('.properties') and local_mapping
+            if (name in extras and (extras[name] != data or renamed)) or (name not in extras and renamed):
                 if not name.endswith('.properties'):
                     raise ValueError('Cannot merge conflicting dashboard archive members')
-                existing = extras[name].decode('latin-1').splitlines(keepends=True)
+                existing = extras.get(name, b'').decode('latin-1').splitlines(keepends=True)
                 known = {_containers._property_key(line): line.rstrip('\r\n') for line in existing
                          if line.strip() and not line.lstrip().startswith(('#', '!'))}
                 for line in data.decode('latin-1').splitlines(keepends=True):
@@ -329,22 +335,7 @@ def _merge_owner_archives(archives, sharings):
     return output.getvalue(), json.dumps(merged_sharings).encode('utf-8'), changed, notices
 
 
-def merge_preview(graph, selection, keep_ownership=False):
-    """Describe changes needed when selected dashboard owners are combined."""
-    if keep_ownership:
-        return []
-    archives = []
-    for pos, indexes in _picked_indexes(graph.containers, selection.keys).items():
-        container = graph.containers[pos]
-        if isinstance(container, _containers.DashboardsContainer) and container.owner:
-            archives.append((container.member, container.rebuild(indexes)))
-    if len(archives) < 2:
-        return []
-    archives.sort()
-    try:
-        _, _, _, notices = _merge_owner_archives(archives, {})
-    except ValueError as exc:
-        return [str(exc)]
+def _merge_lines(graph, notices):
     lines = []
     for kind, ident, owner, key in dict.fromkeys(notices):
         node = graph.nodes.get(f'dashboard:{ident}@{owner}')
@@ -355,6 +346,24 @@ def merge_preview(graph, selection, keep_ownership=False):
             lines.append(f'{label}: conflicting localization key {key} will be renamed when owners are combined.')
     return lines
 
+
+def merge_preview(graph, selection, keep_ownership=False):
+    """Return (refusals, notes) for combining the selected dashboard owners."""
+    if keep_ownership:
+        return [], []
+    archives = []
+    for pos, indexes in _picked_indexes(graph.containers, selection.keys).items():
+        container = graph.containers[pos]
+        if isinstance(container, _containers.DashboardsContainer) and container.owner:
+            archives.append((container.member, container.rebuild(indexes)))
+    if len(archives) < 2:
+        return [], []
+    archives.sort()
+    try:
+        _, _, _, notices = _merge_owner_archives(archives, {})
+    except ValueError as exc:
+        return [str(exc)], []
+    return [], _merge_lines(graph, notices)
 
 
 def _validate_dashboard_owners(written, by_owner, target_user="admin", keep_ownership=False):
@@ -613,6 +622,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         written[f"dashboards/{target_owner}"] = merged
         written[f"dashboardsharings/{target_owner}"] = sharing
         by_owner = {target_owner: sum(by_owner.values())}
+        result.notes.extend(_merge_lines(graph, merge_notices))
         if changed:
             changed_names = [object_label(graph, graph.nodes[f'dashboard:{ident}@{owner}'])
                              for ident, owner in changed if f'dashboard:{ident}@{owner}' in graph.nodes]
