@@ -8,7 +8,7 @@ from vcfcf_migrator import preview
 from vcfcf_migrator import wording
 from vcfcf_migrator.releases import RELEASE_PAGE
 from vcfcf_migrator.cli import version_lines
-from vcfcf_migrator.graph import KIND_ORDER
+from vcfcf_migrator.graph import KIND_ORDER, same_id_dashboard_lines
 from vcfcf_migrator.uipage import e, _button, anchor
 
 KIND_LABELS = {
@@ -335,6 +335,11 @@ def review(state):
         if directory:
             out.append("<p class='note'>Directory-owned dashboards: "
                        + e(", ".join(directory)) + ". Check their sharing on the target.</p>")
+        elif not state.graph.ownership_source_known:
+            out.append("<p class='note'>Ownership source could not be determined from the export; "
+                       "check whether these dashboards are owned by directory users.</p>")
+        for line in same_id_dashboard_lines(state.graph, selection.keys):
+            out.append("<p class='note'>" + e(line) + ". The build is refused until only one is selected.</p>")
         shared = [n.name for n in dashboards
                   if (n.owner, n.ident) in state.graph.directory_shared_dashboards]
         if shared:

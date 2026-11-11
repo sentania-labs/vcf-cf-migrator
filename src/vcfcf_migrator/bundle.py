@@ -30,7 +30,8 @@ from vcfcf_migrator import rawdoc
 from vcfcf_migrator import runlog
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator.containers import Container, zip_directory_entry, zip_entry
-from vcfcf_migrator.graph import Graph, dashboard_binding_lines
+from vcfcf_migrator.graph import (Graph, dashboard_binding_lines, is_directory_group,
+                                  same_id_dashboard_lines)
 from vcfcf_migrator.selection import Selection, refuse_missing_dependencies
 
 # Content kind -> the key configuration.json counts it under.
@@ -143,7 +144,7 @@ def _narrow_sharings(data: bytes, dashboard_ids) -> Optional[bytes]:
         except ValueError:
             continue
         # Only local groups can be expected to exist without a source directory.
-        if not isinstance(group_doc, dict) or group_doc.get("sourceType") != "LOCAL":
+        if not isinstance(group_doc, dict) or is_directory_group(group_doc):
             continue
         dashboards = rawdoc.member(members, "dashboards")
         if dashboards is None:
@@ -283,7 +284,7 @@ def _validate_dashboard_owners(written, by_owner):
         if not isinstance(groups, list):
             raise ValueError('Dashboard sharing is not a list')
         for group in groups:
-            if not isinstance(group, dict) or group.get('sourceType') != 'LOCAL':
+            if not isinstance(group, dict) or is_directory_group(group):
                 raise ValueError('Dashboard sharing is not local')
             for dashboard in group.get('dashboards', []):
                 if not isinstance(dashboard, dict) or dashboard.get('dashboardId') not in ids:
@@ -322,6 +323,9 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
                  directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
     """Refuse missing dependencies before creating or touching an output file."""
     refuse_missing_dependencies(graph, selection)
+    same_id = same_id_dashboard_lines(graph, selection.keys)
+    if same_id:
+        raise ValueError('; '.join(same_id))
     return _write_bundle(members, member_order, graph, selection, out_path, marker,
                          directories, directory_order)
 
@@ -471,11 +475,6 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         by_owner = {target_owner: sum(by_owner.values())}
         if changed:
             result.notes.append("Colliding resource tokens were rewritten in: " + ", ".join(changed))
-        selected_ids = [graph.nodes[k].ident for k in selection.keys
-                        if graph.nodes[k].kind == "dashboard" and graph.nodes[k].owner]
-        if len(selected_ids) != len(set(selected_ids)):
-            result.notes.append("Some selected dashboards have the same ID under different owners; "
-                                "check the imported dashboards on the target.")
     affected = list(dict.fromkeys(
         graph.nodes[k].name for k in selection.keys
         if (graph.nodes[k].owner, graph.nodes[k].ident) in graph.directory_shared_dashboards))

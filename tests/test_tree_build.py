@@ -759,12 +759,13 @@ def test_a_selection_crossing_two_owners_merges_the_inner_zips(tmp_path, export_
             assert {d["id"] for d in docs} == {DASHBOARD_ID, DASHBOARD_ID_2}
 
 
-def test_the_same_uuid_under_two_owners_can_both_be_carried(tmp_path, export_zip):
-    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}"])
-    with zipfile.ZipFile(out) as z:
-        with zipfile.ZipFile(io.BytesIO(z.read(f"dashboards/{OWNER}"))) as inner:
-            docs = json.loads(inner.read("dashboard/dashboard.json"))["dashboards"]
-            assert [d["id"] for d in docs] == [DASHBOARD_ID, DASHBOARD_ID]
+def test_the_same_uuid_under_two_owners_is_flagged_for_one_copy_to_be_chosen(export_zip):
+    graph = _graph.build_graph(read_members(export_zip).data)
+    picked = _selection.close(graph, _selection.resolve(graph, [f"dashboard:{DASHBOARD_ID}"]))
+    assert _graph.same_id_dashboard_lines(graph, picked.keys)
+    assert "choose one copy to carry" in _selection.render(graph, picked)
+    single = _selection.close(graph, _selection.resolve(graph, [f"dashboard:{DASHBOARD_ID}@{OWNER}"]))
+    assert not _graph.same_id_dashboard_lines(graph, single.keys)
 
 
 def test_a_subset_bundle_carries_the_closure_and_nothing_more(tmp_path, export_zip):

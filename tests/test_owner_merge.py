@@ -116,3 +116,47 @@ def test_directory_sharing_note_needs_a_selected_dashboard_and_tolerates_junk(tm
         assert not any('Directory sharing' in note for note in result.notes)
         with zipfile.ZipFile(tmp_path / 'out.zip') as z:
             assert json.loads(z.read('dashboardsharings/a')) == []
+
+
+def test_sharing_group_without_a_source_type_is_kept_not_stripped(tmp_path):
+    members = {'dashboards/a': archive('a', 'resource:id:0_::_', 'Group A'),
+               'dashboardsharings/a': json.dumps([
+                   {'groupName': 'untyped', 'dashboards': [{'dashboardId': 'a'}]},
+                   {'sourceType': 'LDAP', 'groupName': 'directory group',
+                    'dashboards': [{'dashboardId': 'a'}]}]).encode(),
+               'customgroups.json': json.dumps({'customGroups': [{'name': 'Group A'}]}).encode()}
+    g = graph.build_graph(members)
+    assert g.directory_shared_dashboards == {('a', 'a')}
+    picked = selection.select_all(g)
+    bundle.build_bundle(members, list(members), g, picked, tmp_path / 'out.zip')
+    with zipfile.ZipFile(tmp_path / 'out.zip') as z:
+        assert [x['groupName'] for x in json.loads(z.read('dashboardsharings/a'))] == ['untyped']
+
+
+def test_ownership_source_is_not_assumed_local_when_the_export_does_not_say():
+    base = {'dashboards/a': archive('a', 'resource:id:0_::_', 'Group A'),
+            'customgroups.json': json.dumps({'customGroups': [{'name': 'Group A'}]}).encode()}
+    silent = dict(base, **{'usermappings.json': json.dumps(
+        {'sources': [], 'users': [{'userId': 'a', 'userName': 'someone'}]}).encode()})
+    g = graph.build_graph(silent)
+    assert 'Ownership source could not be determined' in selection.render(g, selection.select_all(g))
+    stated = dict(base, **{'usermappings.json': json.dumps({'sources': [{'id': 'directory'}], 'users': [
+        {'userId': 'a', 'userName': 'someone', 'userSourceId': 'directory'}]}).encode()})
+    g = graph.build_graph(stated)
+    assert 'could not be determined' not in selection.render(g, selection.select_all(g))
+
+
+def test_same_dashboard_id_under_two_owners_is_refused_and_nothing_is_written(tmp_path):
+    import pytest
+    members = {'dashboards/a': archive('same', 'resource:id:0_::_', 'Group A'),
+               'dashboards/b': archive('same', 'resource:id:0_::_', 'Group A'),
+               'customgroups.json': json.dumps({'customGroups': [{'name': 'Group A'}]}).encode()}
+    g = graph.build_graph(members)
+    picked = selection.select_all(g)
+    out = tmp_path / 'out.zip'
+    with pytest.raises(ValueError, match='exists under owners a, b with the same ID; choose one copy'):
+        bundle.build_bundle(members, list(members), g, picked, out)
+    assert not out.exists()
+    one = selection.close(g, ['dashboard:same@a'])
+    bundle.build_bundle(members, list(members), g, one, out)
+    assert out.exists()

@@ -213,6 +213,7 @@ class Graph:
     unknown_members: List[str] = field(default_factory=list)
     directory_owners: set = field(default_factory=set)
     directory_shared_dashboards: set = field(default_factory=set)
+    ownership_source_known: bool = False
     policy_names: Dict[str, str] = field(default_factory=dict)
     metric_policies: Dict[str, List[str]] = field(default_factory=dict)
     metric_kinds: Dict[str, List[str]] = field(default_factory=dict)
@@ -502,6 +503,31 @@ def _dashboard_bindings(doc, tables):
                     if row not in result:
                         result.append(row)
     return result
+
+
+def is_directory_group(group) -> bool:
+    """A sharing group whose source type is present and is not LOCAL."""
+    if not isinstance(group, dict):
+        return False
+    source_type = group.get("sourceType")
+    return bool(source_type) and source_type != "LOCAL"
+
+
+def same_id_dashboard_lines(graph: Graph, keys: Sequence[str]) -> List[str]:
+    """One line per dashboard ID that the selection carries under more than
+    one owner. Merging the owners would leave two documents with one ID."""
+    owners: Dict[str, List[str]] = {}
+    names: Dict[str, str] = {}
+    for key in keys:
+        node = graph.nodes.get(key)
+        if node is None or node.kind != "dashboard" or not node.owner:
+            continue
+        names.setdefault(node.ident, node.name)
+        if node.owner not in owners.setdefault(node.ident, []):
+            owners[node.ident].append(node.owner)
+    return [f"Dashboard {names[ident]} exists under owners {', '.join(found)} with the same ID; "
+            "choose one copy to carry"
+            for ident, found in owners.items() if len(found) > 1]
 
 
 def dashboard_binding_lines(graph: Graph, key: str) -> List[str]:
@@ -853,15 +879,17 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
     graph = Graph(containers=found, unknown_members=unknown)
     mappings = _json(members.get("usermappings.json", b""))
     if isinstance(mappings, dict):
-        graph.directory_owners = {str(user.get("userId")) for user in (mappings.get("users") or [])
+        users = mappings.get("users") or []
+        graph.directory_owners = {str(user.get("userId")) for user in users
                                   if isinstance(user, dict) and user.get("userSourceId")}
+        graph.ownership_source_known = bool(mappings.get("sources")) or bool(graph.directory_owners)
     for member, data in members.items():
         if not member.startswith("dashboardsharings/"):
             continue
         owner = member.split("/", 1)[1]
         groups = _json(data)
         for group in groups if isinstance(groups, list) else []:
-            if not isinstance(group, dict) or group.get("sourceType") == "LOCAL":
+            if not is_directory_group(group):
                 continue
             for dash in group.get("dashboards", []) or []:
                 if isinstance(dash, dict) and dash.get("dashboardId"):

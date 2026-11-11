@@ -42,6 +42,7 @@ from vcfcf_migrator.graph import (
     missing_reason,
     dashboard_supermetrics,
     dashboard_binding_lines,
+    same_id_dashboard_lines,
 )
 
 
@@ -325,11 +326,16 @@ def render(graph: Graph, selection: Selection) -> str:
         if directory:
             lines.append("Directory-owned dashboards: " + ", ".join(directory)
                          + ". Check their sharing on the target.")
+        elif not graph.ownership_source_known:
+            lines.append("Ownership source could not be determined from the export; "
+                         "check whether these dashboards are owned by directory users.")
         shared = [n.name for n in dashboards
                   if (n.owner, n.ident) in graph.directory_shared_dashboards]
         if shared:
             lines.append("Directory sharing will be removed for: " + ", ".join(shared)
                          + ". Set sharing on the target.")
+    for line in same_id_dashboard_lines(graph, selection.keys):
+        lines.append(line + ". The build is refused until only one is selected.")
     counts = selection.counts(graph)
     if counts:
         lines.append("carrying: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
