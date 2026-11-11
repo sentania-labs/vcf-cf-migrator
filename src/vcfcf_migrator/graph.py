@@ -489,21 +489,41 @@ def _own_widget_tokens(widget, kind):
     return dashboard_tokens(strip_children(widget), kind)
 
 
-def _dashboard_bindings(doc, tables):
-    result = []
+def _ordinal(n: int) -> str:
+    suffix = 'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{suffix}"
+
+
+def _widget_label(widget: dict, position: int) -> str:
+    """A widget's name, or its type and place on the dashboard when it has none."""
+    named = widget.get('name') or widget.get('title')
+    if named:
+        return str(named)
+    kind = widget.get('type')
+    return f"{kind if isinstance(kind, str) and kind else 'Widget'}, {_ordinal(position)} widget"
+
+
+def _dashboard_widget_labels(doc) -> List[tuple]:
+    """Every widget object in the document with its label, in document order."""
+    out = []
     for widgets in _json_values(doc, 'widgets'):
         if not isinstance(widgets, list):
             continue
         for widget in widgets:
-            if not isinstance(widget, dict):
-                continue
-            label = str(widget.get('name') or widget.get('title') or 'Unnamed widget')
-            for kind in TOKEN_PATTERNS:
-                for token in sorted(_own_widget_tokens(widget, kind)):
-                    binding = tables[kind].get(token)
-                    row = {'widget': label, 'token': token, 'family': kind, 'entry': binding}
-                    if row not in result:
-                        result.append(row)
+            if isinstance(widget, dict):
+                out.append((widget, _widget_label(widget, len(out) + 1)))
+    return out
+
+
+def _dashboard_bindings(doc, tables):
+    result = []
+    for widget, label in _dashboard_widget_labels(doc):
+        for kind in TOKEN_PATTERNS:
+            for token in sorted(_own_widget_tokens(widget, kind)):
+                binding = tables[kind].get(token)
+                row = {'widget': label, 'token': token, 'family': kind, 'entry': binding}
+                if row not in result:
+                    result.append(row)
     return result
 
 
@@ -608,11 +628,11 @@ def _dashboard_refs(raw: bytes, unhandled: List[str], resource_entries=None) -> 
     widget_lists = [v for v in _json_values(doc, "widgets")]
     widget_ids = {w["id"] for lst in widget_lists if isinstance(lst, list)
                   for w in lst if isinstance(w, dict) and isinstance(w.get("id"), str)}
-    widget_names = {w['id']: str(w.get('name') or w.get('title') or 'Unnamed widget')
-                    for lst in widget_lists if isinstance(lst, list) for w in lst
-                    if isinstance(w, dict) and isinstance(w.get('id'), str)}
+    labelled = _dashboard_widget_labels(doc)
+    widget_labels = {id(w): label for w, label in labelled}
+    widget_names = {w['id']: label for w, label in labelled if isinstance(w.get('id'), str)}
     for source, target, _receivers in links:
-        ref = Ref('dashboard', target, 'navigation from widget ' + widget_names.get(source, 'Unnamed widget'),
+        ref = Ref('dashboard', target, 'navigation from widget ' + widget_names.get(source, 'an unknown widget'),
                   uuid_only=True)
         if ref not in out:
             out.append(ref)
@@ -649,7 +669,7 @@ def _dashboard_refs(raw: bytes, unhandled: List[str], resource_entries=None) -> 
                 config = None
             config = config or {}
             view_id = config.get("viewDefinitionId")
-            widget_name = widget.get('name') or widget.get('title') or 'Unnamed widget'
+            widget_name = widget_labels.get(id(widget), 'a widget')
             widget_key = (view_id, str(widget.get('id') or widget_name))
             if isinstance(view_id, str) and view_id and widget_key not in seen_views:
                 seen_views.add(widget_key)

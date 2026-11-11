@@ -118,8 +118,14 @@ def identity(state, node):
     if node.kind == 'dashboard' and node.stock_or_derived:
         detail += ' · stock or derived from stock'
     if _name_count(state, node) > 1:
-        if node.owner:
-            detail += " · owner " + state.graph.owner_names.get(node.owner, 'Unknown owner')
+        owner = state.graph.owner_names.get(node.owner, 'Unknown owner') if node.owner else ''
+        if owner:
+            detail += " · owner " + owner
+        twins = [n for n in state.graph.nodes.values()
+                 if n.kind == node.kind and n.name == node.name and n.owner == node.owner]
+        short = (node.uuid or node.ident)[-4:]
+        if len(twins) > 1 and short:
+            detail += " · id …" + short
     return detail
 
 
