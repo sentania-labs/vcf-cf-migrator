@@ -475,10 +475,6 @@ def dashboard_entry_tables(container):
     return result
 
 
-def dashboard_resource_entries(container):
-    return dashboard_entry_tables(container)['resource']
-
-
 def _own_widget_tokens(widget, kind):
     def strip_children(value):
         if isinstance(value, dict):

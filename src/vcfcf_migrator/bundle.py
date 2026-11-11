@@ -24,7 +24,7 @@ import json
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 
 from vcfcf_migrator import rawdoc
 from vcfcf_migrator import runlog
@@ -119,51 +119,7 @@ def _picked_indexes(containers: Sequence[Container], keys: Sequence[str]
     return out
 
 
-def _carried_dashboards(graph: Graph, keys: Sequence[str]) -> Tuple[Dict[str, int], List[str]]:
-    """``owner -> count`` and the carried dashboard uuids, for the manifest
-    and for narrowing the sharing members."""
-    by_owner: Dict[str, int] = {}
-    uuids: List[str] = []
-    for key in keys:
-        node = graph.nodes.get(key)
-        if node is None or node.kind != "dashboard":
-            continue
-        # A UI export's archive names no owner, and dashboardsByOwner is a
-        # per-owner count: an entry with an empty owner is worse than none.
-        if node.owner:
-            by_owner[node.owner] = by_owner.get(node.owner, 0) + 1
-        if node.uuid not in uuids:
-            uuids.append(node.uuid)
-    return by_owner, uuids
-
-
-def _narrow_usermappings(data: bytes, owners: Sequence[str]) -> Optional[bytes]:
-    """``usermappings.json`` with only the owners whose dashboards are
-    carried. Each user object is copied, not rebuilt."""
-    try:
-        text = data.decode("utf-8")
-        top = rawdoc.json_members(text)
-    except (UnicodeDecodeError, rawdoc.RawDocError):
-        return None
-    users = rawdoc.member(top, "users")
-    if users is None:
-        return data
-    kept = []
-    for item in rawdoc.json_items(text, users.start):
-        try:
-            doc = json.loads(item.raw(text))
-        except ValueError:
-            continue
-        if isinstance(doc, dict) and str(doc.get("userId") or "") in owners:
-            kept.append(item.raw(text))
-    if not kept:
-        return None
-    pairs = [(v.key or "", rawdoc.build_array(kept) if v.key == "users" else v.raw(text))
-             for v in top]
-    return rawdoc.build_object(pairs).encode("utf-8")
-
-
-def _narrow_sharings(data: bytes, dashboard_uuids: Sequence[str]) -> Optional[bytes]:
+def _narrow_sharings(data: bytes, dashboard_ids) -> Optional[bytes]:
     """``dashboardsharings/<owner>`` with only the carried dashboards in it.
     A sharing entry naming a dashboard the bundle does not hold would point
     the import at an absent object."""
@@ -172,7 +128,7 @@ def _narrow_sharings(data: bytes, dashboard_uuids: Sequence[str]) -> Optional[by
         groups = rawdoc.json_items(text)
     except (UnicodeDecodeError, rawdoc.RawDocError):
         return None
-    wanted = set(dashboard_uuids)
+    wanted = set(dashboard_ids)
     out = []
     for group in groups:
         members = rawdoc.json_members(text, group.start)
@@ -387,7 +343,6 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                 result.notes.append('Target requirements for dashboard ' + node.name + ':\n  '
                                     + '\n  '.join(lines))
     picked = _picked_indexes(graph.containers, selection.keys)
-    by_owner, dashboard_uuids = _carried_dashboards(graph, selection.keys)
     # A container can carry duplicate dashboard IDs; the graph represents
     # them as one node, while the importer counts every carried document.
     by_owner = {}
@@ -468,11 +423,13 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     for owner in owners:
         member = f"dashboardsharings/{owner}"
         source = members.get(member)
-        narrowed = _narrow_sharings(source, dashboard_uuids) if source else None
+        carried_ids = {entry.ident for entry in _containers.DashboardsContainer(
+            f"dashboards/{owner}", written[f"dashboards/{owner}"], owner=owner).entries()}
+        narrowed = _narrow_sharings(source, carried_ids) if source else None
         if narrowed is not None:
             written[member] = narrowed
             runlog.detail("scaffolding.narrowed", member=member, bytes=len(narrowed),
-                          dashboards=len(dashboard_uuids),
+                          dashboards=len(carried_ids),
                           reason=runlog.prose("narrowed to the dashboards the bundle carries"))
             continue
         written[member] = b"[]"
