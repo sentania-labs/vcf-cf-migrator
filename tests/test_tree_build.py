@@ -559,6 +559,20 @@ def test_every_carried_document_is_byte_identical(tmp_path, export_zip):
     out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     source = _containers.documents(read_members(export_zip).data)
     built = _containers.documents(read_members(out).data)
+    assert built
+    assert set(built) <= set(source)
+    assert all(source[k] == raw for k, raw in built.items())
+    assert any(k[1] == "dashboard" for k in built)
+
+
+def test_select_all_carries_every_non_dashboard_document_byte_identical(tmp_path, export_zip):
+    out = _write(tmp_path, export_zip, all_of_it=True)
+    source = {k: v for k, v in _containers.documents(read_members(export_zip).data).items()
+              if k[1] != "dashboard"}
+    built = {k: v for k, v in _containers.documents(read_members(out).data).items()
+             if k[1] != "dashboard"}
+    assert source
+    assert built.keys() == source.keys()
     assert all(source[k] == raw for k, raw in built.items())
 
 

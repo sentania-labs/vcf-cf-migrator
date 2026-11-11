@@ -272,7 +272,6 @@ def test_a_selection_whose_only_gap_is_a_policy_builds_and_lists_it(tmp_path, ex
     report = capsys.readouterr().out
     assert "References to check: 1" in report
     assert GROUP_NAME in report and "check the policy assignment" in report
-    assert "check the policy assignment" in report
     assert "missing dependencies" not in report
 
 
