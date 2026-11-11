@@ -38,7 +38,6 @@ from vcfcf_migrator.graph import (
     MissingEdge,
     Node,
     is_missing_dependency,
-    missing_line,
     human_missing_line,
     object_label,
     missing_reason,
