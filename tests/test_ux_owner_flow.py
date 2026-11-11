@@ -337,3 +337,55 @@ def _check_dates_in_review(tmp_path, times=('06:00 CST', '12:00 CST')):
     assert f'CPU (2026-01-15 {times[1]})' in page
     assert 'CPU (id …' not in page
     state.log.close()
+
+
+def test_owner_merge_preserves_missing_binding_and_localized_values(tmp_path, config_dir, monkeypatch):
+    import os
+    source = tmp_path / 'two-owners.zip'
+    token = 'resource:id:0_::_'
+    with zipfile.ZipFile(source, 'w') as outer:
+        outer.writestr('configuration.json', json.dumps({'type': 'CUSTOM', 'dashboards': 2}))
+        for owner in ('a', 'b'):
+            inner = io.BytesIO()
+            entries = [{'internalId': token, 'name': 'Cluster A', 'adapterKindKey': 'VMWARE',
+                        'resourceKindKey': 'Cluster'}] if owner == 'a' else []
+            dashboard = {'id': owner, 'name': 'Dashboard ' + owner,
+                         'localizationKey': 'shared.title', 'widgets': [
+                             {'name': 'Cluster widget', 'config': {'resource': token}}]}
+            with zipfile.ZipFile(inner, 'w') as z:
+                z.writestr('dashboard/dashboard.json', json.dumps({'entries': {'resource': entries},
+                                                                  'dashboards': [dashboard]}))
+                z.writestr('dashboard/resources/resources.properties',
+                           'shared.title=' + ('First title' if owner == 'a' else 'Second title') + '\ncommon=Same\n')
+            outer.writestr('dashboards/' + owner, inner.getvalue())
+    state = PageState(str(source))
+    bridge = Bridge(state)
+    choose(bridge, 'dashboard:a@a')
+    choose(bridge, 'dashboard:b@b')
+    review = visible(bridge.act('/tab', {'tab': 'review'})['html'])
+    assert 'Dashboard b: a missing widget binding will remain unresolved' in review
+    assert 'Dashboard b: conflicting localization key shared.title will be renamed' in review
+    out = tmp_path / 'combined.zip'
+    page = visible(bridge.act('/build', {'out': str(out)})['html'])
+    assert out.exists() and 'missing widget binding will remain unresolved' in page
+    report = (tmp_path / 'combined-build-report.txt').read_text(encoding='utf-8')
+    assert 'conflicting localization key shared.title' in report
+    with zipfile.ZipFile(out) as outer:
+        with zipfile.ZipFile(io.BytesIO(outer.read('dashboards/a'))) as inner:
+            doc = json.loads(inner.read('dashboard/dashboard.json'))
+            props = inner.read('dashboard/resources/resources.properties').decode('latin-1')
+    first, second = doc['dashboards']
+    assert first['widgets'][0]['config']['resource'] == token
+    unresolved = second['widgets'][0]['config']['resource']
+    assert unresolved != token
+    assert unresolved not in {item['internalId'] for item in doc['entries']['resource']}
+    assert first['localizationKey'] == 'shared.title'
+    assert second['localizationKey'] == 'shared.title.merged2'
+    assert 'shared.title=First title\n' in props
+    assert 'shared.title.merged2=Second title\n' in props
+    assert props.count('common=Same') == 1
+    evidence = os.environ.get('VCFM_UX_EVIDENCE_DIR')
+    if evidence:
+        from pathlib import Path
+        Path(evidence, 'owner-merge-after.txt').write_text(review + '\n\n' + page, encoding='utf-8')
+    state.log.close()

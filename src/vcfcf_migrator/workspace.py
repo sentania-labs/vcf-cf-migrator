@@ -339,6 +339,10 @@ def review(state):
         for line in ownership_messages(state.graph, selection, state.target_user, mode == 'source'):
             out.append("<p class='note'>" + e(line) + '</p>')
     collisions = same_id_dashboard_lines(state.graph, selection.keys, state.owner_mode == 'source')
+    from vcfcf_migrator.bundle import merge_preview
+    merge_notes = merge_preview(state.graph, selection, state.owner_mode == 'source')
+    for line in merge_notes:
+        out.append("<p class='note'>" + e(line) + '</p>')
     if collisions:
         out.append("<div class='err'><strong>Choose one copy of each dashboard before building.</strong>")
         for line in collisions:
@@ -386,7 +390,7 @@ def review(state):
             out.append('</li>')
         out.append('</ul></div>')
     elif not collisions:
-        if selection.not_carried() or metrics or any(state.graph.dashboard_bindings.get(k) for k in selection.keys):
+        if selection.not_carried() or metrics or merge_notes or any(state.graph.dashboard_bindings.get(k) for k in selection.keys):
             out.append("<p class='msg'>Ready to build with warnings. Review the information above.</p>")
         else:
             out.append("<p class='msg'>Ready to build. All recorded dependencies are included.</p>")

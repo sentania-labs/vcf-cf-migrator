@@ -177,18 +177,30 @@ def _merge_owner_archives(archives, sharings):
     containers = [_containers.DashboardsContainer(name, data, owner=name.split('/', 1)[1])
                   for name, data in archives]
     reserved = set()
+    declared = set()
+    property_keys = set()
     for container in containers:
         doc = json.loads(container.text)
         for table in doc.get('entries', {}).values():
             if isinstance(table, list):
-                reserved.update(x.get('internalId') for x in table if isinstance(x, dict)
+                declared.update(x.get('internalId') for x in table if isinstance(x, dict)
                                 and isinstance(x.get('internalId'), str))
+        reserved.update(m.group() for m in token_pattern.finditer(container.text))
+        for name, data in container.extra.items():
+            if name.endswith('.properties'):
+                for line in data.decode('latin-1').splitlines():
+                    stripped = line.lstrip()
+                    if stripped and not stripped.startswith(('#', '!')):
+                        property_keys.add(_containers._property_key(line))
+    reserved.update(declared)
     used = set()
     merged_entries = {}
     dashboards = []
     extras = {}
     changed = []
     merged_sharings = []
+    property_values = {}
+    notices = []
     for container in containers:
         doc = json.loads(container.text)
         entries = doc.get('entries', {})
@@ -215,7 +227,44 @@ def _merge_owner_archives(archives, sharings):
                     replacement = f'{prefix}:id:{number}_::_'
                     reserved.add(replacement)
                     mapping[token] = replacement
+        # A reference absent from this owner's table must never acquire another owner's entry.
+        unresolved = {m.group() for m in token_pattern.finditer(container.text)} - owner_tokens
+        for token in sorted(unresolved & declared):
+            prefix = token.split(':id:', 1)[0]
+            number = 0
+            while f'{prefix}:id:{number}_::_' in reserved:
+                number += 1
+            replacement = f'{prefix}:id:{number}_::_'
+            reserved.add(replacement)
+            mapping[token] = replacement
+            affected = [e.ident for e in container.entries() if token in e.raw.decode('utf-8')]
+            for ident in affected:
+                notices.append(('unresolved', ident, container.owner, ''))
         used.update(owner_tokens)
+        # Detect conflicting localized values before rewriting this owner's dashboards.
+        local_mapping = {}
+        for name, data in container.extra.items():
+            if not name.endswith('.properties'):
+                continue
+            seen = property_values.setdefault(name, {})
+            for line in data.decode('latin-1').splitlines():
+                stripped = line.lstrip()
+                if not stripped or stripped.startswith(('#', '!')):
+                    continue
+                key = _containers._property_key(line)
+                if key in seen and seen[key] != line:
+                    if '\\' in line or '\\' in seen[key]:
+                        raise ValueError('Cannot safely combine escaped localization entries; keep source owners or select one dashboard')
+                    if key not in local_mapping:
+                        suffix = 2
+                        candidate = f'{key}.merged{suffix}'
+                        while candidate in property_keys:
+                            suffix += 1
+                            candidate = f'{key}.merged{suffix}'
+                        property_keys.add(candidate)
+                        local_mapping[key] = candidate
+                else:
+                    seen.setdefault(key, line)
         def rewrite(text):
             return token_pattern.sub(lambda match: mapping.get(match.group(), match.group()), text)
         for key, table in entries.items():
@@ -228,16 +277,41 @@ def _merge_owner_archives(archives, sharings):
         for entry in container.entries():
             original = entry.raw.decode('utf-8')
             rewritten = rewrite(original)
+            def localize(match):
+                value = json.loads(match.group(2))
+                if value in local_mapping:
+                    notices.append(('localization', entry.ident, container.owner, value))
+                    return match.group(1) + json.dumps(local_mapping[value], ensure_ascii=False)
+                return match.group(0)
+            rewritten = re.sub(r'("localizationKey"\s*:\s*)("(?:\\.|[^"\\])*")', localize, rewritten, flags=re.I)
             dashboards.append(rewritten)
             if rewritten != original:
                 changed.append((entry.ident, container.owner))
         sharing = sharings.get(container.owner, b'[]').decode('utf-8')
         merged_sharings.extend(json.loads(rewrite(sharing)))
         for name, data in container.extra.items():
-            if name in extras and extras[name] != data:
+            if name in extras and (extras[name] != data or (name.endswith('.properties') and local_mapping)):
                 if not name.endswith('.properties'):
                     raise ValueError('Cannot merge conflicting dashboard archive members')
-                extras[name] = extras[name].rstrip(b'\n') + b'\n' + data
+                existing = extras[name].decode('latin-1').splitlines(keepends=True)
+                known = {_containers._property_key(line): line.rstrip('\r\n') for line in existing
+                         if line.strip() and not line.lstrip().startswith(('#', '!'))}
+                for line in data.decode('latin-1').splitlines(keepends=True):
+                    if not line.strip() or line.lstrip().startswith(('#', '!')):
+                        existing.append(line)
+                        continue
+                    key = _containers._property_key(line)
+                    new_key = local_mapping.get(key, key)
+                    if new_key != key:
+                        position = line.find(key)
+                        line = line[:position] + new_key + line[position + len(key):]
+                    if new_key in known and known[new_key] == line.rstrip('\r\n'):
+                        continue
+                    if existing and not existing[-1].endswith(('\n', '\r')):
+                        existing[-1] += '\n'
+                    existing.append(line)
+                    known[new_key] = line.rstrip('\r\n')
+                extras[name] = ''.join(existing).encode('latin-1')
             else:
                 extras[name] = data
     first = containers[0]
@@ -252,7 +326,34 @@ def _merge_owner_archives(archives, sharings):
         z.writestr(zip_entry(first.INNER), inner)
         for name, data in extras.items():
             z.writestr(zip_entry(name), data)
-    return output.getvalue(), json.dumps(merged_sharings).encode('utf-8'), changed
+    return output.getvalue(), json.dumps(merged_sharings).encode('utf-8'), changed, notices
+
+
+def merge_preview(graph, selection, keep_ownership=False):
+    """Describe changes needed when selected dashboard owners are combined."""
+    if keep_ownership:
+        return []
+    archives = []
+    for pos, indexes in _picked_indexes(graph.containers, selection.keys).items():
+        container = graph.containers[pos]
+        if isinstance(container, _containers.DashboardsContainer) and container.owner:
+            archives.append((container.member, container.rebuild(indexes)))
+    if len(archives) < 2:
+        return []
+    archives.sort()
+    try:
+        _, _, _, notices = _merge_owner_archives(archives, {})
+    except ValueError as exc:
+        return [str(exc)]
+    lines = []
+    for kind, ident, owner, key in dict.fromkeys(notices):
+        node = graph.nodes.get(f'dashboard:{ident}@{owner}')
+        label = object_label(graph, node) if node else ident
+        if kind == 'unresolved':
+            lines.append(f'{label}: a missing widget binding will remain unresolved when owners are combined; check the source.')
+        else:
+            lines.append(f'{label}: conflicting localization key {key} will be renamed when owners are combined.')
+    return lines
 
 
 
@@ -505,7 +606,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         archives = [(f"dashboards/{owner}", written[f"dashboards/{owner}"])
                     for owner in sorted(owners)]
         sharings = {owner: written[f"dashboardsharings/{owner}"] for owner in owners}
-        merged, sharing, changed = _merge_owner_archives(archives, sharings)
+        merged, sharing, changed, merge_notices = _merge_owner_archives(archives, sharings)
         for owner in owners:
             del written[f"dashboards/{owner}"]
             del written[f"dashboardsharings/{owner}"]
