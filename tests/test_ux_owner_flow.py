@@ -285,7 +285,18 @@ def test_report_lists_kept_and_pruned_localization_without_marker_pattern(tmp_pa
     state.log.close()
 
 
-def test_duplicate_labels_use_available_modification_dates_in_review(tmp_path, config_dir):
+def test_duplicate_labels_use_available_modification_dates_in_review(tmp_path, config_dir, monkeypatch):
+    import time
+    monkeypatch.setenv('TZ', 'America/Chicago')
+    time.tzset()
+    try:
+        _check_dates_in_review(tmp_path)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def _check_dates_in_review(tmp_path):
     first = '11111111-1111-4111-8111-111111111111'
     second = '22222222-2222-4222-8222-222222222222'
     inner = io.BytesIO()

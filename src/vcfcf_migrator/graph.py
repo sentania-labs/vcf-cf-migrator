@@ -324,22 +324,30 @@ def _display_metadata(raw: bytes):
         modified = ((root.get('lastModified') or root.findtext('LastModified') or '')
                     if root is not None else '')
     description = ' '.join(description.split()) if isinstance(description, str) else ''
-    # Render timestamps in the user's local time when the export provides a
-    # timezone. Unknown or unavailable timezone data falls back to other labels.
+    from datetime import datetime, timezone
+
+    def local_label(moment):
+        try:
+            local = moment.astimezone()
+            label = local.strftime('%Y-%m-%d %H:%M %Z').strip()
+            if local.tzname():
+                return label
+        except (ValueError, OverflowError, OSError):
+            pass
+        return moment.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+
     try:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
         if isinstance(modified, (int, float)) and not isinstance(modified, bool):
             seconds = modified / 1000 if modified > 100000000000 else modified
-            modified = datetime.fromtimestamp(seconds, ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M %Z')
+            modified = local_label(datetime.fromtimestamp(seconds, timezone.utc))
         elif isinstance(modified, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', modified.strip()):
             modified = modified.strip()
         elif isinstance(modified, str) and modified.strip():
             date = datetime.fromisoformat(modified.strip().replace('Z', '+00:00'))
-            modified = date.astimezone(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M %Z') if date.tzinfo else ''
+            modified = local_label(date) if date.tzinfo else ''
         else:
             modified = ''
-    except (ImportError, KeyError, ValueError, OverflowError, OSError):
+    except (ValueError, OverflowError, OSError):
         modified = ''
     return description, modified
 
