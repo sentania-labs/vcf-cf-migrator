@@ -41,6 +41,7 @@ from vcfcf_migrator.graph import (
     missing_line,
     missing_reason,
     dashboard_supermetrics,
+    dashboard_binding_lines,
 )
 
 
@@ -337,6 +338,11 @@ def render(graph: Graph, selection: Selection) -> str:
         if count:
             noun = 'super metric' if count == 1 else 'super metrics'
             lines.append(f"{node.name} uses {count} {noun} that must be enabled in a policy on the target.")
+    for node in dashboards:
+        binding_lines = dashboard_binding_lines(graph, node.key)
+        if binding_lines:
+            lines.append(f"Target requirements for dashboard {node.name}:")
+            lines.extend('  ' + line for line in binding_lines)
     if selection.added:
         lines.append(f"pulled in by dependency: {len(selection.added)}")
         for add in selection.added:
@@ -374,6 +380,9 @@ def _gap_dict(gap: MissingEdge) -> dict:
 def as_dict(graph: Graph, selection: Selection) -> dict:
     return {
         "picked": list(selection.picked),
+        "dashboard_requirements": {k: dashboard_binding_lines(graph, k) for k in selection.keys
+                                   if graph.nodes[k].kind == 'dashboard'
+                                   and dashboard_binding_lines(graph, k)},
         "keys": list(selection.keys),
         "counts": selection.counts(graph),
         "added": [{"key": a.key, "reason": a.reason} for a in selection.added],

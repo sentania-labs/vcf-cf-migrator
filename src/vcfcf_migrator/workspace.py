@@ -342,6 +342,15 @@ def review(state):
                        + e(", ".join(shared)) + ". Set sharing on the target.</p>")
     if any(state.graph.nodes[k].stock_or_derived for k in selection.keys):
         out.append("<p class='note'>Stock or derived dashboards stay selectable. Importing one can replace the dashboard with the same ID on the target.</p>")
+    from vcfcf_migrator.graph import dashboard_binding_lines
+    for key in selection.keys:
+        node = state.graph.nodes[key]
+        if node.kind != 'dashboard':
+            continue
+        requirements = dashboard_binding_lines(state.graph, key)
+        if requirements:
+            out.append('<h3>Target requirements for ' + e(node.name) + '</h3><ul>'
+                       + ''.join('<li>' + e(line) + '</li>' for line in requirements) + '</ul>')
     if selection.missing_dependencies():
         out.append("<div class='err'><strong>Build is blocked by missing references</strong>"
                    '<p>Remove the affected selections or open an export that includes their dependencies. '

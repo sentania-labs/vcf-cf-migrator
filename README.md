@@ -75,11 +75,12 @@ credentials. Command-line commands do not check for updates.
    Required objects are added automatically. Removing an object you selected
    keeps it included if another selected object still needs it.
 4. **Review the bundle.** Choose **Review bundle** to check your selections and the
-   dependencies they bring along. Resolve missing dependencies by using a more
-   complete source export or removing the affected selections. Required references
-   that cannot be identified as built-in content are treated as missing;
-   there is no override. Policy references do not block a build, but their
-   assignments must be checked on the target.
+   dependencies they bring along. Resolve blocking references by using a more
+   complete source export or removing the affected selections. Missing views and
+   dashboards are reported as possibly already missing on the source when the
+   export contains that content type; this is an offline inference. Check the
+   listed widget objects and adapter kinds on the target before import. A missing
+   object or kind can leave a dashboard loading.
 5. **Build and import.** The migrator builds the bundle but does not import
    it. Use **Save As…** to choose a ZIP destination, or edit the path, then **Build bundle**. The app confirms the full destination and offers **Show in folder** where supported. Use the target instance's
    content import. Supply the original export password if requested. Open the
@@ -132,18 +133,23 @@ Supported content includes dashboards, views, super metrics, custom groups,
 symptoms, alert definitions, recommendations, reports, notification rules,
 notification templates, and outbound settings.
 
-Selected content documents are copied unchanged. Encrypted settings stay
-encrypted, and the original export remains your source copy. Policies and other
-unsupported export members are not included in the new bundle. Review warnings
-before importing; this is a content selection tool, not a backup or a check of
-the target's configuration.
+Selected content documents are copied unchanged, except that colliding local
+resource tokens are rewritten when dashboards from multiple owners are merged.
+Encrypted settings stay encrypted, and the original export remains your source
+copy. Dashboard ownership maps to local `admin` on the target; directory-group
+sharing is removed and must be set again there. The build report identifies any
+rewritten tokens and lists the target objects and adapter kinds to check.
+
+Policies are not included. When the bundle contains super metrics or custom
+groups, the build writes a post-import checklist beside the ZIP. Use it to enable
+super metrics and check group policy assignments on the target. The report lists
+source policy information where available. Check each world object's adapter has
+at least one collecting instance. The migrator does not verify the target.
 
 Linked dashboards are included automatically, including their dependencies.
-If a destination dashboard is missing from the export, bundle creation stops.
-Include it in a new export or remove the dashboard that needs it from your
-selection. Navigation links that name a missing widget also block the build;
-repair those links in Operations and export again. This applies to built-in
-dashboards too. After import, check the links on the target instance.
+Missing navigation targets and orphan widget links are reported; they do not
+block when the export supports an inference that the target is already absent
+on the source. After import, check links and widget data on the target.
 
 ## If something goes wrong
 

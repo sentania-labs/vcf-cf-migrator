@@ -30,7 +30,7 @@ from vcfcf_migrator import rawdoc
 from vcfcf_migrator import runlog
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator.containers import Container, zip_directory_entry, zip_entry
-from vcfcf_migrator.graph import Graph
+from vcfcf_migrator.graph import Graph, dashboard_binding_lines
 from vcfcf_migrator.selection import Selection, refuse_missing_dependencies
 
 # Content kind -> the key configuration.json counts it under.
@@ -379,6 +379,13 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                   directories: Sequence[str] = (),
                   directory_order: Optional[Dict[str, int]] = None) -> BuildResult:
     result = BuildResult(path=str(out_path))
+    for key in selection.keys:
+        node = graph.nodes.get(key)
+        if node is not None and node.kind == 'dashboard':
+            lines = dashboard_binding_lines(graph, key)
+            if lines:
+                result.notes.append('Target requirements for dashboard ' + node.name + ':\n  '
+                                    + '\n  '.join(lines))
     picked = _picked_indexes(graph.containers, selection.keys)
     by_owner, dashboard_uuids = _carried_dashboards(graph, selection.keys)
     # A container can carry duplicate dashboard IDs; the graph represents
