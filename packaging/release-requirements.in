@@ -1,0 +1,9 @@
+# Tooling needed by the release validation, binary builds, and wheel build.
+setuptools
+setuptools-scm
+wheel
+build
+pytest
+pyinstaller
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+pyobjc-framework-Vision; sys_platform == 'darwin'

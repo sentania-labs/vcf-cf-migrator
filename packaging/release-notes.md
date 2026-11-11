@@ -32,3 +32,5 @@ Policies are not carried; check their assignments on the target.
 
 For installation details, command-line use, and current limitations, see the README for this release.
 Python users can install the `.whl` with pip instead.
+
+Verify downloads with `SHA256SUMS`. Uploaded release assets have build provenance attestations; verify each with `gh attestation verify FILE --repo sentania-labs/vcf-cf-migrator`. GitHub-generated source archives are not covered.
