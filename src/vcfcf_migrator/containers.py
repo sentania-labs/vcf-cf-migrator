@@ -155,6 +155,10 @@ def _localization_keys(raw, kind):
 
 
 
+def _split_records(text):
+    return re.findall(r'[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+', text)
+
+
 def _continued_property(line):
     body = line.rstrip('\r\n')
     return (len(body) - len(body.rstrip('\\'))) % 2 == 1
@@ -163,8 +167,8 @@ def _continued_property(line):
 def _property_key(record):
     """Return a property's key spelling without including its value."""
     logical = ''
-    for index, line in enumerate(record.splitlines()):
-        part = line.lstrip() if index else line.lstrip(' \t\f')
+    for index, line in enumerate(_split_records(record)):
+        part = line.rstrip('\r\n').lstrip(' \t\f')
         if _continued_property(part):
             part = part[:-1]
         logical += part
@@ -179,10 +183,10 @@ def _prune_properties(data, entries, selected, kind, member, notes):
     """Keep selected and unattributed properties; drop only known other keys."""
     selected = set(selected)
     explicit = [_localization_keys(entry.raw, kind) for entry in entries]
-    lines = data.decode('latin-1').splitlines(keepends=True)
+    lines = _split_records(data.decode('latin-1'))
     records = []
     for line in lines:
-        if (records and not records[-1].lstrip().startswith(('#', '!'))
+        if (records and not records[-1].lstrip(' \t\f').startswith(('#', '!'))
                 and _continued_property(records[-1])):
             records[-1] += line
         else:
@@ -191,15 +195,15 @@ def _prune_properties(data, entries, selected, kind, member, notes):
     dropped = []
     unknown = []
     for record in records:
-        stripped = record.lstrip()
-        if not stripped.strip() or stripped.startswith(('#', '!')):
+        stripped = record.lstrip(' \t\f')
+        if not stripped.strip(' \t\f\r\n') or stripped.startswith(('#', '!')):
             kept.append(record)
             continue
         if '\\' in record:
             kept.append(record)
             unknown.append(_property_key(record) or '(unnamed entry)')
             continue
-        key = re.split(r'\s|[=:]', stripped, maxsplit=1)[0]
+        key = re.split(r'[ \t\f\r\n=:]', stripped, maxsplit=1)[0]
         matches = set()
         for i, entry in enumerate(entries):
             ident = entry.ident
