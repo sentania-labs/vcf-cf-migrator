@@ -48,8 +48,6 @@ jobs:
       - name: Install native Linux runtime
         if: matrix.python == '3.12'
         run: |
-          # The hosted image's Azure mirror can fail DNS; use Ubuntu directly.
-          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update
           mapfile -t runtime_packages < packaging/linux-runtime.txt
           sudo apt-get install -y xvfb "${runtime_packages[@]}"
