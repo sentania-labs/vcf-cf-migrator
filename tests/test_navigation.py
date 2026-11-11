@@ -135,6 +135,9 @@ def test_later_duplicate_dashboard_adds_its_resolvable_dependency(tmp_path):
     out = tmp_path / 'carried.zip'
     bundle.build_bundle(members.data, members.order, g, chosen, out)
     with zipfile.ZipFile(out) as outer:
+        manifest = json.loads(outer.read('configuration.json'))
+        assert manifest['dashboards'] == 3
+        assert manifest['dashboardsByOwner'] == [{'owner': 'owner-a', 'count': 3}]
         with zipfile.ZipFile(io.BytesIO(outer.read('dashboards/owner-a'))) as inner:
             docs = json.loads(inner.read('dashboard/dashboard.json'))['dashboards']
     assert [d['id'] for d in docs] == ['a', 'a', 'b']

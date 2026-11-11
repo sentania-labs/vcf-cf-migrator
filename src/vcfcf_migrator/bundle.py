@@ -351,6 +351,17 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     result = BuildResult(path=str(out_path))
     picked = _picked_indexes(graph.containers, selection.keys)
     by_owner, dashboard_uuids = _carried_dashboards(graph, selection.keys)
+    # A container can carry duplicate dashboard IDs; the graph represents
+    # them as one node, while the importer counts every carried document.
+    by_owner = {}
+    dashboard_count = 0
+    for pos, indexes in picked.items():
+        container = graph.containers[pos]
+        if isinstance(container, _containers.DashboardsContainer):
+            count = len(set(indexes))
+            dashboard_count += count
+            if container.owner:
+                by_owner[container.owner] = by_owner.get(container.owner, 0) + count
 
     carried_names: Dict[str, set] = {}
     for key in selection.keys:
@@ -482,6 +493,8 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                 break
 
     counts = selection.counts(graph)
+    if dashboard_count:
+        counts['dashboard'] = dashboard_count
     manifest: Dict[str, object] = {"type": "CUSTOM"}
     for kind, key in MANIFEST_KEYS.items():
         if counts.get(kind):
