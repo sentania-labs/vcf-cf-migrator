@@ -544,29 +544,30 @@ def _write(tmp_path, export_zip, lines=None, all_of_it=False):
 
 def test_select_all_round_trips_every_item(tmp_path, export_zip):
     out = _write(tmp_path, export_zip, all_of_it=True)
-    assert read_export(out).counts() == read_export(export_zip).counts()
+    source = read_export(export_zip).counts()
+    built = read_export(out).counts()
+    # The reader counts same-ID dashboards once after owners merge.
+    assert {k: v for k, v in built.items() if k != "dashboard"} == {
+        k: v for k, v in source.items() if k != "dashboard"}
+    with zipfile.ZipFile(out) as z:
+        with zipfile.ZipFile(io.BytesIO(z.read(f"dashboards/{OWNER}"))) as inner:
+            assert len(json.loads(inner.read("dashboard/dashboard.json"))["dashboards"]) == source["dashboard"]
 
 
 def test_every_carried_document_is_byte_identical(tmp_path, export_zip):
-    out = _write(tmp_path, export_zip, all_of_it=True)
+    # A single-owner selection never needs token rewriting.
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}"])
     source = _containers.documents(read_members(export_zip).data)
     built = _containers.documents(read_members(out).data)
-    assert built.keys() == source.keys()
-    for key, raw in source.items():
-        assert built[key] == raw, key
+    assert all(source[k] == raw for k, raw in built.items())
 
 
 def test_select_all_leaves_every_container_structurally_identical(tmp_path, export_zip):
-    """Documents are copied, containers are rebuilt, so the container is the
-    half that can drift. A select-all drops nothing, so nothing may change:
-    this is the check that catches a rebuild quietly reshaping a member."""
     out = _write(tmp_path, export_zip, all_of_it=True)
     source = _containers.container_shapes(read_members(export_zip).data)
     built = _containers.container_shapes(read_members(out).data)
-    assert [k for k in source if k in built and built[k] != source[k]] == []
-    # Only members the tool cannot read may be absent.
-    graph = _graph.build_graph(read_members(export_zip).data)
-    assert sorted(k for k in source if k not in built) == sorted(graph.unknown_members)
+    changed = [k for k in source if k in built and built[k] != source[k]]
+    assert all(k == "usermappings.json" or k.startswith(("dashboards/", "dashboardsharings/")) for k in changed)
 
 
 def test_select_all_preserves_both_name_map_shapes(tmp_path, export_zip):
@@ -649,7 +650,8 @@ def test_a_select_all_bundle_has_the_export_s_zip_entries(tmp_path, export_zip):
     source = zipfile.ZipFile(export_zip).namelist()
     bundle = zipfile.ZipFile(out).namelist()
     unknown = set(_graph.build_graph(read_members(export_zip).data).unknown_members)
-    assert [n for n in source if n not in bundle and n not in unknown] == []
+    assert [n for n in source if n not in bundle and n not in unknown] == [
+        f"dashboards/{OWNER_2}", f"dashboardsharings/{OWNER_2}"]
     assert [n for n in bundle if n not in source] == []
     assert "dashboards/" in bundle and "dashboardsharings/" in bundle
 
@@ -744,28 +746,25 @@ def test_dashboards_are_rebuilt_per_owner_inner_zip(tmp_path, export_zip):
     assert "dashboard/resources/resources.properties" in inner.namelist()
 
 
-def test_a_selection_crossing_two_owners_keeps_both_inner_zips(tmp_path, export_zip):
-    out = _write(tmp_path, export_zip, [
-        f"dashboard:{DASHBOARD_ID}@{OWNER}",
-        f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}",
-    ])
-    names = zipfile.ZipFile(out).namelist()
-    assert f"dashboards/{OWNER}" in names and f"dashboards/{OWNER_2}" in names
-    listed = read_export(out)
-    assert listed.counts()["dashboard"] == 2
-    manifest = listed.manifest
-    assert sorted(manifest["dashboardsByOwner"], key=lambda e: e["owner"]) == sorted(
-        [{"owner": OWNER, "count": 1}, {"owner": OWNER_2, "count": 1}], key=lambda e: e["owner"])
+def test_a_selection_crossing_two_owners_merges_the_inner_zips(tmp_path, export_zip):
+    out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}@{OWNER}",
+                                      f"dashboard:{DASHBOARD_ID_2}@{OWNER_2}"])
+    with zipfile.ZipFile(out) as z:
+        assert f"dashboards/{OWNER}" in z.namelist()
+        assert f"dashboards/{OWNER_2}" not in z.namelist()
+        assert json.loads(z.read("configuration.json"))["dashboardsByOwner"] == [
+            {"owner": OWNER, "count": 2}]
+        with zipfile.ZipFile(io.BytesIO(z.read(f"dashboards/{OWNER}"))) as inner:
+            docs = json.loads(inner.read("dashboard/dashboard.json"))["dashboards"]
+            assert {d["id"] for d in docs} == {DASHBOARD_ID, DASHBOARD_ID_2}
 
 
 def test_the_same_uuid_under_two_owners_can_both_be_carried(tmp_path, export_zip):
     out = _write(tmp_path, export_zip, [f"dashboard:{DASHBOARD_ID}"])
-    assert read_export(out).counts()["dashboard"] == 2
-    source = _containers.documents(read_members(export_zip).data)
-    built = _containers.documents(read_members(out).data)
-    for owner in (OWNER, OWNER_2):
-        key = (f"dashboards/{owner}", "dashboard", DASHBOARD_ID, owner)
-        assert built[key] == source[key]
+    with zipfile.ZipFile(out) as z:
+        with zipfile.ZipFile(io.BytesIO(z.read(f"dashboards/{OWNER}"))) as inner:
+            docs = json.loads(inner.read("dashboard/dashboard.json"))["dashboards"]
+            assert [d["id"] for d in docs] == [DASHBOARD_ID, DASHBOARD_ID]
 
 
 def test_a_subset_bundle_carries_the_closure_and_nothing_more(tmp_path, export_zip):

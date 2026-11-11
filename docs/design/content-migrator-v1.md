@@ -97,10 +97,10 @@ same core:
   source is GUI-only.
 
 **Pass-through is the contract, and it constrains the build path.**
-There is no translation module. The one rule that makes pass-through
-safe: a selected object's document goes into the output bundle as the
+The rule that makes pass-through safe: a selected object's document goes into the output bundle as the
 bytes the export carried, never as a re-serialization of a parsed
-model. Parsing is for the tree and the preview only. Re-rendering a
+model, except for colliding file-local tokens when multiple dashboard owners
+are merged into one target owner. Only those tokens are rewritten. Parsing is for the tree and the preview only. Re-rendering a
 document the tool does not fully understand is how an 8.x field, or a
 9.2 field this tool has never seen, gets silently dropped; copying
 bytes cannot lose a field it does not know about. Where a bundle
@@ -116,7 +116,8 @@ tool rebuilds the containers and copies the documents: the selected
 `ViewDef` element subtree, the selected super metric object, the
 selected dashboard entry, each carried over verbatim into a freshly
 written container holding only what the admin picked. Rewriting the
-container is expected. Rewriting a document is not.
+container is expected. Dashboard token collisions in an owner merge are the
+only exception to document pass-through and are listed in the build report.
 
 A subset also has to be closed, which is what the dependency tree is
 for: selecting a dashboard pulls in its views and their super metrics,

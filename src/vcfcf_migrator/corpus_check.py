@@ -102,7 +102,10 @@ def _check_one(path: Path, scratch: Path) -> str:
 
     synthesized = [n for n in result.members if n not in members.data
                    and n not in ("configuration.json",) and not n.endswith("/")]
-    entry_problems = namelist_problems(path, out, graph.unknown_members, synthesized)
+    owners = sorted({n.owner for n in graph.nodes.values() if n.kind == "dashboard" and n.owner})
+    merged_members = ([f"{prefix}/{owner}" for owner in owners[1:]
+                       for prefix in ("dashboards", "dashboardsharings")] if len(owners) > 1 else [])
+    entry_problems = namelist_problems(path, out, graph.unknown_members + merged_members, synthesized)
     if entry_problems:
         return (f"error    {path.name}: the bundle's zip entries do not match the export: "
                 + "; ".join(entry_problems[:4]))
@@ -110,29 +113,53 @@ def _check_one(path: Path, scratch: Path) -> str:
     bundle_members = read_members(out).data
     source_docs = _containers.documents(members.data)
     bundle_docs = _containers.documents(bundle_members)
-    changed = [k for k, v in source_docs.items() if bundle_docs.get(k) != v]
-    if changed or len(bundle_docs) != len(source_docs):
-        return (f"error    {path.name}: {plural(len(changed), 'document')} did not survive the copy "
-                f"byte for byte, {len(bundle_docs)} carried against {len(source_docs)}")
+    if len(owners) > 1:
+        # Check each owner's documents through a single-owner build, where the
+        # byte-exact contract holds. The combined build is checked separately
+        # for its dashboard IDs and total count, including duplicate IDs.
+        for owner in owners:
+            keys = [key for key in picked.keys if graph.nodes[key].kind != "dashboard"
+                    or graph.nodes[key].owner == owner]
+            single = _selection.Selection(keys=keys)
+            owner_path = scratch / (path.stem + "-owner.zip")
+            _bundle._write_bundle(members.data, members.order, graph, single, owner_path,
+                                  marker=members.marker, directories=members.directories)
+            actual = _containers.documents(read_members(owner_path).data)
+            expected = {k: v for k, v in source_docs.items()
+                        if k[1] != "dashboard" or k[3] == owner}
+            if actual != expected:
+                return f"error    {path.name}: single-owner documents did not survive byte for byte"
+        source_containers, _ = _containers.discover(members.data)
+        built_containers, _ = _containers.discover(bundle_members)
+        source_ids = sorted(e.ident for c in source_containers for e in c.entries()
+                            if e.kind == "dashboard")
+        built_ids = sorted(e.ident for c in built_containers for e in c.entries()
+                           if e.kind == "dashboard")
+        if source_ids != built_ids:
+            return f"error    {path.name}: merged dashboards do not match the source"
+    else:
+        changed = [k for k, v in source_docs.items() if bundle_docs.get(k) != v]
+        if changed or len(bundle_docs) != len(source_docs):
+            return (f"error    {path.name}: {plural(len(changed), 'document')} did not survive the copy "
+                    f"byte for byte, {len(bundle_docs)} carried against {len(source_docs)}")
 
-    # Documents are copied; containers are rebuilt, so the container is the
-    # half that can drift. On a select-all nothing is dropped, so every member
-    # the bundle carries must have the same structure as the source's, and
-    # every member it does not carry must be one this tool cannot read.
     source_shapes = _containers.container_shapes(members.data)
     bundle_shapes = _containers.container_shapes(bundle_members)
+    # Owner mappings and dashboard containers are deliberately rebuilt.
     reshaped = sorted(k for k, v in source_shapes.items()
-                      if k in bundle_shapes and bundle_shapes[k] != v)
+                      if k in bundle_shapes and bundle_shapes[k] != v
+                      and k != "usermappings.json" and not k.startswith(("dashboards/", "dashboardsharings/")))
     if reshaped:
         return (f"error    {path.name}: select-all reshaped {plural(len(reshaped), 'container')}: "
                 + ", ".join(reshaped))
     unexplained = sorted(k for k in source_shapes
-                         if k not in bundle_shapes and k not in graph.unknown_members)
+                         if k not in bundle_shapes and k not in graph.unknown_members
+                         and k not in merged_members)
     if unexplained:
         return (f"error    {path.name}: select-all dropped {plural(len(unexplained), 'member')} that "
                 "are not in the unreadable list: " + ", ".join(unexplained))
 
-    if rebuilt.counts() != inspect_counts:
+    if len(owners) <= 1 and rebuilt.counts() != inspect_counts:
         return (f"error    {path.name}: the bundle does not carry what the export did: "
                 f"{_fmt(rebuilt.counts())} against {_fmt(inspect_counts)}")
     blocking = sum(1 for gap in graph.missing if _graph.is_missing_dependency(gap))
@@ -154,7 +181,7 @@ def _check_one(path: Path, scratch: Path) -> str:
             f"{plural(rendered, 'object')} previewed; "
             f"select-all bundle round trips, {len(result.members)} members "
             f"({len(result.directories)} directory entries), "
-            f"{len(source_docs)} documents byte-identical, "
+            f"{len(source_docs)} documents byte-identical in single-owner builds, "
             f"{len(bundle_shapes)} containers unchanged{tail}")
 
 

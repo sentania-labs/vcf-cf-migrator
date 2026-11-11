@@ -319,6 +319,14 @@ def select_all(graph: Graph) -> Selection:
 def render(graph: Graph, selection: Selection) -> str:
     lines = [f"selected: {len(selection.picked)} named, "
              f"{len(selection.keys)} after closure"]
+    dashboards = [graph.nodes[k] for k in selection.keys
+                  if graph.nodes[k].kind == "dashboard" and graph.nodes[k].owner]
+    if dashboards:
+        lines.append("Dashboard ownership will map to admin on the target.")
+        directory = [n.name for n in dashboards if n.owner in graph.directory_owners]
+        if directory:
+            lines.append("Directory-owned dashboards: " + ", ".join(directory)
+                         + ". Check their sharing on the target.")
     counts = selection.counts(graph)
     if counts:
         lines.append("carrying: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))

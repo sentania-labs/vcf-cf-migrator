@@ -168,6 +168,92 @@ def _narrow_sharings(data: bytes, dashboard_uuids: Sequence[str]) -> Optional[by
     return rawdoc.build_array(out).encode("utf-8")
 
 
+def _merge_owner_archives(archives, sharings):
+    """Merge owner archives, renaming only colliding file-local tokens."""
+    import re
+
+    token_pattern = re.compile(r"(?:resourceKind|adapterKind|resource):id:(\d+)_::_")
+    containers = [_containers.DashboardsContainer(name, data, owner=name.split('/', 1)[1])
+                  for name, data in archives]
+    reserved = set()
+    for container in containers:
+        doc = json.loads(container.text)
+        for table in doc.get('entries', {}).values():
+            if isinstance(table, list):
+                reserved.update(x.get('internalId') for x in table if isinstance(x, dict)
+                                and isinstance(x.get('internalId'), str))
+    used = set()
+    merged_entries = {}
+    dashboards = []
+    extras = {}
+    changed = []
+    merged_sharings = []
+    for container in containers:
+        doc = json.loads(container.text)
+        entries = doc.get('entries', {})
+        mapping = {}
+        owner_tokens = set()
+        for table in entries.values():
+            if not isinstance(table, list):
+                continue
+            for item in table:
+                token = item.get('internalId') if isinstance(item, dict) else None
+                if not isinstance(token, str):
+                    continue
+                if token in owner_tokens:
+                    raise ValueError('Cannot merge duplicate tokens in one dashboard owner file')
+                owner_tokens.add(token)
+                if token in used:
+                    match = token_pattern.fullmatch(token)
+                    if not match:
+                        raise ValueError('Cannot merge dashboard entries with an unknown colliding token')
+                    prefix = token.split(':id:', 1)[0]
+                    number = 0
+                    while f'{prefix}:id:{number}_::_' in reserved:
+                        number += 1
+                    replacement = f'{prefix}:id:{number}_::_'
+                    reserved.add(replacement)
+                    mapping[token] = replacement
+        used.update(owner_tokens)
+        def rewrite(text):
+            return token_pattern.sub(lambda match: mapping.get(match.group(), match.group()), text)
+        for key, table in entries.items():
+            if not isinstance(table, list):
+                if key in merged_entries and merged_entries[key] != table:
+                    raise ValueError('Cannot merge incompatible dashboard entry tables')
+                merged_entries[key] = table
+                continue
+            merged_entries.setdefault(key, []).extend(json.loads(rewrite(json.dumps(table))))
+        for entry in container.entries():
+            original = entry.raw.decode('utf-8')
+            rewritten = rewrite(original)
+            dashboards.append(rewritten)
+            if rewritten != original:
+                changed.append(entry.name)
+        sharing = sharings.get(container.owner, b'[]').decode('utf-8')
+        merged_sharings.extend(json.loads(rewrite(sharing)))
+        for name, data in container.extra.items():
+            if name in extras and extras[name] != data:
+                if not name.endswith('.properties'):
+                    raise ValueError('Cannot merge conflicting dashboard archive members')
+                extras[name] = extras[name].rstrip(b'\n') + b'\n' + data
+            else:
+                extras[name] = data
+    first = containers[0]
+    pairs = [(v.key or '', json.dumps(merged_entries, ensure_ascii=False) if v.key == 'entries'
+              else rawdoc.build_array(dashboards) if v.key == 'dashboards' else v.raw(first.text))
+             for v in first.top]
+    if not any(key == 'entries' for key, _ in pairs) and merged_entries:
+        pairs.append(('entries', json.dumps(merged_entries, ensure_ascii=False)))
+    inner = rawdoc.build_object(pairs).encode('utf-8')
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(zip_entry(first.INNER), inner)
+        for name, data in extras.items():
+            z.writestr(zip_entry(name), data)
+    return output.getvalue(), json.dumps(merged_sharings).encode('utf-8'), changed
+
+
 def directory_entries(written: Sequence[str], source_directories: Sequence[str] = ()
                       ) -> List[str]:
     """The zip directory entries a bundle needs: one per directory it puts a
@@ -269,18 +355,13 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                   dashboards_by_owner={o: c for o, c in sorted(by_owner.items())},
                   reason=runlog.prose("one dashboard member per owner, and the manifest counts them "
                          "the same way"))
-    if owners and "usermappings.json" in members:
-        narrowed = _narrow_usermappings(members["usermappings.json"], owners)
-        if narrowed is not None:
-            written["usermappings.json"] = narrowed
-            runlog.detail("scaffolding.narrowed", member="usermappings.json",
-                          bytes=len(narrowed), owners=owners,
-                          reason=runlog.prose("narrowed to the owners whose dashboards are carried, so "
-                                 "no scaffolding points at something the bundle does not hold"))
-        else:
-            runlog.warn("scaffolding.dropped", member="usermappings.json",
-                        reason=runlog.prose("nothing in it matched the owners carried, or it did not "
-                               "parse, so the bundle carries none of it"))
+    if owners:
+        # Source owner IDs are file-local keys; the importer maps this one to
+        # the source-less target account by name.
+        target_owner = sorted(owners)[0]
+        written["usermappings.json"] = json.dumps({"sources": [], "users": [
+            {"userId": target_owner, "userName": "admin"}]}).encode("utf-8")
+        result.notes.append("Dashboard ownership maps to the target admin account.")
     # One rule, one loop: **every carried owner gets a sharing member**,
     # whatever the source held. It used to be two loops, one synthesizing where
     # the source had no member at all and one narrowing where it did, and the
@@ -319,6 +400,37 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
         if name.startswith("dashboardsharings/") and name.split("/", 1)[1] not in owners:
             runlog.detail("scaffolding.skipped", member=name,
                           reason=runlog.prose("this owner has no dashboard in the bundle"))
+
+    if len(owners) > 1:
+        target_owner = sorted(owners)[0]
+        archives = [(f"dashboards/{owner}", written[f"dashboards/{owner}"])
+                    for owner in sorted(owners)]
+        sharings = {owner: written[f"dashboardsharings/{owner}"] for owner in owners}
+        merged, sharing, changed = _merge_owner_archives(archives, sharings)
+        for owner in owners:
+            del written[f"dashboards/{owner}"]
+            del written[f"dashboardsharings/{owner}"]
+        written[f"dashboards/{target_owner}"] = merged
+        written[f"dashboardsharings/{target_owner}"] = sharing
+        by_owner = {target_owner: sum(by_owner.values())}
+        if changed:
+            result.notes.append("Colliding resource tokens were rewritten in: " + ", ".join(changed))
+        selected_ids = [graph.nodes[k].ident for k in selection.keys
+                        if graph.nodes[k].kind == "dashboard" and graph.nodes[k].owner]
+        if len(selected_ids) != len(set(selected_ids)):
+            result.notes.append("Some selected dashboards have the same ID under different owners; "
+                                "check the imported dashboards on the target.")
+    for owner in owners:
+        source = members.get(f"dashboardsharings/{owner}")
+        if source:
+            try:
+                groups = json.loads(source)
+            except ValueError:
+                groups = []
+            if any(isinstance(group, dict) and group.get("sourceType") not in (None, "LOCAL")
+                   for group in groups if isinstance(groups, list)):
+                result.notes.append("Some dashboard sharing groups come from a directory; check sharing on the target.")
+                break
 
     counts = selection.counts(graph)
     manifest: Dict[str, object] = {"type": "CUSTOM"}

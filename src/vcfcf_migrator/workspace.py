@@ -325,6 +325,14 @@ def review(state):
     selection = state.selection
     if not selection or not selection.keys:
         return ''.join(out) + '<p>Select at least one object before building.</p></div></main>'
+    dashboards = [state.graph.nodes[k] for k in selection.keys
+                  if state.graph.nodes[k].kind == "dashboard" and state.graph.nodes[k].owner]
+    if dashboards:
+        out.append("<p class='note'>Dashboard ownership will map to admin on the target.</p>")
+        directory = [n.name for n in dashboards if n.owner in state.graph.directory_owners]
+        if directory:
+            out.append("<p class='note'>Directory-owned dashboards: "
+                       + e(", ".join(directory)) + ". Check their sharing on the target.</p>")
     if selection.missing_dependencies():
         out.append("<div class='err'><strong>Build is blocked by missing references</strong>"
                    '<p>Remove the affected selections or open an export that includes their dependencies. '

@@ -223,6 +223,7 @@ class Graph:
     nodes: Dict[str, Node] = field(default_factory=dict)
     containers: List[Container] = field(default_factory=list)
     unknown_members: List[str] = field(default_factory=list)
+    directory_owners: set = field(default_factory=set)
     missing: List[MissingEdge] = field(default_factory=list)
     # By-name references that several different objects answer to; every match
     # is carried, and the admin is told rather than left to find out.
@@ -755,6 +756,10 @@ def build_graph(members: Dict[str, bytes]) -> Graph:
 def _build_graph(members: Dict[str, bytes]) -> Graph:
     found, unknown = _containers.discover(members)
     graph = Graph(containers=found, unknown_members=unknown)
+    mappings = _json(members.get("usermappings.json", b""))
+    if isinstance(mappings, dict):
+        graph.directory_owners = {str(user.get("userId")) for user in (mappings.get("users") or [])
+                                  if isinstance(user, dict) and user.get("userSourceId")}
     dashboard_docs = {}
     for container in found:
         runlog.detail("container.found", member=container.member,
