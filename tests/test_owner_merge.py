@@ -194,17 +194,24 @@ def test_same_dashboard_id_under_two_owners_is_refused_for_a_chosen_single_owner
     assert not out.exists()
 
 
-def test_review_and_build_button_follow_the_owner_choice_for_same_id_dashboards():
+def _page_with_everything(g):
+    from vcfcf_migrator import insight
     from vcfcf_migrator.ui import PageState
-    from vcfcf_migrator.uipage import _build_form
-    members = _same_id_members()
-    g = graph.build_graph(members)
     state = PageState()
-    state.graph, state.selection = g, selection.select_all(g)
-    state.owner_mode = 'admin'
-    assert 'disabled' in _build_form(state)
-    state.owner_mode = 'source'
-    assert 'disabled' not in _build_form(state)
+    state.graph, state.insight = g, insight.build(g)
+    state._set_picked([n.key for n in g.ordered()])
+    state.screen = 'owner'
+    return state
+
+
+def test_the_copies_question_comes_before_review_unless_the_original_owners_are_kept():
+    from vcfcf_migrator.ui import can_go
+    state = _page_with_everything(graph.build_graph(_same_id_members()))
+    assert state.owner_question() == 'copies' and not can_go(state, 'review')
+    assert 'First: which copy of' in state.render()
+    state.set_owner('source', both=True)
+    assert state.owner_question() == '' and can_go(state, 'review')
+    state.log.close()
 
 
 def _localized(owner, props):
@@ -254,14 +261,13 @@ def test_unmergeable_escaped_localization_is_a_refusal_not_a_warning():
     assert bundle.merge_preview(g, picked, keep_ownership=True) == ([], [])
 
 
-def test_build_button_is_disabled_when_owner_merge_is_refused():
-    from vcfcf_migrator.ui import PageState
-    from vcfcf_migrator.uipage import _build_form
-    g = graph.build_graph(_members(_localized('a', {'res.properties': 'K=caf\\u00e9\n'}),
-                                   _localized('b', {'res.properties': 'K=cafe\\u00e8\n'})))
-    state = PageState()
-    state.graph, state.selection = g, selection.select_all(g)
-    state.owner_mode = 'admin'
-    assert 'disabled' in _build_form(state)
-    state.owner_mode = 'source'
-    assert 'disabled' not in _build_form(state)
+def test_dashboards_that_cannot_share_an_owner_are_asked_about_before_review():
+    from vcfcf_migrator.ui import can_go
+    state = _page_with_everything(graph.build_graph(
+        _members(_localized('a', {'res.properties': 'K=caf\\u00e9\n'}),
+                 _localized('b', {'res.properties': 'K=cafe\\u00e8\n'}))))
+    assert state.owner_question() == 'merge' and not can_go(state, 'review')
+    assert 'these dashboards cannot share one owner' in state.render()
+    state.set_owner('source')
+    assert state.owner_question() == '' and can_go(state, 'review')
+    state.log.close()

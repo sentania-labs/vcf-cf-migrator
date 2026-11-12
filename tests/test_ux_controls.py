@@ -1,5 +1,6 @@
 """Control contracts at their actual native bridge, persistence and TLS boundaries."""
 import json
+import re
 from pathlib import Path
 import ssl
 import subprocess
@@ -9,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from vcfcf_migrator import desktop, settings, source
+from pages import save_to, visible
 from vcfcf_migrator.ui import PageState, dispatch
 from make_export_fixture import EMPTY_SM_ID, build_export_zip
 
@@ -99,13 +101,112 @@ def test_login_source_mapping_and_test_never_exports(tls_server, name, expected)
 
 def test_bridge_test_clears_fields_without_persisting_or_logging(state, tls_server, config_dir):
     address, cert, _ = tls_server
-    form = dict(address=address, ca_file=str(cert), username='synthetic-user',
-                password='synthetic-password', export_password='unused-export-password', auth_source='Local')
+    def form():
+        return dict(address=address, username='synthetic-user', password='synthetic-password',
+                    export_password='unused-export-password', auth_source='Local')
+    bridge = desktop.Bridge(state)
+    state.screen = 'connect'
     before = state.log.snapshot()
-    assert desktop.Bridge(state).test_connection(form) == 'Connection succeeded. No export was started.'
-    assert not form
-    assert state.log.snapshot() == before
+    # The server's certificate is not one this computer knows: that is told
+    # apart from every other failure, and the two ways past it are offered.
+    typed = form()
+    page = visible(bridge.test_connection(typed)['html'])
+    assert not typed and state.conn['tested'] == 'cert'
+    assert 'This server uses a certificate your computer does not recognise.' in page
+    assert 'Use my company certificate file…' in page and 'Connect without checking' in page
+    state.dialog = lambda kind, current: {'path': str(cert)} if kind == 'ca' else {}
+    dispatch(state, '/conn-cert-file', {})
+    assert state.conn['cert'] == {'mode': 'file', 'path': str(cert)} and state.conn['tested'] is None
+    assert 'Using the certificate file ca.pem.' in visible(state.render())
+    typed = form()
+    page = visible(bridge.test_connection(typed)['html'])
+    assert not typed and state.conn['tested'] == 'ok'
+    assert 'Signed in fine. Nothing was exported.' in page
+    dispatch(state, '/conn-cert-undo', {})
+    dispatch(state, '/conn-cert-skip', {})
+    assert 'Connecting without checking the certificate.' in visible(state.render())
+    bridge.test_connection(form())
+    assert state.conn['tested'] == 'ok'
+    # Nothing typed reached the log, the settings or the page.
+    assert [e for e in state.log.snapshot() if e not in before and e.get('event') == 'page.action'
+            and e.get('fields')] == []
+    assert 'synthetic-password' not in str(state.log.snapshot()) + state.render()
     assert not settings.settings_path().exists()
+
+
+def test_the_sign_in_choices_come_from_the_server(state, tls_server):
+    address, cert, _ = tls_server
+    bridge = desktop.Bridge(state)
+    failed = bridge.login_sources(address)
+    assert state.conn['lookup'] == 'failed' and 'Could not reach that address yet' in failed['address_hint']
+    state.conn['cert'] = {'mode': 'file', 'path': str(cert)}
+    found = bridge.login_sources(address)
+    assert state.conn['sources'] == ['Directory A', 'SSO / B']
+    assert 'A local account on VCF Operations' in found['options']
+    assert 'An account from the company directory Directory A' in found['options']
+    assert 'value="SSO / B"' in found['options'] and 'Found it' in found['address_hint']
+    state.screen = 'connect'
+    assert 'An account from the company directory SSO / B' in state.render()
+
+
+def test_a_wrong_password_and_a_typo_say_what_to_do(state, monkeypatch):
+    class Refuses:
+        base = 'https://operations.example/suite-api/api'
+        def __init__(self, *args, **kwargs):
+            pass
+        def acquire(self, *args):
+            raise source.SignInRefused('refused')
+    monkeypatch.setattr(source, 'Client', Refuses)
+    form = dict(address='https://operations.example', username='u', password='typo',
+                export_password='e', export_password2='e')
+    dispatch(state, '/connect', dict(form))
+    page = state.render()
+    assert state.screen == 'connect' and state.conn['error'] == ('auth', 'operations.example')
+    assert ('Could not sign in. The user name or password was not accepted by operations.example. '
+            'Nothing was exported. Type the password again.') in visible(page)
+    # Only the password is asked for again; the rest of the form is put back.
+    assert 'data-fresh' in page.split('id="c-pw"')[1].split('>')[0]
+    assert 'data-fresh' not in page.split('id="c-epw"')[1].split('>')[0]
+    dispatch(state, '/connect', dict(form, export_password2='different'))
+    assert state.conn['error'] == ('other', 'The two export passwords do not match. Type them again.')
+    dispatch(state, '/conn-edited', {})
+    assert state.conn['error'] is None
+
+
+def test_a_download_shows_its_stages_and_can_be_cancelled(state, monkeypatch):
+    import threading
+    from vcfcf_migrator.ui import DOWNLOAD_STAGES
+    started, release = threading.Event(), threading.Event()
+
+    class Slow:
+        base = 'https://operations.example/suite-api/api'
+        def __init__(self, *args, **kwargs):
+            self.progress = lambda stage: None
+            self.cancelled = lambda: False
+        def acquire(self, *args):
+            self.progress('Authenticating')
+            self.progress('Requesting content export')
+            started.set()
+            assert release.wait(5)
+            if self.cancelled():
+                raise source.Cancelled('cancelled')
+            raise AssertionError('the download was not cancelled')
+    monkeypatch.setattr(source, 'Client', Slow)
+    state.background = True
+    before = state.graph
+    dispatch(state, '/connect', dict(address='https://operations.example', username='u', password='p',
+                                     export_password='e', export_password2='e'))
+    assert started.wait(5)
+    job = state.job
+    assert job is not None and job.kind == 'download' and job.stage == 1
+    page = visible(state.render())
+    assert 'Getting your content' in page and all(stage in page for stage in DOWNLOAD_STAGES)
+    assert 'Cancelling leaves the source untouched.' in page
+    dispatch(state, '/cancel-job', {})
+    assert state.job is None and state.screen == 'connect' and 'Nothing was downloaded' in state.note.text
+    release.set()
+    assert job.done.wait(5)
+    assert state.graph is before and state.source_snapshot is None
 
 
 @pytest.mark.parametrize('policy', ['trusted-ca', 'ignore', 'ignore-with-unreadable-ca'])
@@ -126,19 +227,109 @@ def test_tls_policy_used_through_complete_export(tls_server, tmp_path, policy):
         snapshot.close()
 
 
-def test_source_replacement_confirmed_only_after_valid_load(state, export_zip, tmp_path):
+def test_switching_export_is_asked_only_after_a_good_read_and_choices_are_ticked_again(
+        state, export_zip, tmp_path):
     state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    state.toggle('customgroup:[Fixture] Prod Clusters', True)
     graph, picked = state.graph, list(state.picked)
-    prompts = []
-    state.confirm = lambda title, message: prompts.append((title, message)) or False
     state.open_export(str(tmp_path / 'missing.zip'))
-    assert not prompts
-    state.open_export(str(export_zip))
-    assert len(prompts) == 1
+    assert state.ask is None and state.open_error['kind'] == 'unreadable'
     assert state.graph is graph and state.picked == picked
-    state.confirm = lambda *args: True
+    # The same file again: asked, in the page, and saying no changes nothing.
     state.open_export(str(export_zip))
-    assert not state.picked and state.graph is not graph
+    assert state.ask['kind'] == 'switch' and state.ask['same'] and state.graph is graph
+    page = visible(state.render())
+    assert 'Read fixture-export.zip again?' in page
+    assert 'Your 2 choices are ticked again wherever the same things exist in it.' in page
+    dispatch(state, '/ask-no', {})
+    assert state.ask is None and state.graph is graph and state.picked == picked and state.screen == 'choose'
+    # A different export that lacks one of the choices: the one that is there
+    # is ticked again, and the other is said to be missing.
+    other = tmp_path / 'other-export.zip'
+    other.write_bytes(build_export_zip(without=('customgroups.json',)))
+    state.open_export(str(other))
+    assert 'Switch to other-export.zip?' in visible(state.render())
+    assert 'Switching closes fixture-export.zip.' in visible(state.render())
+    dispatch(state, '/ask-yes', {})
+    assert state.graph is not graph and state.zip_path == str(other)
+    assert state.picked == ['supermetric:' + EMPTY_SM_ID]
+    assert 'Your 1 choice was ticked again.' in state.note.text
+    assert '1 choice was not found in this export and was left out.' in state.note.text
+    # With nothing chosen there is nothing to ask about.
+    state.clear()
+    state.open_export(str(export_zip))
+    assert state.ask is None and state.zip_path == str(export_zip)
+
+
+def test_a_choice_is_matched_by_name_when_its_identity_changed(state, tmp_path):
+    from vcfcf_migrator.ui import Arrival
+    from vcfcf_migrator import insight
+    from vcfcf_migrator.graph import Graph, Node
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    renamed = Graph()
+    for node in (Node('supermetric', 'new-id', '[Fixture] SM Empty', 'new-id', 'supermetrics.json', 0),
+                 Node('supermetric', 'other', 'Something else', 'other', 'supermetrics.json', 1)):
+        renamed.nodes[node.key] = node
+    state._adopt(Arrival(str(tmp_path / 'renamed.zip'), 'renamed.zip', None, renamed,
+                         insight.build(renamed)), keep=True)
+    assert state.picked == ['supermetric:new-id']
+    # Two things with the same name: a name is not enough to pick one.
+    twice = Graph()
+    for index in (1, 2):
+        node = Node('supermetric', f'dup-{index}', '[Fixture] SM Empty', f'dup-{index}', 'supermetrics.json', index)
+        twice.nodes[node.key] = node
+    state._adopt(Arrival(str(tmp_path / 'twice.zip'), 'twice.zip', None, twice, insight.build(twice)),
+                 keep=True)
+    assert state.picked == [] and '1 choice was not found' in state.note.text
+
+
+def test_an_export_with_nothing_in_it_is_refused_and_changes_nothing(state, tmp_path):
+    import io
+    import zipfile
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    empty = tmp_path / 'empty-export.zip'
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        archive.writestr('1757800000000000000L.v1', 'owner')
+        archive.writestr('configuration.json', json.dumps({'type': 'CUSTOM'}))
+    empty.write_bytes(buffer.getvalue())
+    before = state.graph
+    state.open_export(str(empty))
+    assert state.graph is before and state.picked and state.ask is None
+    assert state.open_error == {'kind': 'empty', 'name': 'empty-export.zip'}
+    page = visible(state.render())
+    assert 'That export has nothing in it to move' in page
+    assert 'fixture-export.zip is still open and your 1 choice is untouched.' in page
+    assert 'Export again on the source and tick the content you want before exporting.' in page
+
+
+@pytest.mark.parametrize('content, kind, title', [
+    (b'PK\x03\x04 cut off', 'not_zip', 'That file could not be opened'),
+    (None, 'unreadable', 'That file could not be opened'),
+    ('other', 'not_export', 'That ZIP is not a content export'),
+])
+def test_each_wrong_file_gets_its_own_plain_card(state, tmp_path, content, kind, title):
+    import io
+    import zipfile
+    path = tmp_path / 'wrong.zip'
+    if content == 'other':
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archive:
+            archive.writestr('beach.txt', 'not an export')
+        path.write_bytes(buffer.getvalue())
+    elif content is not None:
+        path.write_bytes(content)
+    state.open_export(str(path))
+    assert state.open_error['kind'] == kind and state.screen == 'open'
+    page = visible(state.render())
+    assert title in page and 'What to do:' in page and 'wrong.zip' in page
+    # The folder it came from is nobody's business on screen.
+    assert str(tmp_path) not in page
+    # Going back is one click and nothing was lost.
+    dispatch(state, '/go', {'to': 'choose'})
+    assert state.screen == 'choose' and state.open_error is not None
+    dispatch(state, '/go', {'to': 'open'})
+    assert state.open_error is None
 
 
 @pytest.mark.parametrize('current,chosen,expected', [
@@ -163,7 +354,7 @@ def test_native_save_as_normalizes_platform_returns(state, current, chosen, expe
     assert kwargs['file_types'] == ('Zip files (*.zip)',)
 
 
-def test_picker_failure_is_actionable_and_ca_path_retains_extension(state):
+def test_picker_failure_is_said_and_ca_path_retains_extension(state):
     class Window:
         def create_file_dialog(self, *args, **kwargs):
             return ('/tmp/private-ca.crt',)
@@ -172,42 +363,148 @@ def test_picker_failure_is_actionable_and_ca_path_retains_extension(state):
     assert bridge.pick_path('ca')['path'] == '/tmp/private-ca.crt'
     assert bridge.pick_path('unknown')['error']
     bridge._window.create_file_dialog = lambda *a, **k: (_ for _ in ()).throw(OSError('private path'))
-    assert bridge.pick_path('bundle') == {'error': 'The file picker could not open. Enter the path manually.'}
+    assert bridge.pick_path('bundle') == {'error': 'The file window could not be opened.'}
+    state.dialog = bridge.pick_path
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    state.choose_save_place()
+    assert state.note.text == 'The file window could not be opened.'
 
 
-def test_show_in_folder_receives_only_the_completed_destination(state, tmp_path):
+def test_show_in_folder_receives_only_what_the_app_saved(state, tmp_path):
     calls = []
     state.show_in_folder = lambda path: calls.append(path) or True
     bridge = desktop.Bridge(state)
-    bridge.act('/show-in-folder', {'path': '/unrelated/file'})
+    bridge.act('/show-in-folder', {'path': '/unrelated/file', 'which': 'bundle'})
     assert not calls
     state.toggle('supermetric:' + EMPTY_SM_ID, True)
-    state.build(str(tmp_path / 'chosen bundle'))
-    bridge.act('/show-in-folder', {'path': '/unrelated/file'})
+    save_to(state, tmp_path / 'chosen bundle.zip')
+    bridge.act('/show-in-folder', {'path': '/unrelated/file', 'which': 'bundle'})
     assert calls == [str(tmp_path / 'chosen bundle.zip')]
     state.show_in_folder = lambda path: False
-    bridge.act('/show-in-folder')
-    assert 'folder could not be opened' in state.error
+    bridge.act('/show-in-folder', {'which': 'bundle'})
+    assert 'The folder could not be opened.' in state.note.text
     assert state.built_path == calls[0]
 
 
-def test_save_path_extension_full_destination_and_overwrite(state, tmp_path, export_zip):
+def test_bundles_go_to_downloads_with_a_report_and_a_checklist_beside_them(
+        config_dir, export_zip, tmp_path, monkeypatch):
     from vcfcf_migrator.export_reader import read_export
+    home = tmp_path / 'home'
+    (home / 'Downloads').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    state = PageState(str(export_zip))
+    # Not beside the export any more: Downloads, whichever way the export came in.
+    assert state.save_folder == home / 'Downloads' and state.save_name == 'fixture-export-bundle.zip'
     state.toggle('supermetric:' + EMPTY_SM_ID, True)
-    state.build(str(tmp_path / 'my bundle'))
+    state.screen = 'save'
+    page = visible(state.render())
+    assert 'Save as fixture-export-bundle.zip' in page and 'In folder Downloads' in page
+    assert 'What is inside 1 thing: 1 super metric' in page
+    state.save()
+    assert state.save_state == 'saved'
+    saved = sorted(p.name for p in (home / 'Downloads').iterdir())
+    assert saved == ['fixture-export-bundle-checklist.txt', 'fixture-export-bundle-report.txt',
+                     'fixture-export-bundle.zip']
+    assert read_export(home / 'Downloads' / 'fixture-export-bundle.zip').counts() == {'supermetric': 1}
+    page = visible(state.render())
+    assert 'Bundle saved' in page and 'Three files were saved in Downloads' in page
+    assert 'Read the report' in page and 'Read the checklist' in page
+    state.log.close()
+
+
+def test_an_existing_file_is_asked_about_in_the_page_and_never_replaced_silently(state, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
     output = tmp_path / 'my bundle.zip'
-    assert state.built_path == str(output.resolve())
-    assert read_export(output).counts() == {'supermetric': 1}
+    save_to(state, output)
     content = output.read_bytes()
-    state.confirm = lambda *args: False
-    state.build(str(output))
-    assert output.read_bytes() == content and 'cancelled' in state.message
+    stamp = output.stat().st_mtime_ns
+    save_to(state, output)
+    assert state.save_state == 'exists' and state.save_problem == 'my bundle.zip'
+    assert output.read_bytes() == content and output.stat().st_mtime_ns == stamp
+    state.screen = 'save'
+    page = state.render()
+    assert (f'{tmp_path.name} already has a file called my bundle.zip. Replacing it overwrites the old '
+            'file, its report and its checklist for good.') in visible(page)
+    # The safe answer is the filled button, and Save itself is off until one is picked.
+    assert re.search(r'lat-btn--primary[^>]*data-act="/pick-save"', page)
+    assert not re.search(r'lat-btn--primary[^>]*data-force="1"', page)
+    assert re.search(r'id="save"[^>]*disabled', page)
+    dispatch(state, '/save', {'force': '1'})
+    assert state.save_state == 'saved' and output.exists()
+
+
+def test_a_report_or_checklist_already_there_counts_as_an_existing_file(state, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    (tmp_path / 'fresh-report.txt').write_text('someone else wrote this')
+    save_to(state, tmp_path / 'fresh.zip')
+    assert state.save_state == 'exists' and state.save_problem == 'fresh-report.txt'
+    assert not (tmp_path / 'fresh.zip').exists()
+    assert (tmp_path / 'fresh-report.txt').read_text() == 'someone else wrote this'
+
+
+def test_the_export_itself_is_never_overwritten(state, export_zip):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
     original = export_zip.read_bytes()
-    state.build(str(export_zip))
+    save_to(state, export_zip, force=True)
     assert export_zip.read_bytes() == original
-    assert 'source export cannot be overwritten' in state.error
-    state.save_diagnostics(str(tmp_path / 'diagnostics'))
-    assert (tmp_path / 'diagnostics.jsonl').exists()
+    assert (state.save_state, state.save_problem) == ('error', 'same')
+    state.screen = 'save'
+    assert 'That would overwrite the export you opened.' in visible(state.render())
+
+
+def test_a_folder_that_refuses_new_files_says_so_and_offers_another(state, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    locked = tmp_path / 'locked'
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        save_to(state, locked / 'bundle.zip')
+        assert (state.save_state, state.save_problem) == ('error', 'denied')
+        state.screen = 'save'
+        page = visible(state.render())
+        assert ('Could not save in locked. That folder does not allow new files. Nothing was written. '
+                'Choose a different folder, then save again.') in page
+        assert not list(locked.iterdir())
+    finally:
+        locked.chmod(0o700)
+    chosen = tmp_path / 'elsewhere' / 'renamed'
+    state.dialog = lambda kind, current: {'path': str(chosen), 'confirmed': False}
+    dispatch(state, '/pick-save', {})
+    assert (state.save_name, state.save_folder, state.save_state) == ('renamed.zip', tmp_path / 'elsewhere', 'ready')
+    dispatch(state, '/save', {})
+    assert state.save_state == 'saved' and (tmp_path / 'elsewhere' / 'renamed.zip').exists()
+
+
+def test_a_replace_the_save_window_already_confirmed_is_not_asked_twice(state, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    existing = tmp_path / 'report.zip'
+    existing.write_text('old')
+    state.dialog = lambda kind, current: {'path': str(existing), 'confirmed': True}
+    dispatch(state, '/pick-save', {})
+    dispatch(state, '/save', {})
+    assert state.save_state == 'saved'
+    # Once only: the next save of the same name is asked about again.
+    dispatch(state, '/save', {})
+    assert state.save_state == 'exists'
+    # A name the window completed with .zip was not confirmed by it.
+    state.dialog = lambda kind, current: {'path': str(existing), 'confirmed': False}
+    dispatch(state, '/pick-save', {})
+    dispatch(state, '/save', {})
+    assert state.save_state == 'exists'
+
+
+def test_changing_the_choices_after_a_save_says_the_saved_files_are_out_of_date(state, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    save_to(state, tmp_path / 'first.zip')
+    assert state.save_state == 'saved' and not state.stale
+    state.screen = 'choose'
+    state.toggle('customgroup:[Fixture] Prod Clusters', True)
+    assert state.stale and state.save_state == 'ready'
+    assert 'You changed your choices after saving.' in visible(state.render())
+    state.screen = 'save'
+    assert 'You changed your choices after the last save.' in visible(state.render())
+    save_to(state, tmp_path / 'first.zip', force=True)
+    assert state.save_state == 'saved' and not state.stale
 
 
 def test_theme_default_persistence_validation_and_corpus_compatibility(config_dir):
@@ -215,11 +512,13 @@ def test_theme_default_persistence_validation_and_corpus_compatibility(config_di
     state = PageState()
     assert state.theme == 'light'
     dispatch(state, '/settings', {'theme': 'dark'})
+    # Applies at once, with no second button to press.
+    assert state.theme == 'dark' and 'data-theme="dark"' in state.render()
     second = PageState()
     assert second.theme == 'dark'
     assert settings.load_settings() == {'corpus_dir': '/data/exports', 'theme': 'dark'}
     dispatch(state, '/settings', {'theme': 'invalid'})
-    assert state.error and settings.load_settings()['theme'] == 'dark'
+    assert state.theme == 'dark' and settings.load_settings()['theme'] == 'dark'
     dispatch(second, '/settings', {'theme': 'light'})
     third = PageState()
     assert third.theme == 'light'
@@ -233,37 +532,12 @@ def test_blank_or_nameless_destination_falls_back_to_the_default(state, value):
     assert state.output_path(value, '.zip', 'fallback-bundle') == default
 
 
-def test_replace_confirmation_only_for_typed_paths(state, tmp_path):
-    state.toggle('supermetric:' + EMPTY_SM_ID, True)
-    prompts = []
-    state.confirm = lambda title, message: prompts.append(title) or True
-    target = tmp_path / 'existing.jsonl'
-    target.write_text('old')
-    state.save_diagnostics(str(target), True)
-    assert not prompts
-    state.save_diagnostics(str(target))
-    assert prompts == ['Replace file?']
-    assert state.diagnostics_out == str(target)
-
-
-@pytest.mark.parametrize('kind, extension', [('bundle', '.zip'), ('diagnostics', '.jsonl')])
+@pytest.mark.parametrize('kind, name', [('bundle', None), ('report', 'support-report.txt'),
+                                        ('log', 'vcf-content-migrator.log')])
 @pytest.mark.parametrize('blank', ['', '   '])
-def test_native_save_dialog_starts_at_the_real_default(state, kind, extension, blank):
-    calls = []
-    class Window:
-        def create_file_dialog(self, *args, **kwargs):
-            calls.append(kwargs)
-            return None
-    bridge = desktop.Bridge(state)
-    bridge._window = Window()
-    default = Path(state.default_out() if kind == 'bundle' else state.default_diagnostics_out()).resolve()
-    assert bridge.pick_path(kind, blank) == {'path': ''}
-    assert (Path(calls[0]['directory']), calls[0]['save_filename']) == (default.parent, default.name)
-
-
-def test_native_save_dialog_starts_at_the_live_source_default(state, tmp_path, monkeypatch):
+def test_native_save_dialog_starts_at_the_real_default(state, kind, name, blank, tmp_path, monkeypatch):
     monkeypatch.setattr(PageState, 'download_directory', staticmethod(lambda: tmp_path))
-    state.source_snapshot = object()
+    state.save_folder = tmp_path
     calls = []
     class Window:
         def create_file_dialog(self, *args, **kwargs):
@@ -271,40 +545,6 @@ def test_native_save_dialog_starts_at_the_live_source_default(state, tmp_path, m
             return None
     bridge = desktop.Bridge(state)
     bridge._window = Window()
-    bridge.pick_path('bundle', ' ')
-    bridge.pick_path('diagnostics', '')
-    assert [(Path(c['directory']), c['save_filename']) for c in calls] == [
-        (tmp_path.resolve(), 'bundle.zip'), (tmp_path.resolve(), 'vcfcf-migrator-diagnostics.jsonl')]
-    state.source_snapshot = None
-
-
-@pytest.mark.parametrize('kind, extension', [('bundle', '.zip'), ('diagnostics', '.jsonl')])
-def test_overwrite_is_confirmed_exactly_once_for_the_real_destination(state, tmp_path, kind, extension):
-    state.toggle('supermetric:' + EMPTY_SM_ID, True)
-    prompts = []
-    state.confirm = lambda title, message: prompts.append(message) or True
-    run = state.build if kind == 'bundle' else state.save_diagnostics
-    existing = tmp_path / ('report' + extension)
-    existing.write_text('old')
-
-    def pick(chosen):
-        class Window:
-            def create_file_dialog(self, *args, **kwargs):
-                return (chosen,)
-        bridge = desktop.Bridge(state)
-        bridge._window = Window()
-        return bridge.pick_path(kind, '')
-
-    suffixless = pick(str(tmp_path / 'report'))
-    assert suffixless == {'path': str(existing.resolve()), 'confirmed': False}
-    run(suffixless['path'])
-    assert len(prompts) == 1 and str(existing.resolve()) in prompts[0]
-
-    prompts.clear()
-    exact = pick(str(existing))
-    assert exact == {'path': str(existing.resolve()), 'confirmed': True}
-    run(exact['path'], True)
-    assert not prompts
-
-    run(str(existing))
-    assert len(prompts) == 1
+    assert bridge.pick_path(kind, blank) == {'path': ''}
+    assert (Path(calls[0]['directory']), calls[0]['save_filename']) == (
+        tmp_path.resolve(), name or state.save_name)

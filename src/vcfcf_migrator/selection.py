@@ -282,19 +282,37 @@ def _close(graph: Graph, keys: Sequence[str]) -> Selection:
     return selection
 
 
-def refuse_missing_dependencies(graph: Graph, selection: Selection) -> None:
+def refuse_missing_dependencies(graph: Graph, selection: Selection, accepted=()) -> None:
     """Raise ``MissingDependency`` if a bundle of *selection* would break.
 
     The one gate between a closed selection and the writer, called by the
-    command line and by the page alike. It has no parameter that turns it
-    off, on purpose: a bundle that points at a view or a super metric it does
-    not carry imports and then shows an empty widget or a metric that never
-    computes, which is worse than no bundle, and the admin who wants it
-    anyway has a better move, which is to export the content it names.
+    command line and by the page alike. By default it refuses every missing
+    dependency: a bundle that points at a view or a super metric it does not
+    carry imports and then shows an empty widget or a metric that never
+    computes, which is worse than no bundle.
 
-    Every refusal is logged with every dependency it names.
+    *accepted* is the one way past it, and it is never a blanket switch: it
+    is the exact dependencies a person has said, one decision at a time on
+    the review step, already exist on the target (issue 64: an export never
+    carries some of the definitions that come with the product, and nothing
+    in an export says which). Anything not in it still refuses. The command
+    line passes nothing, so it refuses as it always has.
+
+    Every refusal is logged with every dependency it names, and so is every
+    dependency that was let through.
     """
-    gaps = selection.missing_dependencies()
+    accepted = set(accepted)
+    for gap in selection.missing_dependencies():
+        if gap in accepted:
+            source = graph.nodes.get(gap.source_key)
+            runlog.warn("build.missing_dependency_accepted", wants=gap.kind, ident=gap.ident,
+                        via=gap.via, kind=source.kind if source else "",
+                        name=source.name if source else "",
+                        uuid=(source.uuid or "") if source else "",
+                        reason=runlog.prose("the person confirmed on the review step that this "
+                                            "already exists on the target, so the bundle is "
+                                            "written without it"))
+    gaps = [gap for gap in selection.missing_dependencies() if gap not in accepted]
     if not gaps:
         return
     lines = [human_missing_line(graph, gap) for gap in gaps]
@@ -414,7 +432,8 @@ def human_warnings(graph: Graph, notes, kind: str):
         else:
             yield f'{name}: some references could not be read. Check the source before import.'
 
-def render(graph: Graph, selection: Selection, target_user='admin', keep_ownership=False) -> str:
+def render(graph: Graph, selection: Selection, target_user='admin', keep_ownership=False,
+           accepted=()) -> str:
     lines = [f"Selected: {len(selection.picked)}; included with dependencies: {len(selection.keys)}"]
     dashboards = [graph.nodes[k] for k in selection.keys if graph.nodes[k].kind == "dashboard"]
     lines.extend(ownership_messages(graph, selection, target_user, keep_ownership))
@@ -457,11 +476,18 @@ def render(graph: Graph, selection: Selection, target_user='admin', keep_ownersh
                      f"{len(selection.unhandled)}")
         for note in human_warnings(graph, selection.unhandled, 'unhandled'):
             lines.append(f"  {note}")
-    blocking = selection.missing_dependencies()
+    accepted = set(accepted)
+    blocking = [gap for gap in selection.missing_dependencies() if gap not in accepted]
     if blocking:
         lines.append(f"missing dependencies: {len(blocking)}; a build of this selection "
                      "is refused until the export carries them")
         for gap in blocking:
+            lines.append("  " + human_missing_line(graph, gap))
+    confirmed = [gap for gap in selection.missing_dependencies() if gap in accepted]
+    if confirmed:
+        lines.append(f"missing dependencies kept in by decision: {len(confirmed)}; the person "
+                     "confirmed each already exists on the target")
+        for gap in confirmed:
             lines.append("  " + human_missing_line(graph, gap))
     not_carried = selection.not_carried()
     if not_carried:

@@ -86,8 +86,9 @@ def test_missing_dashboard_is_reported_and_builds(tmp_path, config_dir, capsys):
         key = next(n.key for n in state.graph.nodes.values() if n.uuid == 'a')
         state.toggle(key, on=True)
         assert not state.selection.missing_dependencies()
-        state.tab = 'review'
-        assert 'may already be missing on the source' in state.render()
+        state.screen, state.issue = 'review', 'i-' + key
+        assert any('one link will not work' in issue.title for issue in state.issues())
+        assert 'most likely because it was deleted on the source' in state.render()
     finally:
         state.log.close()
 

@@ -4,6 +4,16 @@ cannot be built.
 Scott, 2026-10-05: "there should be no override - a missing dependency breaks
 the bundle - it's something we need to guard against."
 
+Scott, 2026-11-12, settling issue 64 (an export never carries some of the
+definitions that come with the product, and nothing in an export says which):
+"block on building a bundle with missing dependencies, expose a 'I know what
+I'm doing, I've validated this is OOTB/whatever' and then let them proceed to
+build the bundle". So the default is still a refusal, on the command line and
+in the window. The window alone offers a way past it, and never as a switch:
+each choice with a missing dependency is answered on the review step, the
+answer is written in the report, and the checklist tells the person to
+confirm it on the target.
+
 A missing dependency is content the bundle would have to carry for the
 selection to work on the target: a dashboard, view, super metric, alert,
 symptom, recommendation or report the export does not hold, and the outbound
@@ -51,7 +61,8 @@ from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator.cli import build_parser, main
 from vcfcf_migrator.export_reader import read_export, read_members
-from vcfcf_migrator.ui import PageState
+from pages import save_to, visible
+from vcfcf_migrator.ui import PageState, dispatch
 
 DASH = f"dashboard:{DASHBOARD_ID}@{OWNER}"
 DASH_CLEAN = f"dashboard:{EMPTY_DASHBOARD_ID}@{OWNER_2}"
@@ -245,18 +256,20 @@ def test_build_has_no_flag_that_gets_past_the_gate():
         assert e.value.code == 2
 
 
-def test_the_page_build_form_has_no_checkbox_or_setting_past_the_gate(config_dir, export_zip):
+def test_the_window_has_no_switch_past_the_gate_only_an_answer_per_choice(config_dir, export_zip):
     state = PageState(str(export_zip))
     state.toggle(DASH, on=True)
-    for tab in ("review",):
-        state.tab = tab
-        page = state.render()
-        form = re.search(r"<form method='post' action='/build'>.*?</form>", page, re.S).group(0)
-        assert "type='checkbox'" not in form and "type=\"checkbox\"" not in form
-        assert "disabled" in form.split("Build bundle")[0]
-        assert "resolve the missing references" in form
-        for word in ("override", "force", "ignore", "anyway"):
-            assert word not in form.lower(), (tab, word)
+    dispatch(state, '/go', {'to': 'review'})
+    page = state.render()
+    main_part = page.split('<main>')[1].split('</main>')[0]
+    # Nothing to tick and no setting: the one way on is the answer beside the
+    # problem it is about, and the safe answer is the filled button.
+    assert 'type="checkbox"' not in main_part
+    assert re.search(r'lat-btn--primary[^>]*data-act="/leave"', main_part)
+    assert not re.search(r'lat-btn--primary[^>]*data-act="/keep-in"', main_part)
+    assert ('I have checked this already exists on the target. Keep it in anyway' in main_part)
+    assert re.search(r'id="next"[^>]*disabled', page)
+    state.log.close()
 
 
 # ---------------------------------------------------------------------------
@@ -334,83 +347,155 @@ def test_corpus_check_still_round_trips_and_counts_what_a_build_would_refuse(tmp
 # AC3: the page shows the refusal and writes nothing
 # ---------------------------------------------------------------------------
 
-def test_the_page_refuses_a_build_with_a_missing_dependency_and_writes_nothing(
+def test_the_page_refuses_a_save_with_an_unanswered_missing_dependency_and_writes_nothing(
         config_dir, export_zip, tmp_path):
     state = PageState(str(export_zip))
     state.toggle(DASH, on=True)
+    # Ticking is allowed, and says at once that Review will ask.
+    assert DASH in state.picked
+    assert 'not in this export' in state.note.text
+    assert 'You will be asked at the Review step whether to keep it.' in state.note.text
     out = tmp_path / "page.zip"
-    state.build(str(out))
-    assert not out.exists()
-    assert state.error.startswith("refused: the selection depends on")
-    assert state.error.endswith("no bundle written")
-    assert "bundle written" not in state.message
-    page = state.render()
-    assert "Build is blocked" in page
-    assert "Build refused. No bundle written." in page
-    # Every missing dependency of this selection is named on the page, in the
-    # refusal under Last build and in the list above the button.
-    assert "view is missing from the export" in page
-    assert ABSENT_SM_NAME in page
-    assert ABSENT_VIEW_ID not in page
-    assert GROUP_POLICY_ID not in state.build_report
-    assert "<button type='submit' class='primary' disabled>Build bundle" in page
+    save_to(state, out)
+    assert not out.exists() and state.save_state != 'saved'
+    assert state.screen == 'review'
+    issue, = state.open_issues()
+    assert issue.title.endswith('needs something this export does not have')
+    assert len(issue.hard) == len(state.selection.missing_dependencies()) > 0
+    state.issue = issue.id
+    page = visible(state.render())
+    assert '1 thing to decide before you can save' in page
+    # Every missing dependency of this choice is named, in words, with the
+    # path from the choice to it. No id is shown for any of them.
+    assert f'the super metric "{ABSENT_SM_NAME}", which is not in this export' in page
+    for ident in (ABSENT_VIEW_ID, ABSENT_SM_ID, GROUP_POLICY_ID):
+        assert ident not in page
+    state.log.close()
 
 
-def test_the_page_says_so_before_build_is_pressed(config_dir, export_zip):
+def test_the_page_says_so_before_review(config_dir, export_zip):
     state = PageState(str(export_zip))
-    state.toggle(f"view:{VIEW_IDS[1]}", on=True)
-    state.tab = "review"
-    page = state.render()
-    assert "Build is blocked" in page
-    assert "required super metric" in page
+    key = f"view:{VIEW_IDS[1]}"
+    dispatch(state, '/focus', {'key': key})
+    page = visible(state.render())
+    assert 'Needs something not in this export' in page          # on the row
+    assert 'Needs something that is not in this export.' in page  # in its panel
+    assert 'Review will ask you to confirm' in page
     assert ABSENT_SM_ID not in page
-    # A policy reference in the tree reads as what it is.
-    state.toggle(GROUP, on=True)
-    page = state.render()
-    assert "References to check" in page and "policy assignment" in page
+    # It is kept out of a bulk add, like everything else that needs a decision.
+    state.add_shown()
+    assert key not in state.picked
+    assert 'that need something this export does not have' in state.note.text
+    state.log.close()
 
 
-def test_the_page_builds_a_clean_selection_and_lists_the_policy(config_dir, export_zip,
-                                                                tmp_path):
+def test_keeping_it_in_is_explicit_and_is_written_down(config_dir, export_zip, tmp_path):
+    state = PageState(str(export_zip))
+    state.toggle(DASH, on=True)
+    issue, = state.open_issues()
+    missing = len(issue.hard)
+    state.keep_in(issue.id)
+    assert not state.open_issues()
+    assert state.accepted_missing() == [gap for _node, gap in issue.hard]
+    state.screen = 'review'
+    page = visible(state.render())
+    assert 'Ready to save' in page
+    assert 'except 1 thing you confirmed is already on the target' in page
+    out = tmp_path / "kept.zip"
+    save_to(state, out)
+    assert out.exists() and state.save_state == 'saved'
+    report = out.with_name('kept-report.txt').read_text(encoding='utf-8')
+    assert 'Kept in against the usual advice' in report
+    assert report.count('You confirmed that it already exists on the target.') == missing
+    assert f'missing dependencies kept in by decision: {missing}' in report
+    checklist = out.with_name('kept-checklist.txt').read_text(encoding='utf-8')
+    assert checklist.count('Confirm that ') == missing
+    assert 'You kept it in because you had checked that the target already has it.' in checklist
+    # And on the last screen, as tasks to tick.
+    assert sum(1 for task in state.tasks() if task.id.startswith('confirm-')) == missing
+    state.log.close()
+
+
+def test_leaving_it_out_is_the_recommended_answer_and_needs_no_override(config_dir, export_zip,
+                                                                       tmp_path):
+    state = PageState(str(export_zip))
+    state.toggle(DASH_CLEAN, on=True)
+    state.toggle(DASH, on=True)
+    issue, = state.open_issues()
+    state.leave_out(issue.pick)
+    assert not state.open_issues() and state.picked == [DASH_CLEAN]
+    assert 'Left out' in state.note.text and state.undo
+    out = tmp_path / "left.zip"
+    save_to(state, out)
+    assert out.exists() and not state.accepted_missing()
+    assert 'Confirm that ' not in out.with_name('left-checklist.txt').read_text(encoding='utf-8')
+    assert 'Kept in against the usual advice' not in out.with_name('left-report.txt').read_text(encoding='utf-8')
+    state.log.close()
+
+
+def test_the_page_saves_a_clean_selection_and_lists_the_policy(config_dir, export_zip, tmp_path):
     state = PageState(str(export_zip))
     state.toggle(DASH_CLEAN, on=True)
     state.toggle(GROUP, on=True)
-    state.tab = "review"
-    page = state.render()
-    assert "A build is refused" not in page
-    assert "<button type='submit' class='primary'>Build bundle" in page
+    assert not state.open_issues()
+    assert 'The group arrives without a policy of its own' in [i.title for i in state.issues()]
     out = tmp_path / "clean.zip"
-    state.build(str(out))
-    assert not state.error, state.error
-    assert f"bundle built and saved to {out}" in state.message
+    save_to(state, out)
+    assert state.save_state == 'saved' and state.built_path == str(out)
     assert "References to check: 1" in state.build_report
     assert zipfile.ZipFile(out).namelist()
+    state.log.close()
 
 
-
-
-def test_the_page_and_the_command_refuse_through_one_gate(config_dir, export_zip, tmp_path,
-                                                          monkeypatch):
+def test_the_page_and_the_command_go_through_one_gate(config_dir, export_zip, tmp_path,
+                                                      monkeypatch):
     """Both ways in call ``refuse_missing_dependencies``; a second gate in
-    either would be a second set of rules to drift."""
+    either would be a second set of rules to drift. Only the window ever
+    passes it anything, and only what was answered for."""
     calls = []
     real = _selection.refuse_missing_dependencies
 
-    def spy(graph, selection):
-        calls.append(len(selection.keys))
-        return real(graph, selection)
+    def spy(graph, selection, accepted=()):
+        calls.append((len(selection.keys), len(list(accepted))))
+        return real(graph, selection, accepted)
 
+    from vcfcf_migrator import bundle as _bundle
+    monkeypatch.setattr(_bundle, "refuse_missing_dependencies", spy)
     monkeypatch.setattr(_selection, "refuse_missing_dependencies", spy)
     state = PageState(str(export_zip))
     state.toggle(DASH, on=True)
-    state.build(str(tmp_path / "a.zip"))
-    assert calls == [len(state.selection.keys)]
+    carried = len(state.selection.keys)
+    save_to(state, tmp_path / "a.zip")
+    assert calls == []                      # refused before the writer: unanswered at Review
     picks = _lines(tmp_path, [DASH])
     assert main(["build", str(export_zip), "--select", str(picks),
                  "--out", str(tmp_path / "b.zip")]) == 1
-    assert calls == [len(state.selection.keys)] * 2
+    assert calls and all(accepted == 0 for _keys, accepted in calls)
     assert not (tmp_path / "a.zip").exists() and not (tmp_path / "b.zip").exists()
+    calls.clear()
+    issue, = state.open_issues()
+    state.keep_in(issue.id)
+    save_to(state, tmp_path / "a.zip")
+    assert calls == [(carried, len(issue.hard))] and (tmp_path / "a.zip").exists()
+    state.log.close()
     _runlog.set_current(None)
+
+
+def test_the_writer_lets_through_only_what_was_answered_for(graph, export_zip, tmp_path):
+    from vcfcf_migrator.bundle import build_bundle
+    members = read_members(export_zip)
+    picked = _selection.select_all(graph)
+    gaps = picked.missing_dependencies()
+    assert len(gaps) == sum(REFUSED_ON_THE_FIXTURE.values()) > 1
+    out = tmp_path / 'partly.zip'
+    with pytest.raises(_selection.MissingDependency) as refused:
+        build_bundle(members.data, members.order, graph, picked, out, keep_ownership=True,
+                     accepted_missing=gaps[:1])
+    assert refused.value.gaps == gaps[1:] and not out.exists()
+    result = build_bundle(members.data, members.order, graph, picked, out, keep_ownership=True,
+                          accepted_missing=gaps)
+    assert out.exists()
+    assert sum(1 for task in result.tasks if task.id.startswith('confirm-')) == len(gaps)
 
 
 def test_shared_writer_refuses_without_touching_existing_output(graph, export_zip, tmp_path):

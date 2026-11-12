@@ -33,7 +33,7 @@ def test_report_preserves_operations_and_warnings_after_detail_eviction(config_d
     for i in range(100):
         log.detail('closure.picked', index=i)
     out = tmp_path / 'diagnostics.jsonl'
-    state.save_diagnostics(str(out))
+    state.save_support_report(str(out))
     head, *events = map(json.loads, out.read_text().splitlines())
     ends = [e for e in events if e['event'] == 'phase.end']
     assert len(ends) == 2

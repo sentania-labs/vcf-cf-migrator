@@ -256,6 +256,9 @@ class Preview:  # noqa: D101
     empty_reason: str = ""
     empty_code: str = ""
     subjects: Dict[str, int] = field(default_factory=dict)
+    # A picture for a person to recognise something by, as the window shows
+    # it: no identifier is printed where a name is not known.
+    plain: bool = False
     # Interaction wiring: how many widgets are driven by another widget's
     # selection, and how many of those have nothing feeding them.
     receivers: int = 0
@@ -707,13 +710,15 @@ def _widget_view(cfg: dict, ctx: dict) -> str:
     node = _find_node(graph, "view", view_id) if view_id else None
     if node is None:
         # Missing content can be inferred from an export, not verified here.
+        plain = getattr(ctx.get("preview"), "plain", False)
         return _mark_widget_elsewhere(
             ctx.get("preview"), ctx.get("title") or "",
             str((ctx.get("widget") or {}).get("type") or ""),
             "widget-view-not-carried",
-            f"this widget shows view {view_id or '(none named)'}, which this export does "
-            "not carry. It may already be missing on the source, or the export may be incomplete. "
-            "Check the source and target before import.")
+            ("This widget will be empty. The view it shows is not in the export." if plain else
+             f"this widget shows view {view_id or '(none named)'}, which this export does "
+             "not carry. It may already be missing on the source, or the export may be incomplete. "
+             "Check the source and target before import."))
     try:
         root = _xml_doc(raw_document(graph, node))
     except PreviewError as e:
@@ -908,7 +913,9 @@ def _widget_alertlist(cfg: dict, ctx: dict) -> str:
     if isinstance(named, list):
         for ident in named[:MOCK_ROWS]:
             node = _find_node(graph, "alert", str(ident))
-            names.append(node.name if node is not None else str(ident))
+            plain = getattr(ctx.get("preview"), "plain", False)
+            names.append(node.name if node is not None
+                         else "An alert that is not in the export" if plain else str(ident))
     rows = []
     severities = ("critical", "immediate", "warning", "info")
     for row in range(3):
@@ -2248,10 +2255,10 @@ PREVIEWERS = {
 # Assembling
 # ---------------------------------------------------------------------------
 
-def build(graph: Graph, node: Node) -> Preview:
+def build(graph: Graph, node: Node, plain: bool = False) -> Preview:
     """The preview for one node: its body markup and what the renderer met."""
     preview = Preview(node=node, title=node.name,
-                      subtitle=_subtitle(node), body="")
+                      subtitle=_subtitle(node), body="", plain=plain)
     renderer = PREVIEWERS.get(node.kind)
     if renderer is None:
         preview.body = (f"<div class='pv-placeholder'>a {_e(node.kind)} object. This preview "
@@ -2373,13 +2380,20 @@ def _subtitle(node: Node) -> str:
     return " | ".join(bits)
 
 
-def fragment(graph: Graph, node: Node) -> str:
-    """The preview as markup to drop inside another page (the selection page).
+def fragment(graph: Graph, node: Node, plain: bool = False) -> str:
+    """The preview as markup to drop inside another page.
 
     The page that embeds this carries ``PREVIEW_CSS`` once; the fragment
     carries no style of its own so two previews on one page cannot disagree.
+
+    *plain* is the window's version: the picture alone. The page around it
+    already says what it is called and that the numbers are made up, so the
+    title, the technical subtitle, the banner and the notes for an admin
+    reading a standalone file are left out, and no identifier is printed.
     """
-    preview = build(graph, node)
+    preview = build(graph, node, plain)
+    if plain:
+        return f"<div class='pv'>{preview.body}</div>"
     parts = [
         "<div class='pv'>",
         f"<h2 class='pv-title'>{_e(preview.title)}</h2>",

@@ -25,6 +25,7 @@ from make_export_fixture import (
     SECRET_TOKEN,
     build_export_zip,
 )
+from pages import save_to, visible
 from vcfcf_migrator import runlog
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.ui import PageState
@@ -326,10 +327,11 @@ def test_the_page_saves_one_diagnostics_file_that_names_its_contents(tmp_path, e
                                                                      config_dir):
     state = PageState(str(export_zip))
     state.toggle(next(n.key for n in state.graph.ordered() if n.name == "[Fixture] SM Empty"), True)
-    state.build(str(tmp_path / "bundle.zip"))
+    save_to(state, tmp_path / "bundle.zip")
+    assert state.save_state == 'saved'
     out = tmp_path / "diagnostics.jsonl"
-    state.save_diagnostics(str(out))
-    assert state.error == "", state.error
+    state.save_support_report(str(out))
+    assert state.report_saved == str(out)
     lines = out.read_text(encoding="utf-8").splitlines()
     head = json.loads(lines[0])
     assert head["kind"] == "vcfcf-migrator-diagnostics"
@@ -352,9 +354,9 @@ def test_a_log_setting_change_keeps_what_the_page_learned_about_people(
     state.save_setting({"log_file": str(target)})
     state.save_setting({"log_level": "debug"})
     state.render()
-    state.select_all()
+    state.add_shown()
     out = tmp_path / "diag.jsonl"
-    state.save_diagnostics(str(out))
+    state.save_support_report(str(out))
     state.log.close()
     body = target.read_text(encoding="utf-8") + out.read_text(encoding="utf-8")
     for needle in EXCLUDED_FROM_THE_FIXTURE:
@@ -384,7 +386,7 @@ def test_the_ui_command_writes_the_log_the_flag_asks_for(tmp_path, export_zip,
     state = PageState(zip_path=str(export_zip), log_cli=str(target),
                          log_level_cli="debug")
     try:
-        state.select_all()
+        state.add_shown()
         state.render()
         state.render()
     finally:
@@ -454,34 +456,47 @@ def test_a_head_event_written_twice_keeps_one_slot():
     assert len(headers) == 1 and headers[0]["tool"] == "second"
 
 
-def test_the_page_has_a_control_for_the_log_file_and_the_level(state):
-    # These live on the Settings panel, which is one of three tabs now.
-    state.tab = "settings"
-    page = state.render()
-    assert "Log file path" in page and "Amount of detail" in page
-    for level in runlog.LEVEL_NAMES:
-        assert f"<option value='{level}'" in page
-    assert "never records credentials" in page
+def test_the_page_has_a_control_for_the_log_file_and_the_level(state, tmp_path, monkeypatch):
+    from vcfcf_migrator.ui import dispatch
+    home = tmp_path / 'home'
+    (home / 'Downloads').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    state.screen = 'help'
+    page = visible(state.render())
+    # Off until asked for, and nothing about it to read until it is on.
+    assert 'Keep a log file on this computer' in page and 'How much to record' not in page
+    assert 'A log file holds real names, so keep it private and send the support report instead.' in page
+    dispatch(state, '/log', {'on': '1'})
+    page = visible(state.render())
+    assert 'Writing to Downloads / vcf-content-migrator.log' in page
+    assert 'Problems only' in page and 'A summary of each step' in page and 'Every decision (large files)' in page
+    assert (home / 'Downloads' / 'vcf-content-migrator.log').exists()
+    dispatch(state, '/settings', {'log_level': 'warn'})
+    assert state.log_settings()[2] == 'warn'
+    dispatch(state, '/log', {'on': '0'})
+    assert state.log_settings()[0] is None
+    assert 'How much to record' not in visible(state.render())
 
 
-def test_the_diagnostics_button_names_what_the_file_holds(state):
-    state.tab = "settings"
-    page = state.render()
-    assert "Save diagnostics" in page
-    assert "No reverse mapping is included" in page
-    assert "Local logs are private" in page
+def test_the_support_report_button_says_what_the_file_holds(state):
+    state.screen = 'help'
+    page = visible(state.render())
+    assert 'Save a support report (diagnostics)' in page
+    assert ('Real names, file locations and ids are swapped for stand-ins such as "dashboard 3". '
+            'Passwords are never recorded.') in page
 
 
 def test_saving_a_log_file_setting_turns_the_log_on(tmp_path, export_zip, config_dir):
     state = PageState(str(export_zip))
     target = tmp_path / "page.jsonl"
     state.save_setting({"log_file": str(target)})
-    assert state.error == ""
+    assert state.note.kind == 'ok'    # still the "Opened ..." line: nothing went wrong
     state.render()
     state.log.close()
     assert target.exists() and target.read_text(encoding="utf-8").strip()
 
 
-def test_a_log_level_the_tool_does_not_know_is_refused_on_the_page(state):
+def test_a_log_level_the_tool_does_not_know_changes_nothing(state):
+    before = state.log_settings()[2]
     state.save_setting({"log_level": "chatty"})
-    assert "not one of" in state.error
+    assert state.log_settings()[2] == before

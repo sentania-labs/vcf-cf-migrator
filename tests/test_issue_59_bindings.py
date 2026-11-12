@@ -3,9 +3,8 @@ import io
 import json
 import zipfile
 
+from pages import page_over
 from vcfcf_migrator import bundle, graph, selection
-from vcfcf_migrator.ui import PageState
-from vcfcf_migrator.workspace import review
 
 
 def test_widget_bindings_report_objects_kinds_and_worlds(tmp_path):
@@ -53,7 +52,15 @@ def test_widget_bindings_report_objects_kinds_and_worlds(tmp_path):
     out = tmp_path / 'bundle.zip'
     result = bundle.build_bundle(members, list(members), g, picked, out)
     assert 'Widget Kind widget' in bundle.render(result)
-    state = PageState()
-    state.graph, state.selection, state.picked, state.name_counts = g, picked, ['dashboard:d@a'], {}
-    page = review(state)
-    assert 'Widget Object widget' in page and 'OtherAdapter' in page
+    # On screen the same facts are one task for the target, in plain words.
+    state = page_over(g, ['dashboard:d@a'])
+    look = next(task for task in state.tasks() if task.id == 'look')
+    assert 'vCenter (the system that manages your virtual machines)' in look.why
+    assert 'the system behind the "OtherAdapter" adapter' in look.why
+    assert any('the widget "Object widget" shows one particular object, "Cluster One"' in step
+               for step in look.steps)
+    assert not any('World widget' in step or 'Group widget' in step for step in look.steps)
+    # A group the dashboard shows that the export does not hold is good to know, not a refusal.
+    assert [issue.title for issue in state.issues() if issue.group == 'know'][0] == (
+        'Dashboard: needs a group on the target')
+    state.log.close()

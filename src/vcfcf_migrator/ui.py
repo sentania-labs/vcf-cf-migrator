@@ -1,29 +1,62 @@
-"""Native-window state and actions for content selection and bundle building."""
+"""Native-window state and actions: six steps from an export to a bundle.
+
+The window walks one job in order: open an export, choose content, pick a
+dashboard owner, review, save, import on the target. ``PageState`` holds
+where the person is and what they have chosen; every button is a registered
+action that changes that state, and the page is drawn again from it.
+
+Anything that takes longer than a moment (reading an export, downloading one,
+writing a bundle) runs as a job on its own thread, so the window can show what
+is happening and take a Cancel. Nothing is swapped in until the job's result
+is whole, which is what makes cancelling, and failing, change nothing.
+"""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from datetime import datetime
 from functools import wraps
+import html as _html
+import re
 import sys
 import threading
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, Dict, List, Optional
 
 import vcfcf_core
 
 from vcfcf_migrator import __version__
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import graph as _graph
-from vcfcf_migrator import hollow as _hollow
+from vcfcf_migrator import insight as _insight
 from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import selection as _selection
 from vcfcf_migrator import settings as _settings
 from vcfcf_migrator import source as _source
-from vcfcf_migrator import uipage, workspace
-from vcfcf_migrator.export_reader import (
-    NotAnExport,
-    read_members,
-)
-from vcfcf_migrator.wording import BUILD_PASSWORD_REMINDER, plural
+from vcfcf_migrator import tasks as _tasks
+from vcfcf_migrator.export_reader import NotAnExport, read_members
+from vcfcf_migrator.graph import object_label
+from vcfcf_migrator.wording import listing, plural
+
+STEPS = ('open', 'choose', 'owner', 'review', 'save', 'target')
+STEP_NAMES = {'open': 'Open an export', 'choose': 'Choose content', 'owner': 'Dashboard owner',
+              'review': 'Review', 'save': 'Save', 'target': 'Import on the target'}
+# How many rows the list draws at once. A larger export is narrowed by typing.
+LIST_LIMIT = 300
+ISSUES_PAGE = 'https://github.com/sentania-labs/vcf-cf-migrator/issues/new'
+# What the source says it is doing -> which of the four stages is shown.
+DOWNLOAD_STAGES = ('Signing in', 'Asking VCF Operations to prepare the export',
+                   'Downloading the export', 'Reading what is inside')
+_STAGE_OF = {'Authenticating': 0, 'Requesting content export': 1, 'Waiting for Operations export': 1,
+             'Downloading content export': 2, 'Loading downloaded content': 3}
+# The three amounts of detail the settings offer, and the log level behind each.
+LOG_CHOICES = (('warn', 'Problems only'), ('info', 'A summary of each step'),
+               ('debug', 'Every decision (large files)'))
+
+
+def e(value) -> str:
+    return _html.escape('' if value is None else str(value))
+
 
 def serialized(method):
     """One state mutation or snapshot at a time, including direct callers."""
@@ -34,68 +67,151 @@ def serialized(method):
     return call
 
 
+@dataclass
+class Note:
+    """Something an action has to say, shown beside what it is about."""
+    kind: str      # ok, info, warn, bad
+    html: str
+
+    @property
+    def text(self) -> str:
+        return _html.unescape(re.sub(r'<[^>]+>', '', self.html))
+
+
+class JobCancelled(Exception):
+    """Raised inside a job's work when the person has cancelled it."""
+
+
+class Job:
+    """Work in progress the window is showing: reading, downloading, saving."""
+
+    def __init__(self, kind: str, name: str):
+        self.kind = kind
+        self.name = name
+        self.stage = 0
+        self.cancel = threading.Event()
+        self.done = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+
+    def check(self) -> None:
+        if self.cancel.is_set():
+            raise JobCancelled()
+
+
+@dataclass
+class Arrival:
+    """An export that has been read successfully and not yet swapped in."""
+    path: str
+    name: str
+    members: object
+    graph: object
+    insight: object
+    snapshot: object = None
+    address: str = ''
+
+
+@dataclass
+class Issue:
+    """One line of the review list, with what its detail panel needs."""
+    id: str
+    group: str                     # must, kept, know, more
+    title: str
+    pick: str = ''
+    hard: list = field(default_factory=list)        # [(node, gap)]
+    stock: list = field(default_factory=list)       # [node]
+    unfinished: list = field(default_factory=list)  # [node]
+    catches: list = field(default_factory=list)     # [(node, catch)]
+    share: object = None                            # a dashboard node
+    task: object = None                             # a Task
+    merge: str = ''                                 # what combining owners changes
+
+
 class PageState:
-    """What the page shows, and every action it can take. One per window."""
+    """What the window shows, and every action it can take. One per window."""
 
     def __init__(self, zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,
                  log_cli: Optional[str] = None,
                  log_level_cli: Optional[str] = None, log_format_cli: Optional[str] = None):
         # The page always keeps its events in memory, whether or not a file is
-        # asked for, because "save diagnostics" has to be answerable after the
+        # asked for, because the support report has to be answerable after the
         # run that went wrong rather than only before it.
         self.action_lock = threading.RLock()
         self.log = _runlog.NULL
-        self.zip_path = zip_path or ""
         self.corpus_cli = corpus_cli
-        # The command line's log settings, threaded in the way the corpus
-        # directory already was. Without this the page
-        # resolved from the environment and the settings file only, so
-        # ``ui --log run.log`` was accepted, advertised in --help and in the
-        # README, and wrote a four line file with nothing the page did in it.
         self.log_cli = log_cli
         self.log_level_cli = log_level_cli
         self.log_format_cli = log_format_cli
-        # The native window supplies its file chooser before rendering.
-        self.file_picker = None
-        self.confirm = lambda title, message: True
-        self.show_in_folder = None
-        self.built_path = ''
-        self.source_address = ''
-        self.source_mode = ''
+        # Supplied by the native window before the first render. Without a
+        # window (a test) the defaults make every dialog "not available".
+        self.file_picker = None            # () -> path of an export to open
+        self.dialog = None                 # (kind, current) -> {'path':..., 'confirmed':...}
+        self.show_in_folder = None         # (path) -> bool
+        self.open_url = None               # (url) -> bool
+        # Jobs run on their own thread once a window is driving the page.
+        self.background = False
+        self.job: Optional[Job] = None
+        self.version = 0                   # bumped whenever the page would draw differently
         self.theme = _settings.load_settings().get('theme', 'light')
         if self.theme not in ('light', 'dark'):
             self.theme = 'light'
+        self.update_tag: Optional[str] = None
+        self.update_checked = False
+        self.update_known = False          # the check reached the release page and got an answer
+
+        # The export that is open.
+        self.zip_path = ''
+        self.source_name = ''
+        self.source_address = ''
         self.source_snapshot = None
-        self.source_progress = lambda stage: None
-        # Retain the selected panel across page redraws.
-        self.tab = "preview"
-        # Which disclosures the user has opened or closed, by id. A <details>
-        # element toggles in the browser and tells the server nothing, so with
-        # the state living only in the DOM every action redrew the tree from
-        # scratch and shut the group you were working in. Ticking one checkbox
-        # collapsed the list you were ticking, which made selecting several
-        # objects, the thing this tool is for, close to unusable. Missing key
-        # means "whatever the default for that disclosure is".
-        self.disclosure = {}
-        self.message = ""
-        self.error = ""
-        self.filter_text = ""
-        self.inventory_kind = "all"
-        self.preview_key = ""
-        self.preview_expanded = False
-        self.inspector_tab = "preview"
-        self.build_out = ""
-        self.owner_mode = 'admin'
-        self.target_user = 'admin'
-        self.build_report = ""
         self.members = None
         self.graph = None
+        self.insight: Optional[_insight.Insight] = None
+        # Where the person is.
+        self.screen = 'open'
+        self.max_step = 0
+        self.back = 'open'
+        self.note: Optional[Note] = None
+        self.undo: Optional[dict] = None
+        self.ask: Optional[dict] = None
+        self.open_error: Optional[dict] = None
+        self.want = ''
+        self.typed_path = False            # the file window could not open; offer a path box
+        self.conn: Dict[str, object] = {'tested': None, 'tested_text': '', 'cert': None,
+                                        'error': None, 'sources': [], 'lookup': None}
+        # Choosing.
         self.picked: List[str] = []
         self.selection: Optional[_selection.Selection] = None
-        self.diagnostics_out = ""
+        self.filter_kind = 'all'
+        self.filter_text = ''
+        self.focus_key = ''
+        self.reveal = False
+        self.preview_key = ''
+        # Owner and review.
+        self.owner_mode = 'admin'
+        self.target_user = 'admin'
+        self.decided: Dict[str, bool] = {}
+        self.issue = ''
+        # Saving.
+        self.save_name = 'bundle.zip'
+        self.save_folder = self.download_directory()
+        self.save_state = 'ready'          # ready, exists, error, saved
+        self.save_problem = ''
+        self.save_confirmed = ''           # a path the computer's own Save window already confirmed
+        self.built_path = ''
+        self.build_report = ''
+        self.stale = False
+        self.doc = ''
+        # On the target.
+        self.ticks: Dict[str, bool] = {}
+        self.task = ''
+        self.finished = False
+        # Help.
+        self.gloss = False
+        self.report_saved = ''
+        self._memo: Dict[str, tuple] = {}
         self.open_log()
-        if self.zip_path:
-            self.open_export(self.zip_path)
+        if zip_path:
+            self.open_export(zip_path)
 
     # -- the log -----------------------------------------------------------
 
@@ -105,9 +221,8 @@ class PageState:
         **The redactor carries over.** It holds everything harvested from the
         export that is open: the owners, their pseudonyms and every person in
         the export's user documents. A fresh one knows none of that, so a log
-        opened after the admin changed a setting logged the names the previous
-        one excluded, and the diagnostics file the README tells a customer to
-        mail carried them too.
+        opened after a setting changed would log the names the previous one
+        excluded, and the support report would carry them too.
         """
         destination, self.log_from = _runlog.resolve_destination(self.log_cli)
         level, self.log_level_from = _runlog.resolve_level(self.log_level_cli)
@@ -115,10 +230,10 @@ class PageState:
         old = self.log
         try:
             replacement = _runlog.open_log(destination, level=level, fmt=fmt,
-                                        keep_events=True,
-                                        redactor=old.redactor if old is not _runlog.NULL else None)
-        except (_runlog.BadLogSetting, OSError) as e:
-            self.error = f"cannot write the log to {destination}: {e}"
+                                           keep_events=True,
+                                           redactor=old.redactor if old is not _runlog.NULL else None)
+        except (_runlog.BadLogSetting, OSError) as exc:
+            self.note = Note('bad', f'<b>The log file could not be opened.</b> {e(exc)}')
             return
         if old is not _runlog.NULL:
             old.reconfigure(replacement)
@@ -140,103 +255,231 @@ class PageState:
                 return event
         return None
 
-    def save_diagnostics(self, out_path: str, from_dialog: bool = False) -> None:
-        """One file holding the run header, the input fingerprint, every log
-        event and the bundle's manifest, ready to attach to a mail."""
-        out = self.output_path(out_path, '.jsonl', self.default_diagnostics_out())
-        if not self.allow_output(out, from_dialog):
-            return
-        header = self._last_event("run.start")
-        source = self._last_event("input.fingerprint")
-        bundle = self._last_event("output.fingerprint")
-        events = self.log.snapshot()
-        document = _runlog.diagnostics_document(events,
-                                                header=header, source=source,
-                                                bundle=bundle, retention=self.log.retention())
-        try:
-            target = Path(out)
-            if target.parent and str(target.parent):
-                target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(document, encoding="utf-8")
-        except OSError as e:
-            _runlog.error("output.unwritable", path=out, reason=str(e))
-            self.error = f"cannot write {out}: {e}"
-            return
-        self.diagnostics_out = str(target)
-        self.message = (f"diagnostics written to {target}: "
-                        f"{plural(len(events), 'event')}, "
-                        + _runlog.DIAGNOSTICS_CONTENTS)
+    def support_report_text(self) -> str:
+        """The run header, the input fingerprint, every log event and the
+        bundle's manifest, with names swapped for stand-ins."""
+        return _runlog.diagnostics_document(
+            self.log.snapshot(), header=self._last_event("run.start"),
+            source=self._last_event("input.fingerprint"),
+            bundle=self._last_event("output.fingerprint"), retention=self.log.retention())
 
-    def default_diagnostics_out(self) -> str:
-        if self.source_snapshot is not None:
-            return str(self.download_directory() / "vcfcf-migrator-diagnostics.jsonl")
-        if not self.zip_path:
-            return "vcfcf-migrator-diagnostics.jsonl"
-        source = Path(self.zip_path)
-        return str(source.with_name("vcfcf-migrator-diagnostics.jsonl"))
+    @serialized
+    def save_support_report(self, out_path: Optional[str] = None) -> None:
+        """One click: straight into Downloads under a dated name.
+
+        The name carries the date and nothing else, so it cannot give away
+        what the export is called. If Downloads cannot be written, the
+        computer's own Save window is the way out. *out_path* names the file
+        outright, for a caller that already knows where it should go.
+        """
+        folder = self.download_directory()
+        stamp = datetime.now().strftime('%Y-%m-%d-%H%M%S')
+        target = folder / f'support-report-{stamp}.txt'
+        number = 2
+        while target.exists():
+            target = folder / f'support-report-{stamp}-{number}.txt'
+            number += 1
+        if out_path:
+            target = Path(out_path)
+            folder = target.parent
+        document = self.support_report_text()
+        try:
+            target.write_text(document, encoding='utf-8')
+        except OSError as exc:
+            _runlog.error("output.unwritable", path=str(target), reason=str(exc))
+            chosen = self.dialog('report', str(target)) if self.dialog else {}
+            path = (chosen or {}).get('path')
+            if not path:
+                self.note = Note('bad', f'<b>The support report could not be saved in {e(folder.name)}.</b> '
+                                        'That folder does not allow new files. Nothing was written.')
+                return
+            try:
+                target = Path(path)
+                target.write_text(document, encoding='utf-8')
+            except OSError as second:
+                _runlog.error("output.unwritable", path=str(target), reason=str(second))
+                self.note = Note('bad', '<b>The support report could not be saved there either.</b> '
+                                        'Choose a folder you can save files in.')
+                return
+        self.report_saved = str(target)
+
+    # -- jobs --------------------------------------------------------------
+
+    def _start(self, kind: str, name: str, work: Callable[[Job], Callable[[], None]],
+               failed: Callable[[BaseException], None]) -> None:
+        """Run *work* as the job the window is showing.
+
+        *work* does everything slow without touching the state and returns a
+        function that swaps the result in. That function runs under the action
+        lock, and only if the job was not cancelled meanwhile.
+        """
+        job = Job(kind, name)
+        self.job = job
+        self.version += 1
+
+        def run() -> None:
+            _runlog.set_current(self.log)
+            try:
+                commit = work(job)
+            except BaseException as exc:  # noqa: BLE001 - reported on the page
+                error = exc
+                commit = lambda: failed(error)  # noqa: E731
+            with self.action_lock:
+                if self.job is job:
+                    self.job = None
+                    if not job.cancel.is_set():
+                        commit()
+                    elif getattr(job, 'discard', None):
+                        job.discard()
+                elif getattr(job, 'discard', None):
+                    job.discard()
+                self.version += 1
+                job.done.set()
+
+        if self.background:
+            job.thread = threading.Thread(target=run, name=f'migrator-{kind}', daemon=True)
+            job.thread.start()
+        else:
+            run()
+
+    @serialized
+    def cancel_job(self) -> None:
+        job = self.job
+        if job is None or job.kind == 'save':
+            return
+        job.cancel.set()
+        self.job = None
+        self.version += 1
+        if job.kind == 'download':
+            self.screen = 'connect'
+            self.note = Note('info', '<b>Cancelled.</b> Nothing was downloaded. If the source had already '
+                                     'started preparing an export, give it a minute to finish before '
+                                     'trying again.')
+        else:
+            self.note = Note('info', '<b>Cancelled.</b> Nothing was changed.')
+
+    def _set_stage(self, job: Job, stage: int) -> None:
+        if stage != job.stage:
+            job.stage = stage
+            self.version += 1
 
     # -- loading -----------------------------------------------------------
 
     @serialized
-    def open_export(self, zip_path: str) -> Optional[bool]:
+    def open_export(self, zip_path: str) -> None:
         """Read the export and build the graph, then swap.
 
-        Nothing is cleared until the replacement parses. A mistyped path used
-        to empty the page and take the admin's prepared selection with it,
-        with no way back: the old export was gone from the state before the
-        new one had been shown to be readable. So the reading happens into
-        locals, and the state changes only once there is something to change
-        it to.
-
-        A *successful* open still resets everything: a selection carried
-        across two exports would name objects this one does not have.
+        Nothing is cleared until the replacement parses. The reading happens
+        into locals, and the state changes only once there is something to
+        change it to, so a wrong file leaves the open export and every choice
+        exactly as they were.
         """
+        zip_path = (zip_path or '').strip()
         if not zip_path:
-            self.error = "no export zip given; the export already open is unchanged"
             return
-        try:
-            members = read_members(zip_path)
-            graph = _graph.build_graph(members.data)
-        except (NotAnExport, RawDocError) as e:
-            self.error = str(e)
-            if self.graph is not None:
-                still = f"{' ' if self.error.endswith('.') else '; '}{self.zip_path} is still open"
-                if self.picked:
-                    still += f" with {plural(len(self.picked), 'object')} selected"
-                self.error += still
-            return
+        name = Path(zip_path).name
+        self.open_error = None
+        self.note = None
+        self.screen = 'open'
 
-        if self.picked and not self.confirm('Change source?',
-                'The new export is ready. Replace the current source and discard your selection?'):
-            self.message = 'Source change cancelled. Your current selection is unchanged.'
-            return False
-        if self.source_snapshot is None or Path(zip_path).resolve() != self.source_snapshot.path.resolve():
+        def work(job: Job):
+            arrival = self._read(job, zip_path, name)
+            return lambda: self._arrive(arrival)
+
+        self._start('read', name, work, lambda exc: self._open_failed(exc, name))
+
+    def _read(self, job: Job, zip_path: str, name: str, snapshot=None, address: str = '') -> Arrival:
+        members = read_members(zip_path)
+        job.check()
+        graph = _graph.build_graph(members.data)
+        job.check()
+        return Arrival(str(zip_path), name, members, graph, _insight.build(graph), snapshot, address)
+
+    def _open_failed(self, exc: BaseException, name: str) -> None:
+        self.screen = 'open'
+        if isinstance(exc, JobCancelled):
+            return
+        if isinstance(exc, NotAnExport):
+            self.open_error = {'kind': exc.kind, 'name': name,
+                               'declared': getattr(exc, 'declared', 0), 'found': getattr(exc, 'found', 0)}
+        elif isinstance(exc, RawDocError):
+            self.open_error = {'kind': 'unreadable_inside', 'name': name}
+        else:
+            _runlog.error("page.open_failed", failure=type(exc).__name__)
+            self.open_error = {'kind': 'unexpected', 'name': name, 'detail': type(exc).__name__}
+
+    def _arrive(self, new: Arrival) -> None:
+        """A good export is in hand. Refuse an empty one, ask before replacing
+        work in progress, and otherwise open it."""
+        if not new.graph.nodes:
+            if new.snapshot is not None:
+                new.snapshot.close()
+            self.screen = 'open'
+            self.open_error = {'kind': 'empty', 'name': new.name}
+            return
+        if self.graph is not None and self.picked:
+            self.screen = 'open'
+            self.ask = {'kind': 'switch', 'new': new, 'name': new.name,
+                        'same': (new.snapshot is None and self.source_snapshot is None
+                                 and Path(new.path).resolve() == Path(self.zip_path).resolve())}
+            return
+        self._adopt(new, keep=False)
+
+    def _adopt(self, new: Arrival, keep: bool) -> None:
+        old_graph, old_picked, old_decided = self.graph, list(self.picked), dict(self.decided)
+        if self.source_snapshot is not None and self.source_snapshot is not new.snapshot:
             self.close_source()
-        self.built_path = ''
-        if self.source_snapshot is None:
-            self.source_address = ''
-        self.zip_path = zip_path
-        self.members, self.graph = members, graph
-        self.owner_mode, self.target_user = 'admin', 'admin'
-        self.build_report = ""
-        self.preview_key = self.filter_text = self.build_out = ""
-        # Which groups are open belongs to the export being looked at: a
-        # small one opens its groups by default, and carrying that into a
-        # large one expands exactly what the default is there to prevent.
-        self.disclosure = {}
-        self.inventory_kind = "all"
-        self.preview_expanded = False
-        self.inspector_tab = "preview"
-        self.tab = "preview"
-        self.picked = []
-        self._reclose()
-        counts = graph.counts()
-        self.message = (f"Opened {Path(zip_path).name}: {len(graph.nodes)} objects available"
-                        if counts else f"{zip_path}: no content objects")
-        if graph.hollow_dashboards():
-            self.message += (f". {_hollow.summary_line(len(graph.hollow_dashboards())).capitalize()}: "
-                             "they are marked, and left out when you select everything")
-        return True
+        self.zip_path, self.source_name = new.path, new.name
+        self.source_snapshot, self.source_address = new.snapshot, new.address
+        self.members, self.graph, self.insight = new.members, new.graph, new.insight
+        mapping: Dict[str, str] = {}
+        missing = 0
+        if keep and old_graph is not None:
+            by_name: Dict[tuple, List[str]] = {}
+            for node in new.graph.nodes.values():
+                by_name.setdefault((node.kind, node.name), []).append(node.key)
+            for key in old_picked:
+                if key in new.graph.nodes:
+                    mapping[key] = key
+                    continue
+                old = old_graph.nodes.get(key)
+                same = by_name.get((old.kind, old.name), []) if old else []
+                # A name is only trusted when exactly one thing answers to it.
+                if len(same) == 1 and same[0] not in mapping.values():
+                    mapping[key] = same[0]
+                else:
+                    missing += 1
+        self._set_picked(list(dict.fromkeys(mapping.values())))
+        if keep:
+            self.decided = {'i-' + mapping[k[2:]]: True for k in old_decided if k[2:] in mapping}
+        else:
+            self.owner_mode, self.target_user, self.decided = 'admin', 'admin', {}
+        self.filter_kind, self.filter_text, self.focus_key, self.preview_key = 'all', '', '', ''
+        self.issue, self.task, self.doc = '', '', ''
+        self.save_state, self.save_problem, self.built_path, self.build_report = 'ready', '', '', ''
+        self.stale, self.finished, self.ticks = False, False, {}
+        self.want, self.undo, self.open_error, self.ask = '', None, None, None
+        self.save_folder = self.download_directory()
+        self.save_name = self.default_save_name()
+        self.save_confirmed = ''
+        self.screen, self.max_step = 'choose', 1
+        count = len(new.graph.nodes)
+        text = f'<b>Opened {e(new.name)}.</b> It holds {plural(count, "thing")} you can move.'
+        if mapping:
+            text += (f' Your {plural(len(mapping), "choice was", "choices were")} ticked again.')
+        if missing:
+            text += (f' {plural(missing, "choice was", "choices were")} not found in this export and '
+                     f'{"was" if missing == 1 else "were"} left out.')
+        unfinished = len(new.graph.hollow_dashboards())
+        if unfinished:
+            text += (f' {plural(unfinished, "dashboard")} never finished loading on the source; '
+                     f'{"it is" if unfinished == 1 else "they are"} marked and left out unless you tick '
+                     f'{"it" if unfinished == 1 else "them"}. <button class="linkbtn" data-act="/filter" '
+                     f'data-f="unf">Show {"it" if unfinished == 1 else f"those {unfinished}"}</button>')
+        if new.snapshot is not None:
+            text += (' The downloaded export is kept only while the app is open, so save your bundle '
+                     'before you close it.')
+        self.note = Note('ok', text)
 
     def close_source(self) -> None:
         if self.source_snapshot is not None:
@@ -245,46 +488,95 @@ class PageState:
 
     @serialized
     def connect_source(self, form: dict) -> None:
-        snapshot = None
+        """Sign in, ask for an export, download it and read it, as one job."""
         try:
-            if not form.get('username') or not form.get('password') or not form.get('export_password'):
-                raise _source.SourceError('Enter your username, login password, and an export encryption password.')
-            client = _source.Client(form.get('address', ''), ca_file=form.get('ca_file', '').strip(),
-                                    progress=self.source_progress, ignore_ssl=bool(form.get('ignore_ssl')))
-            snapshot = client.acquire(form['username'], form['password'],
-                                      form.get('auth_source', ''), form['export_password'])
-            opened = self.open_export(str(snapshot.path))
-            if opened is False:
+            address = (form.get('address') or '').strip()
+            username, password = form.get('username') or '', form.get('password') or ''
+            auth_source = form.get('auth_source') or ''
+            export_password, again = form.get('export_password') or '', form.get('export_password2')
+            self.conn['error'] = None
+            if not (address and username and password and export_password):
+                self.conn['error'] = ('other', 'Fill in the address, user name and password, and type the '
+                                               'export password twice.')
                 return
-            if self.zip_path != str(snapshot.path):
-                raise _source.SourceError('The downloaded export could not be read. The current inventory is unchanged.')
-            self.source_address = client.base.removesuffix("/suite-api/api")
-            self.source_snapshot = snapshot
-            snapshot = None
-            self.message = ('Loaded Operations content. Keep the export encryption password for the target import. '
-                            'The downloaded source is temporary and is removed when replaced or the app closes.')
-        except _source.SourceError as exc:
-            self.error = str(exc)
-        except Exception:
-            # Never expose connection exceptions, which may contain request data.
-            self.error = 'The connection or content load failed. Check the source export job before retrying.'
+            if again is not None and again != export_password:
+                self.conn['error'] = ('other', 'The two export passwords do not match. Type them again.')
+                return
+            cert = self.conn.get('cert') or {}
+            try:
+                host = _source.endpoint(address).split('//', 1)[1].split('/', 1)[0]
+                client = _source.Client(address, ca_file=cert.get('path', ''),
+                                        ignore_ssl=cert.get('mode') == 'skip')
+            except _source.SourceError as exc:
+                self.conn['error'] = ('other', str(exc))
+                return
+            except Exception:
+                # Never expose connection exceptions, which may contain request data.
+                self.conn['error'] = ('other', 'The connection could not be set up. Check the address '
+                                               'and try again.')
+                return
+            if self.job is not None:
+                return
         finally:
             form.clear()
-            if snapshot is not None:
+
+        secrets = {'username': username, 'password': password, 'auth_source': auth_source,
+                   'export_password': export_password}
+        self.note = None
+        self.screen = 'connect'
+
+        def work(job: Job):
+            client.progress = lambda stage: self._set_stage(job, _STAGE_OF.get(stage, job.stage))
+            client.cancelled = job.cancel.is_set
+            try:
+                snapshot = client.acquire(secrets['username'], secrets['password'],
+                                          secrets['auth_source'], secrets['export_password'])
+            finally:
+                secrets.clear()
+            job.discard = snapshot.close
+            self._set_stage(job, 3)
+            try:
+                arrival = self._read(job, str(snapshot.path), host, snapshot,
+                                     client.base.removesuffix("/suite-api/api"))
+            except BaseException:
                 snapshot.close()
+                job.discard = None
+                raise
+            return lambda: self._arrive(arrival)
+
+        self._start('download', host, work, lambda exc: self._connect_failed(exc, host))
+
+    def _connect_failed(self, exc: BaseException, host: str) -> None:
+        self.screen = 'connect'
+        if isinstance(exc, (JobCancelled, _source.Cancelled)):
+            return
+        if isinstance(exc, _source.SignInRefused):
+            self.conn['error'] = ('auth', host)
+        elif isinstance(exc, _source.CertificateProblem):
+            self.conn['tested'], self.conn['cert'] = 'cert', None
+        elif isinstance(exc, _source.SourceError):
+            self.conn['error'] = ('other', str(exc))
+        elif isinstance(exc, (NotAnExport, RawDocError)):
+            self._open_failed(exc, host)
+        else:
+            # Never expose connection exceptions, which may contain request data.
+            self.conn['error'] = ('other', 'The connection or the download failed. Check the export job '
+                                           'on the source before trying again.')
 
     @staticmethod
     def download_directory() -> Path:
         downloads = Path.home() / 'Downloads'
         return downloads if downloads.is_dir() else Path.home()
 
-    def default_out(self) -> str:
+    def default_save_name(self) -> str:
         if self.source_snapshot is not None:
-            return str(self.download_directory() / 'bundle.zip')
+            return (self.source_name or 'vcf-operations') + '-bundle.zip'
         if not self.zip_path:
-            return "bundle.zip"
-        source = Path(self.zip_path)
-        return str(source.with_name(source.stem + "-bundle.zip"))
+            return 'bundle.zip'
+        return Path(self.zip_path).stem + '-bundle.zip'
+
+    def default_out(self) -> str:
+        return str(self.save_folder / self.save_name)
 
     @staticmethod
     def output_path(value: str, extension: str, default: str = '') -> str:
@@ -295,20 +587,7 @@ class PageState:
             path = path.with_name(path.name + extension)
         return str(path.resolve())
 
-    def allow_output(self, out: str, from_dialog: bool = False) -> bool:
-        target = Path(out)
-        if self.zip_path and target == Path(self.zip_path).resolve():
-            self.error = 'Choose a different destination. The source export cannot be overwritten.'
-            return False
-        if target.exists() and not from_dialog and not self.confirm('Replace file?', f'Replace the existing file at {target}?'):
-            self.message = 'Save cancelled. The existing file is unchanged.'
-            return False
-        return True
-
     # -- the selection -----------------------------------------------------
-
-    def _reclose(self) -> None:
-        self.selection = _selection.close(self.graph, self.picked) if self.graph else None
 
     def _set_picked(self, keys) -> None:
         picked = list(keys)
@@ -316,254 +595,577 @@ class PageState:
         self.picked, self.selection = picked, closed
 
     def selected_keys(self) -> set:
-        """What the admin picked by hand."""
+        """What the person ticked by hand."""
         return set(self.picked)
 
     def selection_keys(self) -> set:
-        """What a build would carry: the picks plus everything they need."""
+        """What a bundle would carry: the ticks plus everything they need."""
         return set(self.selection.keys) if self.selection else set()
 
-    def required_by(self, key: str) -> List[str]:
-        """The selected objects that depend on *key*, which is what makes it
-        impossible to drop while they are carried."""
-        if not self.graph or not self.selection:
-            return []
-        return [k for k in self.selection.keys
-                if key in self.graph.edges.get(k, []) and k != key]
+    def label(self, key: str) -> str:
+        """What a thing is called, on screen and in the saved files alike."""
+        return object_label(self.graph, self.graph.nodes[key])
+
+    def needed_by(self, key: str, included=None, limit: int = 4) -> List[str]:
+        included = included if included is not None else self.selection_keys()
+        return _insight.needed_by(self.graph, self.insight, included, self.picked, key, limit)
+
+    def changed(self) -> None:
+        """The bundle is not what it was: a save is out of date and the steps
+        after this one have to be walked again."""
+        if self.save_state == 'saved':
+            self.stale = True
+        self.save_state, self.save_problem = 'ready', ''
+        self.finished = False
+        here = STEPS.index(self.screen) if self.screen in STEPS else 1
+        self.max_step = min(self.max_step, max(here, 1))
+
+    def _snapshot(self) -> None:
+        self.undo = {'picked': list(self.picked), 'owner_mode': self.owner_mode,
+                     'decided': dict(self.decided), 'issue': self.issue}
 
     @serialized
     def toggle(self, key: str, on: bool) -> None:
-        """Check or uncheck one object.
+        """Tick or untick one thing and say what that did.
 
-        Checking pulls in what it needs and says what it pulled in. Unchecking
-        something another selected object still needs is refused with the
-        reason: the alternative is a bundle whose documents point at objects it
-        does not carry, which is the one failure subsetting can introduce by
-        itself.
+        Ticking adds what it needs. Something that needs a thing the export
+        does not hold can still be ticked, and says that Review will ask about
+        it: nothing in an export tells a thing that was left out from one that
+        comes with the product and is never exported. Unticking a choice that
+        another choice still needs leaves it in the bundle, and says so.
         """
         if self.graph is None:
-            self.error = "open an export first"
             return
         node = self.graph.nodes.get(key)
         if node is None:
-            self.error = "This export carries no object by that name."
+            self.note = Note('bad', 'That is not in this export any more.')
             return
+        name = e(self.label(key))
+        self.focus_key = key
+        self.undo = None
         if on:
             if key in self.picked:
-                self.message = f"{workspace.display_name(self, node)} was already selected"
                 return
             before = self.selection_keys()
             self._set_picked(self.picked + [key])
-            pulled = [workspace.display_name(self, self.graph.nodes[k]) for k in self.selection.keys
-                      if k not in before and k != key and k in self.graph.nodes]
-            self.message = f"selected {workspace.display_name(self, node)}"
-            if pulled:
-                self.message += (f"; pulled in {len(pulled)} it depends on: "
-                                 + ", ".join(pulled[:6])
-                                 + (f" and {len(pulled) - 6} more" if len(pulled) > 6 else ""))
+            added = [k for k in self.selection.keys if k not in before and k != key]
+            mine = _insight.reach(self.graph, key)
+            stock = [self.graph.nodes[k] for k in mine if self.graph.nodes[k].stock_or_derived]
+            unfinished = [self.graph.nodes[k] for k in mine if self.graph.nodes[k].hollow]
+            text = f'<b>Added {name}.</b> '
             if node.hollow:
-                self.message += f". This dashboard was {_hollow.NOT_FINISHED}; its references are unknown"
-            gaps = self.graph.missing_for(key)
-            if gaps:
-                self.message += (f". {plural(len(gaps), 'object')} it references "
-                                 + ("is" if len(gaps) == 1 else "are")
-                                 + " not in this export; review the missing references before building")
-            return
-
-        needed_by = self.required_by(key)
-        if key not in self.picked:
-            if needed_by:
-                self.error = self._refusal(node, needed_by)
+                text += ('<b>It never finished loading on the source</b>, so what it needs is unknown '
+                         'and it arrives empty.')
+            elif added:
+                text += (f'{plural(len(added), "thing")} it needs '
+                         f'{"was" if len(added) == 1 else "were"} added too.')
+            elif key in before:
+                text += 'It was already in the bundle because something else you chose needs it.'
             else:
-                self.message = f"{workspace.display_name(self, node)} was not selected"
+                text += ('Everything it needs was already in.' if self.graph.edges.get(key)
+                         else 'It needs nothing else.')
+            others = [n for n in unfinished if n.key != key]
+            if others:
+                text += (f' <b>{e(self.label(others[0].key))}, which it uses, never finished loading on '
+                         'the source</b>, so it arrives empty.')
+            if stock:
+                text += (' <b>' + ('It' if stock[0].key == key else e(self.label(stock[0].key))
+                                   + ', which it uses,')
+                         + ' would overwrite the target’s own copy.</b>')
+            missing = [gap for k in mine for gap in _insight.hard_gaps(self.graph, k)]
+            if missing:
+                text += (f' <b>It needs {e(_insight.missing_phrase(missing[0]))}'
+                         + (f' and {plural(len(missing) - 1, "other thing")}' if len(missing) > 1 else '')
+                         + ', which '
+                         + ('is' if len(missing) == 1 else 'are') + ' not in this export.</b>')
+            if stock or unfinished or missing:
+                text += ' You will be asked at the Review step whether to keep it.'
+            if any(twin in self.selection.keys for twin in self.insight.twins.get(key, ())):
+                text += ' You now have both copies of this dashboard. The next step asks which to keep.'
+            self.note = Note('warn' if stock or unfinished or missing else 'ok', text)
+            self.changed()
             return
-        trial = [k for k in self.picked if k != key]
-        trial_selection = _selection.close(self.graph, trial)
-        if key in trial_selection.keys:
-            self.error = self._refusal(node, needed_by)
+        if key not in self.picked:
             return
         before = self.selection_keys()
-        self.picked = trial
-        self.selection = trial_selection
-        dropped = [k for k in before if k not in self.selection_keys() and k != key]
-        self.message = f"removed {workspace.display_name(self, node)}"
-        if dropped:
-            self.message += (f"; {plural(len(dropped), 'object')} it had pulled in "
-                             + ("is" if len(dropped) == 1 else "are")
-                             + " no longer needed and "
-                             + ("was" if len(dropped) == 1 else "were") + " dropped too")
-        if self.preview_key == key:
-            self.preview_key = ""
+        self._set_picked(k for k in self.picked if k != key)
+        self.decided.pop('i-' + key, None)
+        after = self.selection_keys()
+        gone = [k for k in before if k not in after and k != key]
+        text = f'<b>Left out {name}.</b> '
+        if key in after:
+            text += f'It stays in the bundle because {e(self._names(self.needed_by(key)))} needs it.'
+        elif gone:
+            text += (f'{plural(len(gone), "thing")} only it needed '
+                     f'{"was" if len(gone) == 1 else "were"} left out too.')
+        self.note = Note('info', text)
+        self.changed()
 
-    def _refusal(self, node, needed_by: List[str]) -> str:
-        names = [workspace.display_name(self, self.graph.nodes[k]) for k in needed_by if k in self.graph.nodes]
-        return (f"refused: {workspace.display_name(self, node)} cannot be dropped while it is required by "
-                + ", ".join(names[:5])
-                + (f" and {len(names) - 5} more" if len(names) > 5 else "")
-                + ". Remove those first, or leave it in the bundle.")
+    def _names(self, keys, limit: int = 3) -> str:
+        return _insight.names(self.graph, keys, limit)
+
+    def visible_nodes(self):
+        """The rows the list is showing: the chosen part, narrowed by name."""
+        if self.graph is None:
+            return []
+        needle = self.filter_text.strip().lower()
+        nodes = self.graph.ordered()
+        if self.filter_kind == 'in':
+            included = self.selection_keys()
+            nodes = [n for n in nodes if n.key in included]
+        elif self.filter_kind == 'unf':
+            nodes = [n for n in nodes if n.hollow]
+        elif self.filter_kind != 'all':
+            nodes = [n for n in nodes if n.kind == self.filter_kind]
+        if needle:
+            nodes = [n for n in nodes if needle in n.name.lower()]
+        return nodes
+
+    def addable(self, nodes=None):
+        """What "Add all of these" would add: everything shown that is not in
+        the bundle yet and needs no decision."""
+        included = self.selection_keys()
+        nodes = self.visible_nodes() if nodes is None else nodes
+        return [n for n in nodes if n.key not in included and not self.insight.needs_decision(n.key)]
 
     @serialized
-    def select_all(self) -> None:
+    def add_shown(self) -> None:
         if self.graph is None:
-            self.error = "open an export first"
             return
-        self._set_picked(n.key for n in self.graph.ordered() if not n.hollow)
+        shown = self.visible_nodes()
+        add = self.addable(shown)
+        if not add:
+            return
+        self._snapshot()
+        self._set_picked(self.picked + [n.key for n in add])
         included = self.selection_keys()
-        left = [n for n in self.graph.ordered() if n.hollow and n.key not in included]
-        self.message = f"selected every object in the export ({len(self.picked)})"
-        if left:
-            self.message = (f"selected {len(self.picked)} objects; left out {_hollow.summary_line(len(left))}. "
-                            "Select one by name to include it anyway")
+        rest = [n for n in shown if n.key not in included]
+        blocked = sum(1 for n in rest if n.key in self.insight.blocked)
+        copies = sum(1 for n in rest if n.key not in self.insight.blocked and n.key in self.insight.twins)
+        warned = len(rest) - blocked - copies
+        text = f'<b>Added {plural(len(add), "thing")}.</b>'
+        parts = []
+        if warned:
+            parts.append(f'{plural(warned, "thing")} that '
+                         f'{"carries" if warned == 1 else "carry"} a warning')
+        if copies:
+            parts.append(f'{plural(copies, "copy", "copies")} of a dashboard that has more than one')
+        if blocked:
+            parts.append(f'{plural(blocked, "thing")} that '
+                         f'{"needs" if blocked == 1 else "need"} something this export does not have')
+        if parts:
+            text += (' Not added, because each needs a decision from you: ' + listing(parts)
+                     + '. Tick those yourself if you want them.')
+        self.note = Note('ok', text)
+        self.changed()
 
     @serialized
     def clear(self) -> None:
-        if self.graph is None:
-            self.error = "open an export first"
-            return
         self._set_picked([])
-        self.message = "cleared the selection"
-
-
-    def set_preview(self, key: str) -> None:
-        if not key:
-            self.preview_expanded = False
-            self.preview_key = ""
-            return
-        if self.graph is None or key not in self.graph.nodes:
-            self.error = "This export carries no object by that name."
-            return
-        self.preview_key = key
-
-    def set_filter(self, text: str) -> None:
-        self.filter_text = (text or "").strip()
-
-    def visible_nodes(self):
-        if self.graph is None:
-            return []
-        nodes = uipage._matches(self.graph, self.filter_text)
-        if self.inventory_kind == "selected":
-            included = self.selection_keys()
-            return [n for n in nodes if n.key in included]
-        if self.inventory_kind != "all":
-            return [n for n in nodes if n.kind == self.inventory_kind]
-        return nodes
+        self.decided = {}
+        self.undo = None
+        self.filter_kind = 'all'
+        self.note = Note('info', '<b>Your bundle is empty again.</b>')
+        self.changed()
 
     @serialized
-    def select_shown(self):
-        shown = self.visible_nodes()
-        keys = list(dict.fromkeys(self.picked + [n.key for n in shown if not n.hollow]))
-        self._set_picked(keys)
-        self.message = "selected the shown content; existing selections are retained"
-        included = self.selection_keys()
-        left = [n for n in shown if n.hollow and n.key not in included]
-        if left:
-            self.message += f". Left out {_hollow.summary_line(len(left))}; select one by name to include it anyway"
+    def undo_last(self) -> None:
+        if not self.undo:
+            return
+        saved, self.undo = self.undo, None
+        self._set_picked(saved['picked'])
+        self.owner_mode, self.decided = saved['owner_mode'], saved['decided']
+        # Back to the thing that was being looked at when it was left out.
+        self.issue = saved.get('issue', self.issue)
+        self.note = Note('info', '<b>Undone.</b> Your bundle is as it was.')
+        self.changed()
 
     @serialized
-    def remove_pick(self, key):
+    def leave_out(self, key: str) -> None:
+        """Take one of the person's choices out, from the review step."""
         if key not in self.picked:
-            self.error = "this object is not one you selected directly"
             return
+        self._snapshot()
+        name = e(self.label(key))
+        before = self.selection_keys()
         self._set_picked(k for k in self.picked if k != key)
-        self.message = "removed from your selection"
-        if key in self.selection_keys():
-            self.message += "; still included because another selected object requires it"
+        self.decided.pop('i-' + key, None)
+        after = self.selection_keys()
+        gone = [k for k in before if k not in after and k != key]
+        text = f'<b>Left out {name}.</b> '
+        if key in after:
+            text += f'It is still in the bundle because {e(self._names(self.needed_by(key)))} needs it.'
+        elif gone:
+            text += (f'{plural(len(gone), "thing")} only it needed went with it: '
+                     f'{e(self._names(gone, 6))}.')
+        self.note = Note('ok', text)
+        self.changed()
+        if not self.picked:
+            self.screen = 'choose'
+            self.undo = None
+            self.note = Note('info', '<b>Your bundle is empty.</b> Tick something to carry on.')
 
-    # -- the commands ------------------------------------------------------
+    # -- owner -------------------------------------------------------------
+
+    def dashboards(self) -> List[_graph.Node]:
+        """The dashboards in the bundle that belong to someone."""
+        if not self.selection:
+            return []
+        return [self.graph.nodes[k] for k in self.selection.keys
+                if self.graph.nodes[k].kind == 'dashboard' and self.graph.nodes[k].owner]
+
+    def copies_chosen(self) -> List[List[_graph.Node]]:
+        """Each set of copies of one dashboard that are in the bundle together."""
+        groups: Dict[str, List[_graph.Node]] = {}
+        for node in self.dashboards():
+            groups.setdefault(node.ident, []).append(node)
+        return [nodes for nodes in groups.values() if len({n.owner for n in nodes}) > 1]
+
+    def _merge(self) -> tuple:
+        """What putting the chosen dashboards under one owner would run into:
+        (refusals, notices). Worked out once per selection, because it
+        rebuilds the dashboard files."""
+        if not self.selection or self.owner_mode == 'source':
+            return [], []
+        cached = self._memo.get('merge')
+        if cached and cached[0] is self.selection:
+            return cached[1]
+        result = _bundle.merge_notices(self.graph, self.selection, False)
+        self._memo['merge'] = (self.selection, result)
+        return result
+
+    def merge_refusals(self) -> List[str]:
+        """Why the chosen dashboards cannot be put under one owner, if they cannot."""
+        return self._merge()[0]
+
+    def owner_question(self) -> str:
+        """What has to be answered before the owner choice: 'copies', 'merge' or ''."""
+        if self.owner_mode == 'source':
+            return ''
+        if self.copies_chosen():
+            return 'copies'
+        if self.merge_refusals():
+            return 'merge'
+        return ''
+
+    def _others_of(self, key: str) -> List[str]:
+        return [n.key for group in self.copies_chosen() for n in group
+                if any(m.key == key for m in group) and n.key != key]
+
+    def can_keep_copy(self, key: str) -> bool:
+        """Whether the other copies can be left out by unticking them alone.
+        They cannot when something else that was chosen brings them along."""
+        others = set(self._others_of(key))
+        if not others:
+            return False
+        seen = set()
+        for pick in self.picked:
+            if pick not in others:
+                seen.update(_insight.reach(self.graph, pick))
+        return not (others & seen)
 
     @serialized
-    def build(self, out_path: str, from_dialog: bool = False) -> None:
-        """Write the bundle for the closed selection, exactly as the CLI does.
+    def set_owner(self, mode: str, both: bool = False) -> None:
+        if mode not in ('admin', 'source'):
+            self.note = Note('bad', 'Choose one of the two owners.')
+            return
+        if mode == self.owner_mode and not both:
+            return
+        self.owner_mode, self.target_user = mode, 'admin'
+        self.undo = None
+        self.note = (Note('info', '<b>Both copies are kept</b>, so "The same user as on the source" is '
+                                  'selected below. Choosing a different owner means picking one copy.')
+                     if both else None)
+        self.changed()
 
-        The UI refuses missing references before calling the shared writer.
-        For a complete selection the bytes match ``build --select``.
+    @serialized
+    def keep_copy(self, key: str) -> None:
+        """Keep one copy of a dashboard and leave the others out."""
+        if not self.can_keep_copy(key):
+            return
+        others = self._others_of(key)
+        self._snapshot()
+        self._set_picked(k for k in self.picked if k not in others)
+        for other in others:
+            self.decided.pop('i-' + other, None)
+        names = listing([self.graph.owner_names.get(self.graph.nodes[k].owner, 'Unknown owner')
+                         for k in others])
+        self.note = Note('ok', f'<b>The copy of {e(self.graph.nodes[key].name)} owned by {e(names)} was '
+                               'left out of the bundle.</b> The other copy stays in.')
+        self.changed()
+
+    # -- review ------------------------------------------------------------
+
+    def tasks(self) -> List[_tasks.Task]:
+        """What there will be to do on the target for the bundle as it stands."""
+        if not self.selection or not self.selection.keys:
+            return []
+        key = (self.owner_mode, self.target_user, self.save_name, str(self.save_folder),
+               self.source_snapshot is not None, tuple(sorted(self.decided)))
+        cached = self._memo.get('tasks')
+        if cached and cached[0] is self.selection and cached[1] == key:
+            return cached[2]
+        result = _tasks.build_tasks(self.graph, self.selection, self.owner_mode == 'source',
+                                    self.target_user, self.save_name, self.save_folder.name,
+                                    self.source_snapshot is not None, self._confirmed())
+        self._memo['tasks'] = (self.selection, key, result)
+        return result
+
+    def _confirmed(self) -> list:
+        """Like ``accepted_missing``, without going through the review list,
+        which is itself built from the tasks."""
+        out = []
+        for pick in self.picked:
+            if self.decided.get('i-' + pick) and pick in self.insight.blocked:
+                for key in _insight.reach(self.graph, pick):
+                    out.extend(_insight.hard_gaps(self.graph, key))
+        return list(dict.fromkeys(out))
+
+    def issues(self) -> List[Issue]:
+        """The review list, as data: what must be answered, what was answered,
+        what is only good to know, and the two reference lines."""
+        if not self.selection or not self.selection.keys:
+            return []
+        key = (self.owner_mode, self.save_name, str(self.save_folder), tuple(sorted(self.decided)))
+        cached = self._memo.get('issues')
+        if cached and cached[0] is self.selection and cached[1] == key:
+            return cached[2]
+        graph, ins = self.graph, self.insight
+        must: List[Issue] = []
+        know: List[Issue] = []
+        for pick in self.picked:
+            if not (pick in ins.blocked or pick in ins.stock or pick in ins.unfinished or pick in ins.soft):
+                continue
+            nodes = [graph.nodes[k] for k in _insight.reach(graph, pick)]
+            hard = [(n, gap) for n in nodes for gap in _insight.hard_gaps(graph, n.key)]
+            stock = [n for n in nodes if n.stock_or_derived]
+            unfinished = [n for n in nodes if n.hollow]
+            catches = [(n, c) for n in nodes for c in _insight.catches(graph, n)]
+            name = self.label(pick)
+
+            def via(node, _pick=pick):
+                return '' if node.key == _pick else f'brings {self.label(node.key)}, which '
+            if hard:
+                head = 'needs something this export does not have'
+            elif stock:
+                head = via(stock[0]) + 'would overwrite the target’s copy'
+            elif unfinished:
+                head = via(unfinished[0]) + 'never finished loading on the source'
+            elif catches:
+                head = catches[0][1].badge[:1].lower() + catches[0][1].badge[1:]
+            else:
+                continue
+            issue = Issue('i-' + pick, 'must', f'{name}: {head}', pick, hard, stock, unfinished, catches)
+            if hard or stock or unfinished:
+                if self.decided.get(issue.id):
+                    issue.group = 'kept'
+                must.append(issue)
+            else:
+                issue.group = 'know'
+                know.append(issue)
+        if self.owner_mode != 'source':
+            for node in self.dashboards():
+                groups = _tasks.directory_groups(graph, node)
+                if groups:
+                    know.append(Issue('share-' + node.key, 'know',
+                                      f'{self.label(node.key)}: sharing with {listing(groups)} is not carried',
+                                      share=node))
+            for number, (kind, ident, owner, _key) in enumerate(self._merge()[1]):
+                node = graph.nodes.get(f'dashboard:{ident}@{owner}')
+                name = self.label(node.key) if node else 'A dashboard'
+                know.append(Issue(f'merge-{number}', 'know',
+                                  f'{name}: one widget may stay empty under a shared owner'
+                                  if kind == 'unresolved' else
+                                  f'{name}: one of its texts is renamed inside the bundle',
+                                  merge=kind))
+        tasks = self.tasks()
+        for task in tasks:
+            if task.know:
+                know.append(Issue('k-' + task.id, 'know', task.know, task=task))
+        rows = ([i for i in must if i.group == 'must'] + [i for i in must if i.group == 'kept'] + know
+                + [Issue('todo', 'more', f'{plural(len(tasks), "thing")} to do on the target after import'),
+                   Issue('contents', 'more', f'What is in the bundle ({len(self.selection.keys)})')])
+        self._memo['issues'] = (self.selection, key, rows)
+        return rows
+
+    def open_issues(self) -> List[Issue]:
+        return [i for i in self.issues() if i.group == 'must']
+
+    @serialized
+    def keep_in(self, issue_id: str) -> None:
+        issue = next((i for i in self.issues() if i.id == issue_id), None)
+        if issue is None or issue.group != 'must':
+            return
+        self.decided[issue_id] = True
+        self.note, self.undo = None, None
+        remaining = self.open_issues()
+        self.issue = remaining[0].id if remaining else issue_id
+        if self.save_state == 'saved':
+            self.stale = True
+        self.save_state = 'ready'
+
+    # -- saving ------------------------------------------------------------
+
+    def accepted_missing(self) -> list:
+        """The missing dependencies the person kept in, having said each
+        already exists on the target. Only these get past the build's gate."""
+        return list(dict.fromkeys(gap for issue in self.issues() if issue.group == 'kept'
+                                  for _node, gap in issue.hard))
+
+    def kept_lines(self) -> List[str]:
+        out = []
+        for issue in self.issues():
+            if issue.group != 'kept':
+                continue
+            name = self.label(issue.pick)
+            for node, gap in issue.hard:
+                out.append(f'{name}: {self.label(node.key)} needs {_insight.missing_phrase(gap)}, which is '
+                           'not in the bundle. You confirmed that it already exists on the target.')
+            if issue.stock:
+                out.append(f'{name}: overwrites {self.label(issue.stock[0].key)}, which comes with '
+                           'VCF Operations, on the target.')
+            if issue.unfinished:
+                out.append(f'{name}: {self.label(issue.unfinished[0].key)} never finished loading on '
+                           'the source and arrives empty.')
+        return out
+
+    def report_blocks(self) -> List[_tasks.Block]:
+        included = self.selection_keys()
+        stem = Path(self.save_name).stem
+        return _tasks.report_blocks(
+            self.graph, self.selection, self.tasks(), self.save_name, self.source_name,
+            self.owner_mode == 'source', self.target_user, self.kept_lines(),
+            lambda key: self._names(self.needed_by(key, included)), stem + '-checklist.txt',
+            bool(self.accepted_missing()))
+
+    def save_files(self) -> List[Path]:
+        out = self.save_folder / self.save_name
+        return [out, out.with_name(out.stem + '-report.txt'), out.with_name(out.stem + '-checklist.txt')]
+
+    @serialized
+    def choose_save_place(self) -> None:
+        """The computer's own Save window, for a different name or folder."""
+        if not self.dialog:
+            self.note = Note('bad', 'This window cannot open the Save window.')
+            return
+        chosen = self.dialog('bundle', self.default_out()) or {}
+        if chosen.get('error'):
+            self.note = Note('bad', e(chosen['error']))
+            return
+        if not chosen.get('path'):
+            return
+        path = Path(self.output_path(chosen['path'], '.zip', self.default_out()))
+        self.save_name, self.save_folder = path.name, path.parent
+        # Some Save windows ask "replace?" themselves. When this one did, the
+        # page does not ask a second time for the same file.
+        self.save_confirmed = str(path) if chosen.get('confirmed') else ''
+        self.save_state, self.save_problem = 'ready', ''
+
+    @serialized
+    def save(self, force: bool = False) -> None:
+        """Write the bundle, its report and its checklist for what is chosen.
+
+        The bundle is the one the command line writes for the same selection.
+        Anything that still needs an answer at Review refuses the save. A
+        missing dependency is let through only where the person answered for
+        it there, one choice at a time.
         """
-        if self.graph is None or self.members is None:
-            self.error = "open an export first"
+        if self.graph is None or not (self.selection and self.selection.keys):
             return
-        if not (self.selection and self.selection.keys):
-            self.error = "the selection is empty, no bundle written"
+        if self.open_issues() or self.owner_question():
+            self.screen = 'review' if self.open_issues() else 'owner'
             return
-        try:
-            _selection.refuse_missing_dependencies(self.graph, self.selection)
-        except _selection.MissingDependency as exc:
-            self.message = ""
-            self.error = f"refused: {exc}; no bundle written"
-            self.build_report = "Build refused. No bundle written.\n" + "\n".join(exc.lines)
-            self.tab = "review"
+        files = self.save_files()
+        out = files[0]
+        if self.zip_path and out.resolve() == Path(self.zip_path).resolve():
+            self.save_state = 'error'
+            self.save_problem = 'same'
             return
-        out = self.output_path(out_path, '.zip', self.default_out())
-        if not self.allow_output(out, from_dialog):
+        existing = [f for f in files if f.exists()]
+        if existing and not force and self.save_confirmed != str(out):
+            self.save_state, self.save_problem = 'exists', existing[0].name
             return
-        self.build_out = out
-        try:
-            result = _bundle.build_bundle(self.members.data, self.members.order, self.graph,
-                                          self.selection, out, marker=self.members.marker,
-                                          directories=self.members.directories,
-                                          directory_order=self.members.directory_order,
-                                          target_user=self.target_user,
-                                          keep_ownership=self.owner_mode == 'source')
-        except OSError as e:
-            self.error = f"cannot write {out}: {e}"
-            return
-        except (ValueError, RawDocError) as e:
-            self.error = f"cannot build bundle: {e}; no bundle written"
-            return
-        self.tab = "review"
-        self.build_report = (_selection.render(self.graph, self.selection, self.target_user,
-                                               self.owner_mode == 'source')
-                             + _bundle.render(result))
+        self.save_state, self.save_problem = 'ready', ''
+        selection, graph, members = self.selection, self.graph, self.members
+        report_head = _tasks.blocks_text(self.report_blocks())
+        owner_mode, target_user = self.owner_mode, self.target_user
+        from_source = self.source_snapshot is not None
+        accepted = self.accepted_missing()
+
+        def work(job: Job):
+            result = _bundle.build_bundle(members.data, members.order, graph, selection, str(out),
+                                          marker=members.marker, directories=members.directories,
+                                          directory_order=members.directory_order,
+                                          target_user=target_user, keep_ownership=owner_mode == 'source',
+                                          from_source=from_source, accepted_missing=accepted)
+            technical = (_selection.render(graph, selection, target_user, owner_mode == 'source',
+                                           accepted)
+                         + _bundle.render(result))
+            if result.support_details:
+                technical += '\nSupport details\n' + '\n'.join(result.support_details) + '\n'
+            report = (report_head + '\n\nTechnical detail, for support\n'
+                      + '=============================\n' + technical)
+            files[1].write_text(report, encoding='utf-8')
+            return lambda: self._saved(result, technical)
+
+        self._start('save', out.name, work, self._save_failed)
+
+    def _saved(self, result, technical: str) -> None:
         self.built_path = str(Path(result.path).resolve())
-        report_path = Path(self.built_path).with_name(Path(self.built_path).stem + '-build-report.txt')
-        self.build_report += f'Build report saved to: {report_path}\n'
-        saved_report = self.build_report
-        if result.support_details:
-            saved_report += '\nSupport details\n' + '\n'.join(result.support_details) + '\n'
-        try:
-            report_path.write_text(saved_report, encoding='utf-8')
-        except OSError as e:
-            self.build_report = self.build_report.rsplit('Build report saved to:', 1)[0]
-            self.error = f'Bundle saved to {self.built_path}, but the build report could not be saved: {e}'
-            return
-        self.message = f"bundle built and saved to {self.built_path}"
-        if self.source_snapshot is not None:
-            self.message += f". {BUILD_PASSWORD_REMINDER}"
+        self.build_report = technical
+        self.save_state, self.save_problem, self.stale = 'saved', '', False
+        self.save_confirmed = ''
+        self.ticks, self.task, self.finished = {}, '', False
+        self.screen = 'save'
+        self.max_step = max(self.max_step, STEPS.index('save'))
 
+    def _save_failed(self, exc: BaseException) -> None:
+        self.screen = 'save'
+        self.save_state = 'error'
+        if isinstance(exc, PermissionError):
+            self.save_problem = 'denied'
+        elif isinstance(exc, OSError):
+            _runlog.error("output.unwritable", path=str(self.save_folder), reason=str(exc))
+            self.save_problem = 'os:' + (exc.strerror or type(exc).__name__)
+        elif isinstance(exc, _selection.MissingDependency):
+            self.save_state, self.screen = 'ready', 'review'
+        else:
+            _runlog.error("build.failed", failure=type(exc).__name__, detail=str(exc))
+            self.save_problem = 'build:' + str(exc)
 
+    # -- settings ----------------------------------------------------------
+
+    @serialized
     def save_setting(self, form: dict) -> None:
         if 'theme' in form:
             value = form['theme']
-            if value not in ('light', 'dark'):
-                self.error = 'Choose Light or Dark.'
-                return
-            _settings.save_settings({'theme': value})
-            self.theme = value
-            self.message = f'{value.capitalize()} theme saved.'
+            if value in ('light', 'dark'):
+                _settings.save_settings({'theme': value})
+                self.theme = value
             return
-        if "log_file" in form:
-            value = form.get("log_file", "").strip()
-            _settings.save_settings({"log_file": value})
+        if 'log_on' in form:
+            if form['log_on'] == '1':
+                current = _settings.load_settings().get('log_file')
+                value = current or str(self.download_directory() / 'vcf-content-migrator.log')
+            else:
+                value = ''
+            _settings.save_settings({'log_file': value})
             self.open_log()
-            self.message = (f"the run log goes to {value}" if value
-                            else "the run log is off; the page still keeps this session's "
-                                 "events for the diagnostics file")
             return
-        if "log_level" in form:
-            value = form.get("log_level", "").strip().lower()
-            if value not in _runlog.LEVELS:
-                self.error = (f"log level {value!r} is not one of "
-                              + ", ".join(_runlog.LEVEL_NAMES))
-                return
-            _settings.save_settings({"log_level": value})
+        if 'log_file' in form:
+            _settings.save_settings({'log_file': form.get('log_file', '').strip()})
             self.open_log()
-            self.message = f"log level {value}"
             return
-        self.error = "nothing to save"
-
+        if 'log_level' in form:
+            value = form.get('log_level', '').strip().lower()
+            if value in _runlog.LEVELS:
+                _settings.save_settings({'log_level': value})
+                self.open_log()
 
     @serialized
     def render(self) -> str:
         """Measure page generation without claiming the session has ended."""
+        from vcfcf_migrator import uipage
         with self.log.phase('render'):
             return uipage.render(self)
 
@@ -571,233 +1173,473 @@ class PageState:
 # ---------------------------------------------------------------------------
 # Registered actions are the only entry points exposed by the native bridge.
 
+# What may still be pressed while a job is on screen.
+DURING_A_JOB = ('/cancel-job', '/escape', '/redraw', '/find')
+# Actions that are not worth a line in the support report each time.
+QUIET = ('/find', '/redraw', '/conn-edited')
+
+
 @serialized
 def dispatch(state: "PageState", path: str, form: dict) -> str:
-    """Run a registered native-window action and return its scroll anchor.
+    """Run a registered native-window action and return the element to focus.
 
     Raises KeyError for an action that does not exist.
     """
     action = ACTIONS[path]
-    state.message, state.error = "", ""
+    if state.job is not None and path not in DURING_A_JOB:
+        return ''
     # Content actions share the CLI event log. Never log connection fields.
     _runlog.set_current(state.log)
+    if path in QUIET:
+        return action(state, form) or ''
+    if path not in KEEPS_NOTE:
+        state.note = None
     _runlog.info("page.action", action=path,
-                 fields={} if path == "/connect" else {k: v for k, v in form.items() if k != "lines"})
+                 fields={} if path.startswith('/conn') else dict(form))
+    state.version += 1
     with state.log.phase("page", action=path):
-        return action(state, form) or ""
+        return action(state, form) or ''
 
 
-def _act_settings(state: "PageState", form: dict) -> str:
-    state.save_setting(form)
-    return ""
+def _index(step: str) -> int:
+    return STEPS.index(step)
+
+
+def can_go(state: "PageState", to: str) -> bool:
+    """Whether the step may be entered from where things stand."""
+    if to == 'open':
+        return True
+    if state.graph is None or to not in STEPS:
+        return False
+    if to == 'choose':
+        return True
+    if not state.picked:
+        return False
+    if to == 'owner':
+        return bool(state.dashboards())
+    if state.owner_question():
+        return False
+    if to == 'review':
+        return True
+    if state.open_issues():
+        return False
+    if to == 'save':
+        return True
+    return state.save_state == 'saved'
+
+
+def _act_go(state: "PageState", form: dict) -> str:
+    to = form.get('to', '')
+    state.undo = None
+    if to == 'open':
+        state.screen, state.open_error, state.want = 'open', None, ''
+        return ''
+    if to == 'connect':
+        state.screen = 'connect'
+        return 'c-addr'
+    if not can_go(state, to):
+        return ''
+    state.screen = to
+    state.max_step = max(state.max_step, _index(to))
+    if to == 'review':
+        # Arrive on whatever is waiting for an answer, not on what was last read.
+        waiting = state.open_issues()
+        if waiting:
+            state.issue = waiting[0].id
+    return ''
 
 
 def _act_open(state: "PageState", form: dict) -> str:
     state.open_export(form.get("zip", "").strip())
-    return ""
-
-
-# The right-hand panels, and which action lands you on which. An action whose
-# output appears on a panel has to move you to that panel, or the button
-# appears to do nothing at all.
-TABS = ("preview", "settings", "review", "source")
-
-
-def _act_disclose(state: "PageState", form: dict) -> str:
-    """Open or shut one disclosure, and stay where you were on the page."""
-    which = (form.get("id") or "").strip()
-    if not which:
-        state.error = "no disclosure named"
-        return ""
-    state.disclosure[which] = form.get("on") == "1"
-    # Back to the thing that was clicked. Opening a group two thirds of the
-    # way down a long tree and being returned to the top would be its own
-    # version of the bug this fixes.
-    return uipage.anchor(which)
-
-
-def _act_tab(state: "PageState", form: dict) -> str:
-    wanted = (form.get("tab") or "").strip()
-    if wanted in TABS:
-        state.tab = wanted
-        if wanted == "preview":
-            state.preview_expanded = False
-    else:
-        state.error = f"there is no {wanted!r} panel"
-    return ""
+    return ''
 
 
 def _act_pick_export(state: "PageState", _form: dict) -> str:
-    """Open the machine's own file dialog and load whatever comes back.
+    """Open the machine's own file window and read whatever comes back.
 
     This goes through the action table like every other button rather than
     being a special case in the window's bridge, so it is logged the same way
     and there is still exactly one place a page action runs.
     """
     if state.file_picker is None:
-        state.error = ("this window cannot open a file chooser; "
-                       "type the path into the box instead")
-        return ""
-    chosen = state.file_picker()
-    # Normalising happens here, in the layer the tests drive, not inside the
-    # dialog wrapper that needs a display to reach. A file dialog hands back a
-    # sequence even when it was told to allow one file, and an unwrapped tuple
-    # reaching open_export raises a TypeError that lands in front of the user
-    # as "argument should be a str or an os.PathLike".
+        state.typed_path = True
+        return 'zip'
+    try:
+        chosen = state.file_picker()
+    except Exception:  # noqa: BLE001 - a broken file window must not take the page down
+        state.typed_path = True
+        return 'zip'
+    # A file dialog hands back a sequence even when it was told to allow one
+    # file, and an unwrapped tuple reaching open_export raises a TypeError.
     if isinstance(chosen, (list, tuple)):
         chosen = chosen[0] if chosen else None
     if not chosen:
-        # Cancelling a file dialog is not an error and must not read as one.
-        state.message = "no file chosen"
-        return ""
+        # Cancelling a file window is not an error and must not read as one.
+        return ''
     if not isinstance(chosen, str):
-        state.error = f"the file chooser returned something unusable: {type(chosen).__name__}"
-        return ""
+        state.typed_path = True
+        return 'zip'
     state.open_export(chosen)
-    return ""
+    return ''
 
 
-def _act_select(state: "PageState", form: dict) -> str:
-    key = form.get("key", "")
-    state.toggle(key, on=form.get("on", "1") == "1")
-    # The page comes back anchored at the row that was just toggled, so a
-    # tree scrolled halfway down does not jump to the top on every click.
-    return uipage.anchor(key)
+def _act_cancel_job(state: "PageState", _form: dict) -> str:
+    state.cancel_job()
+    return ''
 
 
-def _act_select_all(state: "PageState", _form: dict) -> str:
-    state.select_all()
-    return ""
-
-
-def _act_clear(state: "PageState", _form: dict) -> str:
-    state.clear()
-    return ""
-
-
-def _act_preview(state: "PageState", form: dict) -> str:
-    state.tab = "preview"
-    state.inspector_tab = "dependencies" if form.get("panel") == "dependencies" else "preview"
-    state.set_preview(form.get("key", ""))
-    return "inspector"
+def _act_ask(answer: bool):
+    def act(state: "PageState", _form: dict) -> str:
+        ask, state.ask = state.ask, None
+        if not ask:
+            return ''
+        if ask['kind'] == 'clear':
+            if answer:
+                state.clear()
+            return ''
+        new = ask['new']
+        if answer:
+            state._adopt(new, keep=True)
+            return ''
+        if new.snapshot is not None and new.snapshot is not state.source_snapshot:
+            new.snapshot.close()
+        state.screen = 'choose'
+        return ''
+    return act
 
 
 def _act_filter(state: "PageState", form: dict) -> str:
-    # Keep the clear button distinct from the text field in form data.
-    if form.get("clear-filter"):
-        state.set_filter("")
-        return ""
-    state.set_filter(form.get("filter", ""))
-    return ""
+    kind = form.get('f', 'all')
+    allowed = {'all', 'in', 'unf'}
+    if state.graph:
+        allowed.update(state.graph.counts())
+    if kind not in allowed or state.graph is None:
+        return ''
+    state.filter_kind = kind
+    if kind == 'unf':
+        state.filter_text = ''
+    elif 'q' in form:
+        state.filter_text = form['q'].strip()
+    state.screen = 'choose'
+    state.max_step = max(state.max_step, 1)
+    return ''
 
+
+def _act_find(state: "PageState", form: dict) -> str:
+    """The search box, as it is typed in. Only the list is drawn again."""
+    state.filter_text = (form.get('q') or '').strip()
+    return ''
+
+
+def _act_show_all(state: "PageState", _form: dict) -> str:
+    state.filter_kind, state.filter_text = 'all', ''
+    return ''
+
+
+def _act_focus(state: "PageState", form: dict) -> str:
+    key = form.get('key', '')
+    if state.graph is None or key not in state.graph.nodes:
+        return ''
+    if 'q' in form:
+        state.filter_text = form['q'].strip()
+    state.focus_key = key
+    state.screen = 'choose'
+    if form.get('reveal'):
+        if not any(n.key == key for n in state.visible_nodes()[:LIST_LIMIT]):
+            state.filter_kind, state.filter_text = state.graph.nodes[key].kind, ''
+        state.reveal = True
+    return ''
+
+
+def _act_select(state: "PageState", form: dict) -> str:
+    if 'q' in form:
+        state.filter_text = form['q'].strip()
+    key = form.get("key", "")
+    state.toggle(key, on=form.get("on", "1") == "1")
+    from vcfcf_migrator import uipage
+    return 'tick-' + uipage.anchor(key)
+
+
+def _act_add_shown(state: "PageState", form: dict) -> str:
+    if 'q' in form:
+        state.filter_text = form['q'].strip()
+    state.add_shown()
+    return ''
+
+
+def _act_clear(state: "PageState", _form: dict) -> str:
+    if state.picked:
+        state.ask = {'kind': 'clear'}
+    return ''
+
+
+def _act_undo(state: "PageState", _form: dict) -> str:
+    state.undo_last()
+    return ''
+
+
+def _act_preview(state: "PageState", form: dict) -> str:
+    key = form.get('key', '')
+    if state.graph is not None and key in state.graph.nodes:
+        state.preview_key = key
+    return 'close-preview'
+
+
+def _act_close_preview(state: "PageState", _form: dict) -> str:
+    state.preview_key = ''
+    return ''
 
 
 def _act_owner(state: "PageState", form: dict) -> str:
-    mode = form.get('owner_mode', 'admin')
-    if mode not in ('admin', 'other', 'source'):
-        state.error = 'Choose a dashboard owner option.'
-    elif mode == 'other' and not form.get('target_user', '').strip():
-        state.error = 'Enter the target user name.'
-    else:
-        state.owner_mode = mode
-        state.target_user = form.get('target_user', '').strip() if mode == 'other' else 'admin'
-        state.message = 'Dashboard owner choice updated.'
-    state.tab = 'review'
+    # The window offers the built-in admin user or the same user as on the
+    # source. Giving every dashboard to one named user is still something the
+    # program can do (``--target-owner`` on the command line); the window does
+    # not send it.
+    state.set_owner(form.get('mode', ''), both=form.get('both') == '1')
+    return 'own-' + form.get('mode', '')
+
+
+def _act_keep_copy(state: "PageState", form: dict) -> str:
+    state.keep_copy(form.get('key', ''))
     return ''
 
-def _act_build(state: "PageState", form: dict) -> str:
-    # Keep readiness and the written bundle report on the review screen.
-    state.tab = "review"
-    state.build(form.get("out", ""), form.get("picked") == "1")
-    return ""
+
+def _act_issue(state: "PageState", form: dict) -> str:
+    state.issue = form.get('id', '')
+    return 'issue-' + state.issue
 
 
-def _act_diagnostics(state: "PageState", form: dict) -> str:
-    # No tab change, deliberately. What this produces is a file and a banner,
-    # and the banner renders above the panels, so there is nothing on any one
-    # panel to land on. Moving someone here anyway would be a rule invented to
-    # match the shape of the other actions rather than to help anyone.
-    state.save_diagnostics(form.get("out", ""), form.get("picked") == "1")
-    return ""
+def _act_leave(state: "PageState", form: dict) -> str:
+    state.leave_out(form.get('key', ''))
+    return ''
 
 
-def _act_inspector_tab(state: "PageState", form: dict) -> str:
-    panel = form.get("panel", "preview")
-    if panel in ("preview", "dependencies", "details"):
-        state.inspector_tab = panel
-    else:
-        state.error = "unknown inspector panel"
-    return "inspector"
+def _act_keep_in(state: "PageState", form: dict) -> str:
+    state.keep_in(form.get('id', ''))
+    return ''
 
 
-def _act_expand_preview(state: "PageState", form: dict) -> str:
-    state.preview_expanded = form.get("expanded") == "1"
-    state.tab = "preview"
-    return "inspector"
+def _act_fuller(state: "PageState", form: dict) -> str:
+    state.want = form.get('want', '')
+    state.screen, state.open_error = 'open', None
+    return ''
 
 
-def _act_category(state: "PageState", form: dict) -> str:
-    kind = form.get("kind", "all")
-    allowed = {"all", "selected"}
-    if state.graph:
-        allowed.update(state.graph.counts())
-    if kind not in allowed:
-        state.error = "unknown content type"
-        return ""
-    state.inventory_kind = kind
-    state.tab = "preview"
-    return ""
+def _act_pick_save(state: "PageState", _form: dict) -> str:
+    state.choose_save_place()
+    return ''
 
 
-def _act_select_shown(state: "PageState", _form: dict) -> str:
-    state.select_shown()
-    return ""
+def _act_save(state: "PageState", form: dict) -> str:
+    state.save(force=form.get('force') == '1')
+    return ''
 
 
-def _act_remove_pick(state: "PageState", form: dict) -> str:
-    state.remove_pick(form.get("key", ""))
-    state.tab = "review"
-    return ""
+def _act_doc(state: "PageState", form: dict) -> str:
+    if form.get('k') in ('report', 'checklist') and state.save_state == 'saved':
+        state.doc = form['k']
+    return 'close-doc'
 
 
-def _act_source_mode(state: "PageState", form: dict) -> str:
-    if form.get('mode') in ('zip', 'connect'):
-        state.source_mode = form['mode']
-        state.tab = 'source'
+def _act_close_doc(state: "PageState", _form: dict) -> str:
+    state.doc = ''
     return ''
 
 
 def _act_show_in_folder(state: "PageState", form: dict) -> str:
-    if state.built_path and state.show_in_folder:
-        if not state.show_in_folder(state.built_path):
-            state.error = 'The folder could not be opened. Use the saved destination shown below.'
+    path = state.report_saved if form.get('which') == 'report' else state.built_path
+    if path and state.show_in_folder and not state.show_in_folder(path):
+        state.note = Note('bad', f'The folder could not be opened. The file is at {e(path)}.')
+    return ''
+
+
+def _act_task(state: "PageState", form: dict) -> str:
+    state.task = form.get('id', '')
+    return ''
+
+
+def _act_tick(state: "PageState", form: dict) -> str:
+    ident = form.get('id', '')
+    tasks = state.tasks()
+    if not any(t.id == ident for t in tasks):
+        return ''
+    state.ticks[ident] = form.get('on', '1') == '1'
+    state.task = ident
+    if state.ticks[ident]:
+        following = next((t for t in tasks if not state.ticks.get(t.id)), None)
+        if following:
+            state.task = following.id
+    return ''
+
+
+def _act_finish(state: "PageState", form: dict) -> str:
+    state.finished = form.get('on', '1') == '1'
+    return ''
+
+
+def _act_again(state: "PageState", _form: dict) -> str:
+    """Another bundle from the export that is already open."""
+    if state.graph is None:
+        return ''
+    state._set_picked([])
+    state.decided, state.ticks, state.finished = {}, {}, False
+    state.save_state, state.stale, state.built_path = 'ready', False, ''
+    state.screen, state.max_step = 'choose', 1
+    state.focus_key, state.filter_kind, state.filter_text = '', 'all', ''
+    return ''
+
+
+def _act_help(state: "PageState", _form: dict) -> str:
+    if state.screen != 'help':
+        state.back = state.screen
+    state.screen = 'help'
+    return ''
+
+
+def _act_back(state: "PageState", _form: dict) -> str:
+    state.screen, state.gloss = state.back, False
+    return ''
+
+
+def _act_gloss(state: "PageState", _form: dict) -> str:
+    state.gloss = not state.gloss
+    return 'close-gloss' if state.gloss else ''
+
+
+def _act_support_report(state: "PageState", _form: dict) -> str:
+    state.save_support_report()
+    return ''
+
+
+def _act_report_problem(state: "PageState", _form: dict) -> str:
+    # Never a URL from the page: the address is fixed here.
+    if not (state.open_url and state.open_url(ISSUES_PAGE)):
+        state.note = Note('info', f'Your browser could not be opened. The page is {e(ISSUES_PAGE)}')
+    return ''
+
+
+def _act_get_update(state: "PageState", _form: dict) -> str:
+    from vcfcf_migrator import releases
+    if not (state.open_url and state.open_url(releases.RELEASE_PAGE)):
+        state.note = Note('info', f'Your browser could not be opened. The page is {e(releases.RELEASE_PAGE)}')
+    return ''
+
+
+def _act_settings(state: "PageState", form: dict) -> str:
+    state.save_setting(form)
+    return ''
+
+
+def _act_log(state: "PageState", form: dict) -> str:
+    state.save_setting({'log_on': form.get('on', '0')})
+    return 'log-on'
+
+
+def _act_log_where(state: "PageState", _form: dict) -> str:
+    destination = state.log_settings()[0]
+    chosen = state.dialog('log', destination or '') if state.dialog else {}
+    if chosen and chosen.get('path'):
+        state.save_setting({'log_file': chosen['path']})
+    return ''
+
+
+def _act_conn_cert_file(state: "PageState", _form: dict) -> str:
+    chosen = state.dialog('ca', '') if state.dialog else {}
+    if chosen and chosen.get('path'):
+        state.conn['cert'] = {'mode': 'file', 'path': chosen['path']}
+        state.conn['tested'] = None
+    return ''
+
+
+def _act_conn_cert_skip(state: "PageState", _form: dict) -> str:
+    state.conn['cert'] = {'mode': 'skip'}
+    state.conn['tested'] = None
+    return ''
+
+
+def _act_conn_cert_undo(state: "PageState", _form: dict) -> str:
+    state.conn['cert'], state.conn['tested'] = None, None
+    return ''
+
+
+def _act_conn_edited(state: "PageState", _form: dict) -> str:
+    """The form changed, so an earlier test no longer says anything about it."""
+    state.conn['tested'], state.conn['error'] = None, None
+    return ''
+
+
+def _act_escape(state: "PageState", _form: dict) -> str:
+    """Escape closes whatever is on top, and nothing else."""
+    if state.ask:
+        return _act_ask(False)(state, {})
+    if state.preview_key:
+        state.preview_key = ''
+    elif state.doc:
+        state.doc = ''
+    elif state.gloss:
+        state.gloss = False
+    return ''
+
+
+def _act_redraw(_state: "PageState", _form: dict) -> str:
     return ''
 
 
 ACTIONS = {
-    '/source-mode': _act_source_mode,
+    '/go': _act_go,
+    '/open': _act_open,
+    '/pick-export': _act_pick_export,
+    '/cancel-job': _act_cancel_job,
+    '/ask-yes': _act_ask(True),
+    '/ask-no': _act_ask(False),
+    '/connect': lambda state, form: state.connect_source(form),
+    '/conn-cert-file': _act_conn_cert_file,
+    '/conn-cert-skip': _act_conn_cert_skip,
+    '/conn-cert-undo': _act_conn_cert_undo,
+    '/conn-edited': _act_conn_edited,
+    '/filter': _act_filter,
+    '/find': _act_find,
+    '/show-all': _act_show_all,
+    '/focus': _act_focus,
+    '/select': _act_select,
+    '/add-shown': _act_add_shown,
+    '/clear': _act_clear,
+    '/undo': _act_undo,
+    '/preview': _act_preview,
+    '/close-preview': _act_close_preview,
+    '/owner': _act_owner,
+    '/keep-copy': _act_keep_copy,
+    '/issue': _act_issue,
+    '/leave': _act_leave,
+    '/keep-in': _act_keep_in,
+    '/fuller': _act_fuller,
+    '/pick-save': _act_pick_save,
+    '/save': _act_save,
+    '/doc': _act_doc,
+    '/close-doc': _act_close_doc,
     '/show-in-folder': _act_show_in_folder,
-    "/inspector-tab": _act_inspector_tab,
-    "/expand-preview": _act_expand_preview,
-    "/category": _act_category,
-    "/select-shown": _act_select_shown,
-    "/remove-pick": _act_remove_pick,
-    "/settings": _act_settings,
-    "/open": _act_open,
-    "/connect": lambda state, form: state.connect_source(form),
-    "/pick-export": _act_pick_export,
-    "/tab": _act_tab,
-    "/disclose": _act_disclose,
-    "/select": _act_select,
-    "/select-all": _act_select_all,
-    "/clear": _act_clear,
-    "/preview": _act_preview,
-    "/filter": _act_filter,
-    "/owner": _act_owner,
-    "/build": _act_build,
-    "/diagnostics": _act_diagnostics,
+    '/task': _act_task,
+    '/tick': _act_tick,
+    '/finish': _act_finish,
+    '/again': _act_again,
+    '/help': _act_help,
+    '/back': _act_back,
+    '/gloss': _act_gloss,
+    '/support-report': _act_support_report,
+    '/report-problem': _act_report_problem,
+    '/get-update': _act_get_update,
+    '/settings': _act_settings,
+    '/log': _act_log,
+    '/log-where': _act_log_where,
+    '/escape': _act_escape,
+    '/redraw': _act_redraw,
 }
 POST_PATHS = tuple(sorted(ACTIONS))
+# Actions that leave the last message where it is: looking at something is not
+# a reason to lose what the previous action said.
+KEEPS_NOTE = ('/focus', '/find', '/redraw', '/preview', '/close-preview', '/issue', '/task', '/tick',
+              '/doc', '/close-doc', '/gloss', '/escape', '/help', '/back', '/conn-edited',
+              '/show-in-folder', '/settings', '/log', '/log-where', '/support-report')
 
 
 def run_desktop(zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,

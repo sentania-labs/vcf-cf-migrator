@@ -77,6 +77,15 @@ def main():
         scratch = Path(directory)
         source = scratch / 'source.zip'
         make_export(source, args.objects, args.identities)
+        # Bundles and support reports go to Downloads. Nothing of an earlier
+        # run may be there, or the app would rightly ask before replacing it.
+        downloads = Path.home() / 'Downloads'
+        downloads.mkdir(exist_ok=True)
+        output = downloads / 'source-bundle.zip'
+        leftovers = [output, output.with_name('source-bundle-report.txt'),
+                     output.with_name('source-bundle-checklist.txt')]
+        for stale in leftovers + list(downloads.glob('support-report-*.txt')):
+            stale.unlink(missing_ok=True)
         events_path = scratch / 'events.jsonl'
         before = {a.processIdentifier() for a in NSRunningApplication.runningApplicationsWithBundleIdentifier_(info['CFBundleIdentifier'])}
         running = None
@@ -118,7 +127,7 @@ def main():
 
                 native = wait_for(window)
                 recognized_labels = []
-                def button_point(label):
+                def button_point(label, lowest=False):
                     # Find the visible label, rather than assuming Cocoa and Qt
                     # render fonts and control spacing at the same coordinates.
                     capture = scratch / 'screen.png'
@@ -145,7 +154,11 @@ def main():
                         if not matches:
                             continue
                         if len(matches) != 1:
-                            return None
+                            if not lowest:
+                                return None
+                            # A screen's heading and its next-step button can say the
+                            # same words. The button is the one in the footer.
+                            matches = [min(matches, key=lambda p: p[0].boundingBox().origin.y)]
                         item, text = matches[0]
                         start = text.lower().find(label.lower())
                         rect = item.boundingBox()
@@ -159,17 +172,10 @@ def main():
                                 screen.origin.y + (1 - rect.origin.y - rect.size.height / 2) * screen.size.height)
                     return None
 
-                def click(label, action, scroll=False, save_dialog=False):
+                def click(label, action, lowest=False):
                     offset = len(events())
                     def find():
-                        point = button_point(label)
-                        if point is None and scroll:
-                            # End scrolls the web document, even when the last
-                            # clicked control is in the fixed review footer.
-                            for down in (True, False):
-                                event = Quartz.CGEventCreateKeyboardEvent(None, 119, down)
-                                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-                        return point
+                        return button_point(label, lowest)
                     try:
                         point = wait_for(find)
                     except AssertionError as exc:
@@ -181,33 +187,27 @@ def main():
                         event = Quartz.CGEventCreateMouseEvent(None, event_type, point, Quartz.kCGMouseButtonLeft)
                         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
                         time.sleep(.1)
-                    if save_dialog:
-                        # The app opens its native Save panel, already pointed at the
-                        # real default folder and file name. Accept it as a user would.
-                        wait_for(lambda: button_point('Cancel'))
-                        for down in (True, False):
-                            event = Quartz.CGEventCreateKeyboardEvent(None, 36, down)
-                            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
                     wait_for(lambda: rendered_after(action, offset))
 
+                # No screen scrolls, so every control is where it is drawn.
                 wait_for(lambda: rendered_after('/open'))
-                click('Select all', '/select-all')
-                click('Review bundle', '/tab')
-                click('Build bundle', '/build', scroll=True)
-                output = scratch / 'source-bundle.zip'
-                wait_for(output.exists, timeout=20)
+                click('Add all of these', '/add-shown')
+                click('Next: review', '/go')        # no dashboards, so no owner to choose
+                click('Next: save', '/go')
+                click('Save the bundle', '/save', lowest=True)
+                wait_for(output.exists, timeout=30)
+                assert leftovers[1].exists() and leftovers[2].exists()
                 with zipfile.ZipFile(output) as bundle:
                     metrics = json.loads(bundle.read('supermetrics.json'))
                     assert len(metrics) == args.objects
                     with zipfile.ZipFile(source) as original:
                         assert metrics == json.loads(original.read('supermetrics.json'))
                 subprocess.run(['screencapture', '-x', str(args.screenshot)], check=True)
-                # This word uniquely identifies the header button on Review.
-                # Vision can split the full phrase or vary the ampersand's
-                # spacing on Intel; click its visible word and verify /tab.
-                click('diagnostics', '/tab')
-                click('Save diagnostics…', '/diagnostics', save_dialog=True)
-                report = (scratch / 'vcfcf-migrator-diagnostics.jsonl').read_text()
+                click('Help and settings', '/help')
+                # One click and no Save panel: the report goes straight to Downloads.
+                # "diagnostics" is on the button and nowhere else on the screen.
+                click('diagnostics', '/support-report')
+                report = wait_for(lambda: next(iter(downloads.glob('support-report-*.txt')), None)).read_text()
                 assert json.loads(report.splitlines()[0])['kind'] == 'vcfcf-migrator-diagnostics'
                 for private in (str(scratch), str(Path.home()), Path.home().name, socket.gethostname(),
                                 'Synthetic capacity metric', 'synthetic-login-', 'Invented Person', '@example.invalid'):
@@ -215,10 +215,10 @@ def main():
                 assert not any(ident in report for ident in metrics)
                 subprocess.run(['screencapture', '-x', str(args.screenshot.with_name(args.screenshot.stem + '-diagnostics.png'))], check=True)
                 timings = {e['action']: e['ms'] for e in events() if e.get('event') == 'phase.end'
-                           and e.get('phase') == 'page' and e.get('action') in ('/open', '/select-all')}
+                           and e.get('phase') == 'page' and e.get('action') in ('/open', '/add-shown')}
                 print(json.dumps(dict(objects=args.objects, identities=args.identities, page_ms=timings,
                                       bundle_readback='passed', diagnostics_privacy='passed')))
-                print('Packaged Mac native load, selection, bundle readback, and saved diagnostics passed.')
+                print('Packaged Mac native load, selection, bundle readback, and saved support report passed.')
             except Exception:
                 subprocess.run(['screencapture', '-x', str(args.screenshot)], check=False)
                 log.seek(0)
@@ -227,6 +227,8 @@ def main():
                     print('\n'.join(json.dumps(e) for e in events() if e.get('phase') in ('page', 'render')))
                 raise
             finally:
+                for stale in leftovers + list(downloads.glob('support-report-*.txt')):
+                    stale.unlink(missing_ok=True)
                 if running is not None:
                     running.terminate()
                 else:

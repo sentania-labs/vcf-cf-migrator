@@ -4,8 +4,8 @@ two window modes from drifting apart.
 The window itself cannot be opened here, so nothing below tries. What is
 tested is everything on either side of it: that the page handed to the window
 carries the script that makes its buttons work, that the script hands actions
-back through the same dispatch the server uses, that nothing binds a port, and
-that a machine with no webview is told why it got a browser instead.
+back through one dispatch, that nothing binds a port, and that a machine with
+no webview is told why.
 
 Fixture only. Nothing here reads the corpus.
 """
@@ -16,7 +16,8 @@ import re
 
 import pytest
 
-from vcfcf_migrator import desktop, ui
+from pages import visible
+from vcfcf_migrator import desktop, ui, uipage
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.ui import ACTIONS, PageState
 
@@ -28,76 +29,108 @@ def state(config_dir, export_zip):
 
 # --- the page the window receives -----------------------------------------
 
-def test_page_html_injects_the_bridge_once_before_body_ends(state):
+def test_the_page_carries_its_script_once_before_body_ends(state):
     html = desktop.page_html(state)
-    assert html.count(desktop._BRIDGE_JS) == 1
-    assert html.index("window.pywebview.api.act") < html.index("</body>")
+    assert html.count(uipage.CLIENT_JS) == 1
+    assert html.index("api().act(path") < html.index("</body>")
 
 
-def test_page_html_is_the_same_page_the_server_renders(state):
-    """The window must not get a different page, only an extra script."""
-    plain = PageState(state.zip_path).render()
-    windowed = desktop.page_html(PageState(state.zip_path))
-    assert desktop._BRIDGE_JS in windowed
-    assert windowed.replace(desktop._BRIDGE_JS, "") == plain
+def test_the_window_gets_the_page_the_state_renders(state):
+    """The window must not get a different page."""
+    assert desktop.page_html(PageState(state.zip_path)) == PageState(state.zip_path).render()
 
 
-def test_bridge_script_carries_the_submitting_button():
-    """FormData leaves the submit button out; a real POST carries it.
-
-    At least one form on the page has a named submit button, so dropping these
-    lines would break it in a way that looks like a backend fault. This test is
-    the thing that notices.
-    """
-    assert "ev.submitter" in desktop._BRIDGE_JS
-    assert "data[by.name] = by.value" in desktop._BRIDGE_JS
-
-
-def test_bridge_listens_on_document_not_body():
+def test_the_script_listens_on_document_not_body():
     """Every action replaces the body, so a body listener works exactly once."""
-    assert "document.addEventListener('submit'" in desktop._BRIDGE_JS
+    script = uipage.CLIENT_JS
+    for event in ('click', 'change', 'input', 'keydown'):
+        assert f"document.addEventListener('{event}'" in script
+    assert 'document.body.addEventListener' not in script
+
+
+def test_the_script_sends_what_a_button_names_and_the_form_around_it():
+    script = uipage.CLIENT_JS
+    assert "el.dataset.act" in script and "closest('[data-form]')" in script
+    # A footer button sits outside the form it sends.
+    assert "el.dataset.uses" in script
+    # A tick box answers on change, with its new state.
+    assert "send(el, {on: el.checked ? '1' : '0'})" in script
+
+
+def test_every_control_on_every_screen_names_an_action_that_exists(state):
+    """A button whose action is not registered is a dead button."""
+    bridge = desktop.Bridge(state)
+    key = next(n.key for n in state.graph.ordered() if n.kind == 'supermetric' and n.name == '[Fixture] SM Empty')
+    seen = set()
+
+    def look():
+        page = state.render()
+        seen.update(re.findall(r'data-act="([^"]+)"', page))
+
+    look()
+    bridge.act('/select', {'key': key, 'on': '1'})
+    bridge.act('/focus', {'key': key})
+    look()
+    for screen in ('owner', 'review', 'save', 'target', 'help', 'open', 'connect'):
+        state.screen = screen
+        look()
+    state.screen = 'save'
+    state.save_state = 'exists'
+    look()
+    assert seen and seen <= set(ACTIONS) | {'/conn-test'}, sorted(seen - set(ACTIONS))
 
 
 # --- the bridge ------------------------------------------------------------
 
-def test_bridge_reaches_every_action_the_server_exposes(state):
-    """No action is reachable in the browser but not in the window."""
+def test_bridge_reaches_every_action_and_always_answers_with_a_page(state):
     bridge = desktop.Bridge(state)
     for path in ACTIONS:
         res = bridge.act(path, {})
-        assert set(res) == {"html", "anchor"}, path
+        assert set(res) == {"html", "focus"}, path
         assert "<html" in res["html"].lower(), path
-        assert desktop._BRIDGE_JS in res["html"], path
 
 
 def test_bridge_refuses_an_action_that_does_not_exist(state):
     bridge = desktop.Bridge(state)
     res = bridge.act("/there-is-no-such-thing", {})
-    assert "no page action" in state.error
+    assert state.note.kind == 'bad' and "no action called" in state.note.text
     assert "<html" in res["html"].lower()
 
 
 def test_bridge_coerces_form_values_to_strings(state):
-    """The webview hands over JSON, so a checkbox can arrive as a boolean."""
+    """The webview hands over JSON, so a value can arrive as null or a boolean."""
     bridge = desktop.Bridge(state)
-    bridge.act("/filter", {"filter": None})
+    bridge.act("/filter", {"f": "all", "q": None})
     assert state.filter_text == ""
 
 
-# --- the seams that stop the two modes drifting ----------------------------
+def test_typing_in_the_search_box_draws_only_the_list(state):
+    bridge = desktop.Bridge(state)
+    parts = bridge.find('cluster')
+    assert set(parts) == {'list', 'cnt', 'addall'}
+    assert state.filter_text == 'cluster'
+    assert '<html' not in parts['list'] and 'Cluster' in parts['list']
+    assert parts['cnt'] == f'{len(state.visible_nodes())} of {len(state.graph.nodes)}'
+    assert 'No names contain' in bridge.find('zzz-nothing')['list']
+    # The program and the page agree on what is shown: the bulk button acts on it.
+    bridge.find('SM Empty')
+    assert [n.name for n in state.visible_nodes()] == ['[Fixture] SM Empty']
+
+
+# --- the seams -------------------------------------------------------------
 
 def test_one_dispatch_writes_the_page_action_log_line():
-    """Both modes log identically because only one place logs at all."""
+    """Every way in logs identically because only one place logs at all."""
     src = inspect.getsource(ui)
     assert src.count('_runlog.info("page.action"') == 1
     assert src.count('state.log.phase("page"') + src.count('.log.phase("page"') >= 1
     assert 'page.action' not in inspect.getsource(desktop)
 
 
-
-
 def test_the_bridge_goes_through_dispatch():
     assert "ui.dispatch(" in inspect.getsource(desktop.Bridge.act)
+    assert "ui.dispatch(" in inspect.getsource(desktop.Bridge.find)
+    assert "ui.dispatch(" in inspect.getsource(desktop.Bridge.dropped)
 
 
 # --- nothing is listening --------------------------------------------------
@@ -107,17 +140,18 @@ def test_desktop_mode_binds_nothing(monkeypatch, config_dir, export_zip):
 
     def fake_run(state, **kwargs):
         opened["state"] = state
+        opened["kwargs"] = kwargs
 
     monkeypatch.setattr(desktop, "run", fake_run)
     assert ui.run_desktop(zip_path=str(export_zip)) == 0
-    # origins is the server's same-origin allow list. Empty means there is no
-    # socket for anything to reach.
-    assert opened["state"].graph is None
+    # The export is opened by the window once its bridge is ready, not before.
+    assert opened["state"].graph is None and opened["kwargs"] == {'initial_zip': str(export_zip)}
 
 
 def test_desktop_path_never_constructs_a_server():
     assert "ThreadingHTTPServer" not in inspect.getsource(ui.run_desktop)
     assert "ThreadingHTTPServer" not in inspect.getsource(desktop)
+    assert "http_server=False" in inspect.getsource(desktop.run)
 
 
 # --- the fallback ----------------------------------------------------------
@@ -129,89 +163,16 @@ def test_availability_reports_a_reason(monkeypatch):
         assert why, "a machine that cannot open a window must say why"
 
 
+# --- what earlier reviews caught, still guarded ----------------------------
 
-
-
-
-# --- what the review caught, now guarded -----------------------------------
-
-def test_no_inline_handler_submits_a_form_without_requestsubmit(state):
-    """`form.submit()` fires no submit event, so the window never sees it.
-
-    That is how the tree checkboxes came to be dead in the window while the
-    buttons beside them worked. Any new inline handler that reaches for
-    `submit()` without trying `requestSubmit()` first brings the bug back, so
-    this looks at the rendered page rather than at one known string.
-    """
-    state.toggle(next(iter(state.selection_keys()), "") or "", on=False)
-    page = state.render()
-    for match in re.finditer(r"\.submit\(\)", page):
-        window = page[max(0, match.start() - 120):match.start()]
-        assert "requestSubmit" in window, (
-            "a form is submitted without requestSubmit; the desktop window "
-            "cannot see that and the control will be dead in it"
-        )
-
-
-
-
-def test_clear_filter_works_and_does_not_collide_with_the_field(state):
-    """It used to be a second control named `filter`, so the server's
-    first-wins parse threw it away and Clear did nothing at all."""
-    state.set_filter("dash")
-    assert state.filter_text == "dash"
-    # Exactly what a real POST of that form sends.
-    ui.dispatch(state, "/filter", {"filter": "dash", "clear-filter": "1"})
-    assert state.filter_text == ""
-
-
-def test_the_page_has_no_two_controls_sharing_a_name_in_one_form(state):
-    """The bug class behind Clear: duplicate names are collapsed from opposite
-    ends by the browser and by the bridge, so they cannot be allowed.
-
-    The filter must be set and something selected first. Several controls,
-    Clear among them, only render once there is something to act on, and a
-    version of this test that rendered an empty page passed while the very
-    collision it was written for was still in the markup.
-    """
-    state.set_filter("dash")
-    state.select_all()
-    state.set_preview(_some_key(state))
-    # Every optional control has to be on the page, or this guard inspects
-    # markup that is not the markup a user sees.
-    state.file_picker = lambda: None
-    state.source_mode = "zip"
-    seen = []
-    # Every panel. Two of the three are behind tabs, and a collision on either
-    # of them would be invisible to a guard that renders only the default one.
-    for tab in ui.TABS:
-        state.tab = tab
-        page = state.render()
-        seen.append(page)
-        for form in re.findall(r"<form\b.*?</form>", page, re.S):
-            names = re.findall(r"""\bname=['"]([^'"]+)['"]""", form)
-            # A checkbox group would legitimately repeat a name; none here.
-            assert len(names) == len(set(names)), f"duplicate field name in {names} ({tab})"
-    joined = "".join(seen)
-    assert "Clear search</button>" in joined, "the control this guards is not on the page"
-    assert "Browse" in joined, "the control this guards is not on the page"
-
-
-def test_bridge_returns_an_anchor_that_names_a_real_row(state):
-    """Non-empty is not enough, and asserting only that was how a broken
-    anchor passed review: the value has to be an id that is actually on the
-    page, or the window scrolls to the top exactly as if there were none."""
+def test_bridge_returns_a_focus_target_that_is_on_the_page(state):
+    """The value has to be an id that is actually on the page, or the window
+    loses the keyboard's place exactly as if there were none."""
     bridge = desktop.Bridge(state)
-    key = _some_key(state)
+    key = next(iter(state.graph.ordered())).key
     res = bridge.act("/select", {"key": key, "on": "1"})
-    assert res["anchor"], "selecting an object must come back with somewhere to scroll to"
-    assert f"id='{res['anchor']}'" in res["html"], (
-        f"anchor {res['anchor']!r} names no element on the page"
-    )
-
-
-def _some_key(state):
-    return next(iter(state.graph.ordered())).key
+    assert res["focus"], "ticking something must say where the keyboard goes back to"
+    assert f'id="{res["focus"]}"' in res["html"]
 
 
 def test_an_action_that_raises_lands_on_the_page_not_in_the_void(state, monkeypatch):
@@ -219,25 +180,46 @@ def test_an_action_that_raises_lands_on_the_page_not_in_the_void(state, monkeypa
     def boom(*_args, **_kwargs):
         raise OSError("disk went away")
 
-    monkeypatch.setitem(ui.ACTIONS, "/build", boom)
+    monkeypatch.setitem(ui.ACTIONS, "/save", boom)
     bridge = desktop.Bridge(state)
-    res = bridge.act("/build", {"out": "/nowhere/x.zip"})
-    assert "disk went away" in state.error
-    assert "<html" in res["html"].lower()
+    res = bridge.act("/save", {})
+    assert state.note.kind == 'bad' and "disk went away" in state.note.text
+    assert "That did not work." in visible(res["html"])
 
 
-def test_the_bridge_script_handles_a_rejected_call():
-    assert ".catch(" in desktop._BRIDGE_JS
+def test_a_sign_in_action_that_raises_never_shows_what_was_typed(state, monkeypatch):
+    def boom(_state, form):
+        raise ValueError("could not use " + form['password'])
+
+    monkeypatch.setitem(ui.ACTIONS, "/connect", boom)
+    res = desktop.Bridge(state).act("/connect", {'password': 'hunter2-invented'})
+    assert 'hunter2-invented' not in res['html'] and 'ValueError' in state.note.text
+
+
+def test_the_script_says_so_when_a_call_is_rejected():
+    assert ".catch(" in uipage.CLIENT_JS and "banner(" in uipage.CLIENT_JS
 
 
 def test_a_keyerror_inside_an_action_is_not_reported_as_a_missing_action(state, monkeypatch):
     def boom(*_args, **_kwargs):
         raise KeyError("some-inner-lookup")
 
-    monkeypatch.setitem(ui.ACTIONS, "/tree", boom)
-    desktop.Bridge(state).act("/tree", {})
-    assert "no page action" not in state.error
-    assert "KeyError" in state.error
+    monkeypatch.setitem(ui.ACTIONS, "/again", boom)
+    desktop.Bridge(state).act("/again", {})
+    assert "no action called" not in state.note.text
+    assert "KeyError" in state.note.text
+
+
+def test_nothing_but_cancel_gets_through_while_a_job_is_on_screen(state):
+    state.job = ui.Job('read', 'big.zip')
+    before = list(state.picked)
+    key = next(iter(state.graph.ordered())).key
+    desktop.Bridge(state).act('/select', {'key': key, 'on': '1'})
+    assert state.picked == before
+    page = visible(state.render())
+    assert 'Reading big.zip' in page and 'Cancelling changes nothing.' in page
+    desktop.Bridge(state).act('/cancel-job', {})
+    assert state.job is None and 'Cancelled.' in state.note.text
 
 
 # --- availability ----------------------------------------------------------
@@ -270,52 +252,54 @@ def test_short_reason_drops_the_host_path():
     assert "/Users/someone" not in desktop.short_reason(long)
 
 
-# --- browsing for an export (#10) ------------------------------------------
+# --- choosing an export file ------------------------------------------------
 
-def test_browse_button_appears_only_when_something_can_open_a_dialog(state):
-    """Browser mode cannot read a path off the machine, so offering the button
-    there would be a control that does nothing."""
-    assert state.file_picker is None
-    assert "Browse" not in state.render()
-    state.file_picker = lambda: None
-    state.source_mode = "zip"
-    state.tab = "source"
-    assert "Browse" in state.render()
+def test_the_file_window_is_the_way_in_and_a_path_box_only_the_fallback(state):
+    state.screen = 'open'
+    page = state.render()
+    assert 'Choose the export file…' in visible(page) and 'id="zip"' not in page
+    # No file window to open: the same button offers a place to type instead.
+    state.file_picker = None
+    ui.dispatch(state, "/pick-export", {})
+    page = state.render()
+    assert state.typed_path and 'id="zip"' in page
+    assert 'The file window could not be opened.' in visible(page)
 
 
-def test_browsing_opens_whatever_the_dialog_returns(state, export_zip):
-    state.zip_path = ""
+def test_choosing_opens_whatever_the_file_window_returns(config_dir, export_zip):
+    state = PageState()
     state.file_picker = lambda: str(export_zip)
     ui.dispatch(state, "/pick-export", {})
     assert state.zip_path == str(export_zip)
-    assert state.graph is not None
+    assert state.graph is not None and state.screen == 'choose'
 
 
-def test_cancelling_the_dialog_is_not_an_error(state):
-    """A cancelled dialog returns nothing, and a red error bar for "I changed
-    my mind" is the kind of thing that makes a tool feel broken."""
+def test_cancelling_the_file_window_is_not_an_error(state):
+    """A cancelled dialog returns nothing, and a red bar for "I changed my
+    mind" is the kind of thing that makes a tool feel broken."""
     before = state.zip_path
     state.file_picker = lambda: None
-    state.source_mode = "zip"
     ui.dispatch(state, "/pick-export", {})
-    assert state.error == ""
+    assert state.note is None and state.open_error is None and not state.typed_path
     assert state.zip_path == before
 
 
-def test_browsing_without_a_dialog_says_what_to_do_instead(state):
-    state.file_picker = None
-    ui.dispatch(state, "/pick-export", {})
-    assert "type the path" in state.error
-
-
-def test_a_dialog_that_blows_up_does_not_take_the_window_with_it(state):
+def test_a_file_window_that_blows_up_offers_the_path_box(state):
     def broken():
         raise RuntimeError("no portal service")
 
     state.file_picker = broken
+    state.screen = 'open'
     res = desktop.Bridge(state).act("/pick-export", {})
-    assert "no portal service" in state.error
-    assert "<html" in res["html"].lower()
+    assert state.typed_path and 'id="zip"' in res["html"]
+    assert "no portal service" not in res["html"]
+
+
+def test_a_typed_path_opens_like_a_chosen_file(config_dir, export_zip):
+    state = PageState()
+    state.typed_path = True
+    desktop.Bridge(state).act("/open", {'zip': f'  {export_zip}  '})
+    assert state.graph is not None and state.zip_path == str(export_zip)
 
 
 class _FakeWindow:
@@ -347,9 +331,7 @@ def fake_webview(monkeypatch):
 
 
 def test_the_picker_resolves_its_window_when_pressed_not_when_built(fake_webview):
-    """The page has to render before there is a window, and the render decides
-    whether the button is there at all, so an eagerly bound window would hide
-    the button on the first page shown.
+    """The page has to render before there is a window.
 
     This drives the function rather than reading it. The version of this test
     that grepped the source passed while the binding was broken.
@@ -361,15 +343,14 @@ def test_the_picker_resolves_its_window_when_pressed_not_when_built(fake_webview
     assert pick() == ("/tmp/x.zip",)             # pressed later: finds it
 
 
-def test_the_picker_asks_for_one_file(fake_webview):
+def test_the_picker_asks_for_one_file_and_starts_in_downloads(fake_webview, tmp_path, monkeypatch):
+    home = tmp_path / 'home'
+    (home / 'Downloads').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
     holder = {"window": _FakeWindow(result=None)}
     desktop._picker_for(holder)()
     assert holder["window"].kwargs["allow_multiple"] is False
-
-
-def test_a_dialog_that_raises_returns_nothing_rather_than_propagating(fake_webview):
-    holder = {"window": _FakeWindow(raises=RuntimeError("no portal"))}
-    assert desktop._picker_for(holder)() is None
+    assert holder["window"].kwargs["directory"] == str(home / 'Downloads')
 
 
 @pytest.mark.parametrize("returned,expect_open", [
@@ -380,27 +361,53 @@ def test_a_dialog_that_raises_returns_nothing_rather_than_propagating(fake_webvi
     ((), False),
     ("", False),
 ])
-def test_every_shape_a_file_dialog_can_return(state, export_zip, returned, expect_open):
-    """Unwrapped, a one-item tuple reaches open_export and raises a TypeError
-    that lands in front of the user as "argument should be a str or an
-    os.PathLike". Normalising is done in this layer because this is the layer
-    a test can reach without a display."""
-    state.zip_path = ""
+def test_every_shape_a_file_dialog_can_return(config_dir, export_zip, returned, expect_open):
+    """Unwrapped, a one-item tuple reaches open_export and raises a TypeError.
+    Normalising is done in this layer because this is the layer a test can
+    reach without a display."""
+    state = PageState()
     value = returned
     if returned is not None:
         value = type(returned)(str(export_zip) for _ in returned) if isinstance(
             returned, (list, tuple)) else (str(export_zip) if returned else "")
     state.file_picker = lambda: value
     ui.dispatch(state, "/pick-export", {})
-    assert state.error == "", state.error
+    assert state.note is None or state.note.kind == 'ok'
     assert (state.zip_path == str(export_zip)) is expect_open
 
 
-def test_a_dialog_returning_something_unusable_says_so_instead_of_crashing(state):
+def test_a_dialog_returning_something_unusable_offers_the_path_box(state):
     state.file_picker = lambda: b"/tmp/bytes.zip"
     ui.dispatch(state, "/pick-export", {})
-    assert "unusable" in state.error
-    assert "bytes" in state.error
+    assert state.typed_path
+
+
+# --- dropping a file on the window -------------------------------------------
+
+def test_a_dropped_file_is_opened_like_a_chosen_one(config_dir, export_zip):
+    state = PageState()
+    bridge = desktop.Bridge(state)
+    refreshed = []
+    bridge._window = type('W', (), {'evaluate_js': lambda self, code: refreshed.append(code)})()
+    bridge.dropped({'dataTransfer': {'files': [{'name': 'x.zip', 'pywebviewFullPath': str(export_zip)}]}})
+    assert state.graph is not None and state.zip_path == str(export_zip)
+    assert refreshed == ['window.migrator && window.migrator.refresh()']
+
+
+@pytest.mark.parametrize('event', [None, {}, {'dataTransfer': {'files': []}},
+                                   {'dataTransfer': {'files': [{'name': 'no-path.zip'}]}}])
+def test_a_drop_with_no_usable_path_does_nothing(config_dir, event):
+    state = PageState()
+    desktop.Bridge(state).dropped(event)
+    assert state.graph is None and state.open_error is None
+
+
+def test_a_drop_is_ignored_away_from_the_open_step(state, tmp_path):
+    other = tmp_path / 'other.zip'
+    other.write_bytes(b'not a zip')
+    before = state.zip_path
+    desktop.Bridge(state).dropped({'dataTransfer': {'files': [{'pywebviewFullPath': str(other)}]}})
+    assert state.zip_path == before and state.open_error is None and state.screen == 'choose'
 
 
 def test_missing_window_fails_without_binding_a_socket(monkeypatch, capsys, export_zip):
@@ -423,6 +430,6 @@ def test_retired_server_options_are_rejected(flag):
 def test_initial_export_opens_after_the_window_bridge_is_ready(config_dir):
     page = desktop.page_html(ui.PageState(), initial_zip='/tmp/a</script>.zip')
     assert "window.addEventListener('pywebviewready'" in page
-    assert 'input.form.requestSubmit()' in page
+    assert "act('/open', {zip: window.migratorInitialZip})" in page
     assert '/tmp/a</script>.zip' not in page
     assert r'/tmp/a\u003c/script>.zip' in page

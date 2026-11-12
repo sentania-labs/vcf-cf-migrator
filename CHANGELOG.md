@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- The desktop window is redesigned as six steps with one question each: Open an
+  export, Choose content, Dashboard owner, Review, Save, Import on the target.
+  A step bar shows where you are, the next step is always the button at the
+  bottom right, and no screen scrolls as a page (only lists scroll, inside
+  their own panel) at 1280 x 860 or at 1024 x 700. Nothing is folded away.
+  Internal type names, ids and file formats are out of the flow.
+  - **Open.** The file window opens first and in Downloads, and a ZIP can be
+    dropped on the window. A damaged file, a ZIP that is not an export, an
+    export that lost its dashboards and an export with nothing in it each get
+    their own message with what to do. An empty export is now refused instead
+    of opened. Reading can be cancelled. Opening a different export asks in the
+    page and ticks your choices again in the new one, saying how many were
+    found.
+  - **Choose.** Search filters as you type, by name. One panel shows what an
+    item is, what it needs as a tree (with anything missing in red) and what
+    uses it. "Add all of these" replaces the three selection buttons, skips
+    anything that needs a decision and can be undone. Emptying the bundle asks
+    first.
+  - **Dashboard owner** is its own step with two choices that apply at once:
+    the built-in admin user (default) or the same user as on the source, which
+    carries its warning on the choice itself. A table shows the owner and the
+    sharing each dashboard ends up with. Two copies of one dashboard are asked
+    about first, side by side. Giving every dashboard to one named user is no
+    longer offered in the window; `--target-owner` on the command line is
+    unchanged.
+  - **Review** is a short list in two groups. "Decide before saving" must be
+    answered before Save comes on: a dashboard that never finished loading,
+    one that replaces a built-in dashboard, or a missing dependency. "Good to
+    know" needs no answer. Leaving something out can be undone.
+  - **Save** defaults to Downloads for every export, asks in the page before
+    replacing a file, and writes three files: the bundle, `<name>-report.txt`
+    (readable, with the technical detail at the end) and
+    `<name>-checklist.txt`. Both can be read in the app. They replace
+    `<name>-build-report.txt` and `<name>-post-import.txt`; the command line
+    writes the same checklist.
+  - **Import on the target** is the checklist as a screen: one ordered list of
+    tasks made for this bundle, each with why it matters and numbered steps,
+    ticked off as you go.
+  - **Sign in to the source** is one screen. The certificate options appear
+    only when the sign-in test reports a certificate problem. The export
+    password is typed twice, the download shows four stages and can be
+    cancelled, and a wrong password asks for the password again without
+    clearing the rest.
+  - **Help and settings** saves a support report in one click, straight to
+    Downloads under a dated name, and has the appearance (applies at once), a
+    log-file tick box, the version, and a glossary.
+- A missing dependency no longer makes a save impossible in the window. It is
+  still refused by default; at Review the person can leave the item out
+  (recommended), open a fuller export, or answer "I have checked this already
+  exists on the target. Keep it in anyway". Each such answer is written in the
+  report and adds a task to the checklist to confirm it on the target. The
+  command line still refuses, with no override. This is how issue #64 is
+  settled: an export never carries some definitions that ship with the product,
+  and nothing in an export says which. (#64)
 - Dashboards the source never finished loading are detected instead of read as
   clean. They are marked "not finished loading on the source" in the picker,
   the dependency tree and `inspect`, with what they were waiting on and how

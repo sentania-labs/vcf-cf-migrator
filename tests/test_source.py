@@ -158,7 +158,8 @@ def test_native_action_keeps_secrets_out_of_logs_and_preserves_inventory(monkeyp
     monkeypatch.setattr(source, 'Client', Broken)
     result = Bridge(state).act('/connect', values)
     assert state.graph is old
-    state.save_diagnostics(str(tmp_path / 'shared.jsonl'))
+    assert state.conn['error'] and 'private' not in state.conn['error'][1]
+    state.save_support_report(str(tmp_path / 'shared.jsonl'))
     state.log.close()
     combined = result['html'] + log.read_text() + (tmp_path / 'shared.jsonl').read_text()
     assert all(value not in combined for value in values.values())
@@ -172,17 +173,16 @@ def test_snapshot_lifetime_and_output_location(monkeypatch, tmp_path):
     form = dict(address='https://operations.example', username='user', password='pass', export_password='pass')
     state.connect_source(form)
     assert not form
-    assert not state.error
+    assert not state.conn['error'] and state.screen == 'choose'
     downloaded = Path(state.zip_path)
     assert downloaded.exists()
-    assert state.default_out() == str(state.download_directory() / 'bundle.zip')
-    assert state.default_diagnostics_out() == str(state.download_directory() / 'vcfcf-migrator-diagnostics.jsonl')
-    state.open_export(str(downloaded.parent / '.' / downloaded.name))
-    assert downloaded.exists()
-    assert state.source_snapshot is not None
-    assert state.default_out() == str(state.download_directory() / 'bundle.zip')
+    # A downloaded export has no file name of its own: the bundle is named
+    # after the server, and goes to Downloads like every other bundle.
+    assert state.default_out() == str(state.download_directory() / 'operations.example-bundle.zip')
+    assert 'kept only while the app is open' in state.note.text
     state.open_export('missing.zip')
-    assert downloaded.exists()
+    assert downloaded.exists() and state.source_snapshot is not None
+    assert state.open_error['kind'] == 'unreadable'
     export = tmp_path / 'fixture.zip'
     export.write_bytes(build_export_zip())
     state.open_export(str(export))

@@ -12,8 +12,8 @@ import pytest
 from vcfcf_migrator import bundle, graph as graph_mod, selection
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.export_reader import IncompleteExport, NotAnExport, read_export, read_members, render_text
+from pages import save_to, visible
 from vcfcf_migrator.ui import PageState, dispatch
-from vcfcf_migrator.workspace import inspector, inventory, review
 
 OWNER = 'aaaa1111-0000-4000-8000-00000000000a'
 FINISHED = 'f1111111-0000-4000-8000-000000000001'
@@ -180,11 +180,16 @@ def test_a_finished_dashboard_linking_to_one_carries_it_and_says_so(tmp_path):
 
 def test_the_page_does_not_call_a_pulled_in_dashboard_left_out(tmp_path):
     state = PageState(str(_linking_export(tmp_path)))
-    state.select_all()
-    assert 'left out 1 dashboard not finished loading on the source' in state.message
-    state.clear()
-    state.select_shown()
-    assert 'Left out 1 dashboard not finished loading on the source' in state.message
+    state.add_shown()
+    # The finished dashboard that links to an unfinished one brings it along,
+    # so it needs a decision too and is not added in bulk. One other
+    # unfinished dashboard is left out as well.
+    assert len(state.picked) == 1
+    assert 'Not added, because each needs a decision from you: 3 things that carry a warning' in state.note.text
+    state.toggle(f'dashboard:{FINISHED}@{OWNER}', True)
+    assert f'dashboard:{HOLLOW}@{OWNER}' in state.selection_keys()
+    assert 'Loading dashboard, which it uses, never finished loading on the source' in state.note.text
+    state.log.close()
 
 
 def test_build_select_all_report_names_what_was_left_out(export, tmp_path, capsys):
@@ -222,65 +227,78 @@ def state(export):
     return PageState(str(export))
 
 
-def test_picker_marks_and_explains(state):
-    page = inventory(state)
-    assert 'Not finished loading on the source' in page
-    assert 'Waiting on the ExampleSqlAdapter adapter, the resource kind ExampleSqlAdapter / Database '\
-           'and the object Example World (Example / world).' in page
-    assert 'The export does not say what it was waiting on.' in page
-    assert '2 dashboards not finished loading on the source' in page
-    assert 'Select all 2 objects' in page
+def test_the_list_marks_them_and_the_panel_explains(state):
+    page = visible(state.render())
+    assert page.count('Never finished loading') >= 3   # the filter and two rows
+    assert page.count('left out unless ticked') == 2
+    assert ('Opened synthetic.zip. It holds 4 things you can move. 2 dashboards never finished loading '
+            'on the source; they are marked and left out unless you tick them.') in state.note.text
+    dispatch(state, '/focus', {'key': f'dashboard:{HOLLOW}@{OWNER}'})
+    page = visible(state.render())
+    assert ('Never finished loading on the source. VCF Operations could not finish setting this dashboard '
+            'up there: it was waiting for the ExampleSqlAdapter adapter, the resource kind '
+            'ExampleSqlAdapter / Database and the object Example World (Example / world).') in page
+    # What it needs is unknown, which is not the same as needing nothing.
+    assert 'What it needs is unknown' in page and 'Needs nothing else' not in page
+    dispatch(state, '/focus', {'key': f'dashboard:{HOLLOW_BARE}@{OWNER}'})
+    page = visible(state.render())
+    assert 'and the export does not say why' in page
     for word in INTERNAL_WORDS:
         assert word not in page
-    assert 'Opened synthetic.zip' in state.message and '2 dashboards not finished loading' in state.message
 
 
-def test_select_all_and_select_shown_skip_them(state):
-    state.select_all()
+def test_the_filter_shows_only_them(state):
+    dispatch(state, '/filter', {'f': 'unf'})
+    assert sorted(n.name for n in state.visible_nodes()) == ['Loading dashboard', 'Loading with no detail']
+
+
+def test_adding_everything_shown_skips_them(state):
+    state.add_shown()
     assert len(state.picked) == 2
     assert not [k for k in state.picked if state.graph.nodes[k].hollow]
-    assert 'left out 2 dashboards not finished loading on the source' in state.message
-    state.clear()
-    state.select_shown()
-    assert len(state.picked) == 2
-    assert 'Left out 2 dashboards' in state.message
+    assert ('Added 2 things. Not added, because each needs a decision from you: '
+            '2 things that carry a warning.') in state.note.text
 
 
-def test_picking_one_by_name_works_and_review_warns(state):
+def test_ticking_one_works_and_review_waits_for_an_answer(state, tmp_path):
     key = f'dashboard:{HOLLOW}@{OWNER}'
     state.toggle(key, True)
     assert key in state.picked
-    assert 'not finished loading on the source' in state.message
-    page = review(state)
-    assert 'unfinished-review' in page
-    assert '1 dashboard not finished loading on the source in this bundle' in page
-    assert 'Waiting on the ExampleSqlAdapter adapter' in page
-    assert 'Ready to build with warnings' in page
+    assert 'It never finished loading on the source' in state.note.text
+    assert 'You will be asked at the Review step whether to keep it.' in state.note.text
+    issue, = state.open_issues()
+    assert issue.title == 'Loading dashboard: never finished loading on the source'
+    dispatch(state, '/go', {'to': 'review'})
+    page = visible(state.render())
+    assert '1 thing to decide before you can save' in page
+    assert 'It was waiting for the ExampleSqlAdapter adapter' in page and 'The source tried 3 times.' in page
+    assert 'Leave out Loading dashboard (recommended)' in page and 'Keep it in anyway' in page
     for word in INTERNAL_WORDS:
         assert word not in page
-    state.build(str(state.default_out()))
-    assert 'Warning: 1 dashboard not finished loading on the source' in state.build_report
+    # Until it is answered there is nothing to save.
+    out = tmp_path / 'kept.zip'
+    save_to(state, out)
+    assert not out.exists() and state.screen == 'review'
+    state.keep_in(issue.id)
+    assert not state.open_issues()
+    page = visible(state.render())
+    assert ('The exception is Loading dashboard: it never finished loading, so the export does not record '
+            'what it needs.') in page
+    assert any(task.title == 'Repair Loading dashboard' for task in state.tasks())
+    save_to(state, out)
+    assert out.exists() and state.save_state == 'saved'
+    report = out.with_name('kept-report.txt').read_text()
+    assert 'Kept in against the usual advice' in report
+    assert 'Loading dashboard: Loading dashboard never finished loading on the source and arrives empty.' in report
+    assert 'Warning: 1 dashboard not finished loading on the source' in report
+    assert 'Repair Loading dashboard' in out.with_name('kept-checklist.txt').read_text()
 
 
 def test_review_is_quiet_without_them(state):
     state.toggle(f'dashboard:{FINISHED}@{OWNER}', True)
-    page = review(state)
-    assert 'unfinished-review' not in page and 'not finished loading' not in page
-
-
-def test_inspector_never_shows_no_dependencies_for_one(state):
-    state.set_preview(f'dashboard:{HOLLOW}@{OWNER}')
-    for tab in ('preview', 'dependencies', 'details'):
-        state.inspector_tab = tab
-        page = inspector(state)
-        assert 'unfinished-notice' in page
-        assert 'Waiting on the ExampleSqlAdapter adapter' in page
-        for word in INTERNAL_WORDS:
-            assert word not in page
-    state.inspector_tab = 'dependencies'
-    page = inspector(state)
-    assert 'References unknown' in page
-    assert 'No dependencies recorded' not in page
+    dispatch(state, '/go', {'to': 'review'})
+    page = visible(state.render())
+    assert 'Ready to save' in page and 'never finished loading' not in page
 
 
 # -- the export as a whole ---------------------------------------------------------
@@ -341,12 +359,19 @@ def test_per_owner_counts_alone_are_enough_to_know(tmp_path):
 def test_the_page_refuses_it_and_keeps_the_open_export(export, tmp_path):
     state = PageState(str(export))
     broken = _write(tmp_path, dashboards=[], manifest={'type': 'ALL', 'dashboards': 7}, owner_member=False)
+    state.toggle(f'dashboard:{FINISHED}@{OWNER}', True)
     state.open_export(str(broken))
-    assert 'looks incomplete' in state.error and 'Take the export again' in state.error
-    assert state.zip_path == str(export) and state.graph is not None
+    assert state.open_error == {'kind': 'incomplete', 'name': 'e.zip', 'declared': 7, 'found': 0}
+    assert state.zip_path == str(export) and state.graph is not None and len(state.picked) == 1
+    page = visible(state.render())
+    assert 'This export is missing its dashboards' in page
+    assert 'It says it holds 7 dashboards, but none of them are inside.' in page
+    assert 'synthetic.zip is still open and your 1 choice is untouched.' in page
+    assert 'What to do:' in page
     first = PageState()
     first.open_export(str(broken))
-    assert first.graph is None and 'looks incomplete' in first.error
+    assert first.graph is None and first.open_error['kind'] == 'incomplete'
+    assert 'still open' not in visible(first.render())
 
 
 def test_a_failed_export_is_logged(tmp_path, capsys):

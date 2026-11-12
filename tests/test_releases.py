@@ -76,10 +76,11 @@ def test_slow_check_does_not_take_the_content_lock_and_runs_once(monkeypatch):
         calls.append(version)
         entered.set()
         assert finish.wait(5)
-        return 'v0.5.2'
+        return 'v0.5.2', True
 
-    monkeypatch.setattr(releases, 'newer_release', check)
-    state = type('State', (), {'action_lock': threading.RLock()})()
+    monkeypatch.setattr(releases, 'release_status', check)
+    state = type('State', (), {'action_lock': threading.RLock(), 'update_checked': False,
+                               'update_tag': None, 'update_known': False})()
     bridge = desktop.Bridge(state)
     worker = threading.Thread(target=bridge.check_release)
     worker.start()
@@ -90,12 +91,36 @@ def test_slow_check_does_not_take_the_content_lock_and_runs_once(monkeypatch):
     finally:
         finish.set()
         worker.join(2)
-    assert bridge.check_release() == 'v0.5.2'
+    answer = bridge.check_release()
+    assert answer['tag'] == 'v0.5.2'
+    assert 'Update available: version 0.5.2' in answer['html']
     assert len(calls) == 1
 
 
-def test_release_click_only_opens_the_project_page(monkeypatch):
+def test_the_page_says_latest_only_when_the_release_page_answered(monkeypatch):
+    def answer(payload):
+        monkeypatch.setattr(releases.urllib.request, 'urlopen',
+                            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()))
+    answer({'tag_name': 'v0.5.1', 'draft': False, 'prerelease': False})
+    assert releases.release_status('0.5.1') == (None, True)
+    answer({'tag_name': 'v0.6.0', 'draft': False, 'prerelease': False})
+    assert releases.release_status('0.5.1') == ('v0.6.0', True)
+
+    def offline(*args, **kwargs):
+        raise TimeoutError('private proxy detail')
+    monkeypatch.setattr(releases.urllib.request, 'urlopen', offline)
+    assert releases.release_status('0.5.1') == (None, False)
+    assert releases.release_status('0.5.1.dev3') == (None, False)
+
+
+def test_the_update_and_problem_buttons_open_only_fixed_project_pages(config_dir):
+    from vcfcf_migrator import ui
     opened = []
-    monkeypatch.setattr(desktop.webbrowser, 'open', lambda url, new: opened.append((url, new)) or True)
-    assert desktop.Bridge(None).open_release()
-    assert opened == [(releases.RELEASE_PAGE, 2)]
+    state = ui.PageState()
+    state.open_url = lambda url: opened.append(url) or True
+    # Whatever the page sends along, the address comes from the program.
+    ui.dispatch(state, '/get-update', {'url': 'https://example.invalid/elsewhere'})
+    ui.dispatch(state, '/report-problem', {'url': 'https://example.invalid/elsewhere'})
+    assert opened == [releases.RELEASE_PAGE, ui.ISSUES_PAGE]
+    assert ui.ISSUES_PAGE.startswith('https://github.com/sentania-labs/vcf-cf-migrator/')
+    state.log.close()
