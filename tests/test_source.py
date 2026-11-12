@@ -1,4 +1,5 @@
 """Live source acquisition, operation identity, cleanup, and privacy."""
+from datetime import datetime
 import io
 import json
 import ssl
@@ -171,14 +172,17 @@ def test_snapshot_lifetime_and_output_location(monkeypatch, tmp_path):
     c, _ = client(replies())
     monkeypatch.setattr(source, 'Client', lambda *a, **k: c)
     form = dict(address='https://operations.example', username='user', password='pass', export_password='pass')
+    state.clock = lambda: datetime(2026, 11, 12, 13, 5, 42)
     state.connect_source(form)
     assert not form
     assert not state.conn['error'] and state.screen == 'choose'
     downloaded = Path(state.zip_path)
     assert downloaded.exists()
     # A downloaded export has no file name of its own: the bundle is named
-    # after the server, and goes to Downloads like every other bundle.
-    assert state.default_out() == str(state.download_directory() / 'operations.example-bundle.zip')
+    # after the server and when it was fetched, and goes to Downloads like
+    # every other bundle.
+    assert state.default_out() == str(state.download_directory()
+                                      / 'operations.example-2026-11-12-1305-bundle.zip')
     assert 'kept only while the app is open' in state.note.text
     state.open_export('missing.zip')
     assert downloaded.exists() and state.source_snapshot is not None

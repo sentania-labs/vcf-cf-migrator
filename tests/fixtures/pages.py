@@ -47,6 +47,38 @@ def visible(html: str) -> str:
     return ' '.join(' '.join(parser.out).split())
 
 
+def enclosing(html: str, ident: str):
+    """What the element with this id sits inside, outermost first: for each
+    enclosing element, its classes and whether it is a scrolling part of a
+    panel. Raises if the page has no such element."""
+    from html.parser import HTMLParser
+    void = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'wbr'}
+
+    class Finder(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack, self.found = [], None
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if attrs.get('id') == ident and self.found is None:
+                self.found = [(classes, scrolls) for _tag, classes, scrolls in self.stack]
+            if tag not in void:
+                self.stack.append((tag, (attrs.get('class') or '').split(), 'data-scroll' in attrs))
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    del self.stack[index:]
+                    break
+
+    finder = Finder()
+    finder.feed(html)
+    if finder.found is None:
+        raise AssertionError(f'no element with id {ident!r} on the page')
+    return finder.found
+
+
 def configure_log(state, **values):
     """Set the log's file or level the way the command line and environment
     do, in the settings file, and have the page open its log again."""

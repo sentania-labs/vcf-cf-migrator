@@ -86,6 +86,9 @@ p { margin:0 0 8px; }
 .grow { flex:1 1 auto; min-width:0; }
 .src { color:var(--ink-muted); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .src b { color:var(--ink); font-weight:600; }
+.src.parts { display:flex; min-width:0; }
+.src.parts > * { flex:0 0 auto; }
+.src.parts .host { flex:0 1 auto; min-width:2ch; overflow:hidden; text-overflow:ellipsis; }
 .linkbtn { background:none; border:0; padding:4px 0; font:inherit; color:var(--link); cursor:pointer; text-decoration:underline; }
 [data-theme="dark"] .lat-banner .linkbtn { color:var(--ink); }
 .btn-lg { padding:8px 18px; font-size:14px; min-height:40px; white-space:nowrap; }
@@ -155,6 +158,7 @@ ol.how li { margin:2px 0; }
 .panel { display:flex; flex-direction:column; min-height:0; padding:0; overflow:hidden; }
 .panel > .head { padding:10px 12px; border-bottom:1px solid var(--line-soft); }
 .panel > .body { overflow:auto; min-height:0; flex:1 1 auto; }
+.panel > .answer { flex:0 0 auto; padding:10px 16px; border-top:1px solid var(--line-soft); }
 .searchrow { display:flex; gap:8px; align-items:center; }
 .searchrow .cnt { font-size:12.5px; color:var(--ink-muted); white-space:nowrap; }
 .searchrow .lat-btn { white-space:nowrap; }

@@ -1,4 +1,5 @@
 """Control contracts at their actual native bridge, persistence and TLS boundaries."""
+from datetime import datetime
 import json
 import re
 from pathlib import Path
@@ -605,12 +606,14 @@ def test_a_save_that_stops_part_way_says_which_files_it_left(state, tmp_path):
 
 def test_a_downloaded_export_gets_a_file_name_a_computer_accepts(state):
     state.source_snapshot = object()
-    for address, name in (('ops.example.com:8443', 'ops.example.com-bundle.zip'),
-                          ('ops.example.com', 'ops.example.com-bundle.zip'),
-                          ('[fd00::5]', 'fd00-5-bundle.zip'), ('', 'vcf-operations-bundle.zip')):
-        state.source_name = address
+    state.source_fetched = datetime(2026, 11, 12, 13, 5, 42)
+    for address, name in (('ops.example.com:8443', 'ops.example.com-2026-11-12-1305-bundle.zip'),
+                          ('ops.example.com', 'ops.example.com-2026-11-12-1305-bundle.zip'),
+                          ('[fd00::5]', 'fd00-5-2026-11-12-1305-bundle.zip'),
+                          ('', 'vcf-operations-2026-11-12-1305-bundle.zip')):
+        state.source_host = address
         assert state.default_save_name() == name
-        assert not set(state.default_save_name()) & set(':[]/\\')
+        assert not set(state.default_save_name()) & set(':[]/\\ ,')
     state.source_snapshot = None
 
 
@@ -790,3 +793,56 @@ def test_a_certificate_choice_ends_with_the_download_it_was_made_for(state, monk
                                      export_password='e', export_password2='e'))
     assert state.source_snapshot is not None and state.conn['cert'] is None
     state.close_source()
+
+
+def test_two_downloads_from_one_server_are_told_apart_by_when_they_were_fetched(state, monkeypatch, tmp_path):
+    """Walk finding: after a second download from the same server the question
+    read "Switch to X? Switching closes X. Keep working on X", so nobody could
+    tell which button kept which export."""
+    class Fetched:
+        base = 'https://lab.example:8443/suite-api/api'
+        def __init__(self, *args, **kwargs):
+            self.progress = lambda stage: None
+        def acquire(self, *args):
+            snapshot = source.Snapshot()
+            snapshot.path.write_bytes(build_export_zip())
+            return snapshot
+    monkeypatch.setattr(source, 'Client', Fetched)
+
+    def shown():
+        # The header sets the server and the time as two pieces, so that in a
+        # narrow window the server's name is what gets shortened.
+        return visible(state.render()).replace(' , fetched ', ', fetched ')
+
+    def download(at):
+        state.clock = lambda: at
+        dispatch(state, '/connect', dict(address='https://lab.example:8443', username='u', password='p',
+                                         export_password='e', export_password2='e'))
+
+    download(datetime(2026, 11, 12, 13, 5, 42))
+    first = 'lab.example:8443, fetched 12 Nov 2026 13:05'
+    assert state.source_name == first
+    page = shown()
+    assert f'Working from {first}' in page and f'Opened {first}.' in page
+    assert state.save_name == 'lab.example-2026-11-12-1305-bundle.zip'
+    dispatch(state, '/select', {'key': 'supermetric:' + EMPTY_SM_ID, 'on': '1'})
+
+    download(datetime(2026, 11, 12, 13, 9, 10))
+    second = 'lab.example:8443, fetched 12 Nov 2026 13:09'
+    page = visible(state.render())
+    assert f'Switch to {second}?' in page
+    assert f'Switching closes {first}.' in page and f'Keep working on {first}' in page
+    dispatch(state, '/ask-no', {})
+    assert state.source_name == first
+
+    # Twice within the same minute: the seconds are shown, so the two still differ.
+    download(datetime(2026, 11, 12, 13, 5, 58))
+    assert f'Switch to {first}:58?' in visible(state.render())
+    dispatch(state, '/ask-yes', {})
+    assert state.source_name == first + ':58'
+    assert f'Working from {first}:58' in shown()
+    assert state.save_name == 'lab.example-2026-11-12-1305-bundle.zip'
+    # The report says which download the bundle was made from.
+    out = tmp_path / 'told-apart.zip'
+    save_to(state, out)
+    assert f'made from {first}:58' in out.with_name('told-apart-report.txt').read_text(encoding='utf-8')

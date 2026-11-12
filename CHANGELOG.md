@@ -46,7 +46,8 @@
     holds for that one server and that one download only. The export
     password is typed twice, the download shows four stages and can be
     cancelled, and a wrong password asks for the password again without
-    clearing the rest.
+    clearing the rest. A downloaded export is named by its server and when
+    it was fetched, in the window and in the bundle's file name.
   - **Help and settings** saves a support report in one click, straight to
     Downloads under a dated name, and has the appearance (applies at once), a
     log-file tick box, the version, and a glossary.

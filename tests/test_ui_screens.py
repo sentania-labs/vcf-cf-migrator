@@ -25,7 +25,7 @@ from make_export_fixture import (
     VIEW_IDS,
     build_export_zip,
 )
-from pages import page_over, save_to, visible
+from pages import enclosing, page_over, save_to, visible
 from vcfcf_migrator import preview, uipage
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.desktop import Bridge
@@ -230,6 +230,7 @@ def test_the_panel_shows_what_it_is_what_it_needs_and_what_uses_it(state):
     html = act(state, '/focus', key=f'supermetric:{SM_IDS[2]}')
     assert 'Needs 1 other thing, 1 of them missing' in visible(html)
     assert '<li class="gone">' in html and 'Not in this export' in html
+    assert 'Also listed, in amber' not in visible(html)
     # Clicking a name in the tree goes to it, and the list follows.
     act(state, '/filter', f='dashboard')
     page = act(state, '/focus', key=MAIL, reveal='1')
@@ -508,6 +509,11 @@ def test_the_last_step_walks_the_checklist_one_task_at_a_time(state, tmp_path):
     assert [task.id for task in tasks] == ['import', 'grp']
     assert 'Now, on the target' in page and 'The bundle is saved but not imported.' in page
     assert 'Step 1 of 2' in page and 'Import done.zip' in page and 'I have done this' in page
+    # The answer is under the part of the panel that scrolls, not inside it,
+    # so a long task in a small window cannot push it out of sight.
+    around = enclosing(state.render(), 'done')
+    assert any('answer' in classes for classes, _scrolls in around)
+    assert not any(scrolls for _classes, scrolls in around)
     assert 'open Administration, then Content, then Import' in page
     assert '0 of 2 done. You can stop here and do the rest later from the saved checklist.' in page
     assert 'Stop for now' in page

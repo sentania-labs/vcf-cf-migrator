@@ -63,3 +63,28 @@ def test_each_bad_file_goes_wrong_in_its_own_way(files, config_dir, name, kind):
     state = PageState(str(files[name]))
     assert state.graph is None and state.open_error['kind'] == kind
     state.log.close()
+
+
+def test_a_dashboard_with_something_missing_is_described_the_same_way_everywhere(files, config_dir):
+    """Walk finding: the heading counted "2 of them missing" while the boxes
+    above it said one thing is missing and one widget is merely empty."""
+    from pages import visible
+    from vcfcf_migrator.ui import dispatch
+    state = PageState(str(files['ops-prod-content-export.zip']))
+    key = next(n.key for n in state.graph.nodes.values() if n.name == 'Datastore Health')
+    dispatch(state, '/focus', {'key': key})
+    page = visible(state.render())
+    # One thing is missing, and it is the one the red box names.
+    assert 'Needs something that is not in this export. It needs the super metric "Datastore Daily Delta"' in page
+    assert 'Needs 3 other things, 1 of them missing' in page
+    assert page.count('Not in this export') == 1
+    # The deleted view is not counted as missing: the dashboard still moves.
+    assert 'One widget will be empty.' in page and 'The dashboard still moves' in page
+    assert 'Also listed, in amber: 1 thing that is not in this export but does not stop this moving.' in page
+    assert page.count('Deleted on the source') == 1
+    assert '2 of them missing' not in page
+    # Review asks about the one missing thing and files the empty widget under good to know.
+    dispatch(state, '/select', {'key': key, 'on': '1'})
+    issue, = state.open_issues()
+    assert len(issue.hard) == 1 and len(issue.catches) == 1
+    state.log.close()

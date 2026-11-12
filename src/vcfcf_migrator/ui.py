@@ -105,6 +105,21 @@ class Arrival:
     insight: object
     snapshot: object = None
     address: str = ''
+    host: str = ''                      # for a downloaded export: the server it came from
+    fetched: Optional[datetime] = None  # and when
+
+
+_MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+
+
+def fetched_name(host: str, when: datetime, seconds: bool = False) -> str:
+    """What a downloaded export is called: the server and when it was fetched.
+
+    The server alone names two downloads from one place the same, and then
+    "Switch to X? Switching closes X" cannot be answered.
+    """
+    clock = when.strftime('%H:%M:%S' if seconds else '%H:%M')
+    return f'{host}, fetched {when.day} {_MONTHS[when.month - 1]} {when.year} {clock}'
 
 
 @dataclass
@@ -160,6 +175,9 @@ class PageState:
         self.source_name = ''
         self.source_address = ''
         self.source_snapshot = None
+        self.source_host = ''              # a downloaded export's server and fetch time:
+        self.source_fetched: Optional[datetime] = None   # together they are its name
+        self.clock = datetime.now
         self.members = None
         self.graph = None
         self.insight: Optional[_insight.Insight] = None
@@ -437,6 +455,7 @@ class PageState:
             self.close_source()
         self.zip_path, self.source_name = new.path, new.name
         self.source_snapshot, self.source_address = new.snapshot, new.address
+        self.source_host, self.source_fetched = new.host, new.fetched
         self.members, self.graph, self.insight = new.members, new.graph, new.insight
         mapping: Dict[str, str] = {}
         missing = 0
@@ -560,13 +579,18 @@ class PageState:
                 secrets.clear()
             job.discard = snapshot.close
             self._set_stage(job, 3)
+            fetched = self.clock()
+            name = fetched_name(host, fetched)
+            if name == self.source_name:      # the same server twice within a minute
+                name = fetched_name(host, fetched, seconds=True)
             try:
-                arrival = self._read(job, str(snapshot.path), host, snapshot,
+                arrival = self._read(job, str(snapshot.path), name, snapshot,
                                      client.base.removesuffix("/suite-api/api"))
             except BaseException:
                 snapshot.close()
                 job.discard = None
                 raise
+            arrival.host, arrival.fetched = host, fetched
             return lambda: self._arrive(arrival)
 
         self._start('download', host, work, lambda exc: self._connect_failed(exc, host))
@@ -619,11 +643,14 @@ class PageState:
 
     def default_save_name(self) -> str:
         if self.source_snapshot is not None:
-            # From the server's name alone: a port's colon, or the brackets of
-            # an IPv6 address, are not characters a file name can carry.
-            host = re.sub(r'[^A-Za-z0-9._-]+', '-', (self.source_name or '').rsplit(':', 1)[0]
-                          if ']' not in (self.source_name or '') else self.source_name).strip('-.')
-            return (host or 'vcf-operations') + '-bundle.zip'
+            # From the server's name and when the export was fetched, so two
+            # downloads from one server make two files. A port's colon, or the
+            # brackets of an IPv6 address, are not characters a file name can carry.
+            server = self.source_host or ''
+            host = re.sub(r'[^A-Za-z0-9._-]+', '-',
+                          server.rsplit(':', 1)[0] if ']' not in server else server).strip('-.')
+            when = self.source_fetched.strftime('-%Y-%m-%d-%H%M') if self.source_fetched else ''
+            return (host or 'vcf-operations') + when + '-bundle.zip'
         if not self.zip_path:
             return 'bundle.zip'
         return Path(self.zip_path).stem + '-bundle.zip'

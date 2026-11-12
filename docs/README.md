@@ -2,7 +2,8 @@
 
 `redesign/` holds a before-and-after picture of each screen from the change that
 made the window six steps (one image per screen, today's app above the new
-one).
+one). Sheets 16 to 18 show three fixes made after an independent walk of that
+change: the change as it was walked above, the fix below at both window sizes.
 
 `design/` is why this tool is the way it is: the pass-through contract, the
 evidence from importing bundles into a live instance, the reasoning behind

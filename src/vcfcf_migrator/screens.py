@@ -95,9 +95,19 @@ def _folder(path: Path) -> str:
 # The frame
 
 def header(state) -> str:
-    source = f'Working from <b>{e(state.source_name)}</b>' if state.graph is not None else ''
+    source, parts = '', ''
+    name = state.source_name
+    if state.graph is not None and state.source_fetched is not None and ', fetched ' in name:
+        # A downloaded export: when it was fetched is what tells it from the
+        # last one, so in a narrow window the server's name gives way first.
+        host, when = name.split(', fetched ', 1)
+        parts = ' parts'
+        source = (f'<span>Working from&nbsp;</span><b class="host">{e(host)}</b>'
+                  f'<b class="when">, fetched {e(when)}</b>')
+    elif state.graph is not None:
+        source = f'Working from <b>{e(name)}</b>'
     return ('<header class="lat-header"><h1>VCF Content Migrator</h1>'
-            f'<div class="src grow">{source}</div>'
+            f'<div class="src grow{parts}"' + (f' title="{e(name)}"' if parts else '') + f'>{source}</div>'
             f'<span id="update-slot">{update_button(state)}</span>'
             + ('' if state.screen == 'help' else button('/help', 'Help and settings', ident='help-button'))
             + '</header>')
@@ -528,6 +538,15 @@ def _tree(state, key: str, seen: set, budget: List[int]) -> str:
     return ''.join(out)
 
 
+def _amber_line(count: int) -> str:
+    """What the amber rows under "Needs" are, so they are not read as missing."""
+    if not count:
+        return ''
+    return (' Also listed, in amber: '
+            + ('1 thing that is not in this export but does not stop this moving.' if count == 1
+               else f'{count} things that are not in this export but do not stop this moving.'))
+
+
 def detail(state) -> str:
     graph, ins = state.graph, state.insight
     node = graph.nodes.get(state.focus_key)
@@ -542,7 +561,12 @@ def detail(state) -> str:
     hard = [(graph.nodes[k], gap) for k in closure for gap in _insight.hard_gaps(graph, k)]
     gone_soft = sum(len(c.gone) for k in closure for c in _insight.catches(graph, graph.nodes[k]))
     own = _insight.catches(graph, node)
-    gone = len(hard) + gone_soft
+    # "Missing" means one thing on every screen: not in this export, and Save
+    # is held until it is answered. Something that is gone without stopping
+    # the move (a deleted view behind one widget, a dead link, a group the
+    # target has to have) is listed in amber and counted apart, in the words
+    # its own box uses.
+    gone = len(hard)
     total = len(closure) - 1 + gone
     nested = any(k not in graph.edges.get(key, []) for k in closure[1:]) or any(n.key != key for n, _g in hard)
     owner = graph.owner_names.get(node.owner, '') if node.owner else ''
@@ -608,7 +632,11 @@ def detail(state) -> str:
                    + (f', {gone} of them missing' if gone else '') + '</h3><p class="muted sm">'
                    + ('The ones that are in this export come along automatically when you add it.' if gone
                       else 'These are in this export and come along automatically when you add it.')
-                   + (' An indented item is needed by the one above it.' if nested else '') + '</p>')
+                   + (' An indented item is needed by the one above it.' if nested else '')
+                   + _amber_line(gone_soft) + '</p>')
+    elif gone_soft:
+        out.append('<h3>Needs nothing else</h3><p class="muted sm">It stands on its own.'
+                   + _amber_line(gone_soft) + '</p>')
     else:
         out.append('<h3>Needs nothing else</h3><p class="muted sm">It stands on its own.</p>')
     budget = [TREE_LIMIT]
@@ -1220,7 +1248,10 @@ def target_screen(state) -> Tuple[str, str]:
              f'<h3 style="font-size:17px;margin:2px 0 8px">{e(current.title)}</h3><p>{e(current.why)}</p>'
              '<h3 style="margin-top:12px">How</h3><ol class="dosteps">'
              + ''.join(f'<li>{e(step)}</li>' for step in current.steps)
-             + f'</ol><div class="rowbtns" style="margin-top:16px">{answer}</div></div></div></div>')
+             # The answer sits under the scrolling part, not in it, so it is on
+             # screen however long the steps are and however small the window.
+             + f'</ol></div></div><div class="answer"><div class="rowbtns" style="margin:0">{answer}</div>'
+               '</div></div>')
     lead = ('Every task is ticked.' if everything else
             'You have ticked the import. Work through the rest in order.' if state.ticks.get('import') else
             'The bundle is saved but not imported. Do these in order in the VCF Operations you are moving '

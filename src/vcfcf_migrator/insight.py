@@ -261,7 +261,7 @@ def catches(graph: Graph, node: Node) -> List[Catch]:
              'the same name.') if one else
             (f'Its widgets show the groups {_quoted(groups)}, which are not in this export. The dashboard '
              'still moves, but those widgets stay empty until the target has groups with the same names.'),
-            [('Group', group, 'Not in this export') for group in groups],
+            [('Group', group, 'Has to be on the target') for group in groups],
             ((f'Make sure the group {_quoted(groups)} exists on the target' if one
               else f'Make sure {len(groups)} groups exist on the target'),
              f'{name} has a widget that shows ' + ('this group' if one else 'each of these groups')

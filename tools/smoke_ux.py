@@ -14,6 +14,7 @@ directory, a screenshot of every state is saved there.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
@@ -317,8 +318,12 @@ def main():
                 fill('q', 'data')
                 wait_for(lambda: js("document.getElementById('cnt').textContent") == '1 of 30')
                 press('Datastore Health', '.nmb')
-                see('Needs 4 other things, 2 of them missing', 'Datastore Daily Delta', 'Not in this export',
-                    'One widget will be empty', 'An indented item is needed by the one above it.')
+                # One thing is missing and one widget is merely empty: the heading, the red
+                # box and the yellow box all have to say so.
+                see('Needs 3 other things, 1 of them missing', 'Datastore Daily Delta', 'Not in this export',
+                    'One widget will be empty', 'An indented item is needed by the one above it.',
+                    'Also listed, in amber: 1 thing that is not in this export but does not stop this moving.')
+                gone('2 of them missing')
                 assert js("document.getElementById('q').value") == 'data'
                 look('04-choose-needs-something-missing')
                 press('See what it looks like'); see('Real layout, made-up numbers', 'Close preview')
@@ -466,11 +471,25 @@ def main():
                 see('Now, on the target', f'Step 1 of {count}', 'Import capacity move.zip', 'I have done this',
                     f'0 of {count} done.')
                 look('29-target-checklist')
+                def answer_in_view(control):
+                    """The answer to a task is on screen without scrolling anything."""
+                    off = js("(function(){var b=document.getElementById(%s),r=b.getBoundingClientRect(),"
+                             "f=document.querySelector('main').getBoundingClientRect(),"
+                             "p=b.closest('.panel').getBoundingClientRect();"
+                             "return (r.height>0&&r.top>=p.top&&r.bottom<=p.bottom&&r.bottom<=f.bottom"
+                             "&&r.bottom<=window.innerHeight)?''"
+                             ":JSON.stringify([r.top,r.bottom,p.bottom,f.bottom]);})()" % json.dumps(control))
+                    assert not off, f'{control} is not in view on "{page.task}": {off}'
+
+                answer_in_view('done')
                 click('done'); see(f'1 of {count} done.', f'Step 2 of {count}', 'Switch on ')
+                answer_in_view('done')
+                look('29b-target-long-task')
                 click('finish'); see(f'Stopped for now, {count - 1} tasks still to do', 'You can close the app now.')
                 look('30-target-stopped-for-now')
                 press('Back to the checklist')
                 for _ in range(count - 1):
+                    answer_in_view('done')
                     click('done')
                 see(f'{count} of {count} done.', 'Nothing left to do.')
                 click('finish'); see('You have ticked everything')
@@ -601,6 +620,37 @@ def main():
                 assert 'theme' in json.loads((scratch / 'settings' / 'settings.json').read_text())
                 assert 'password' not in (scratch / 'settings' / 'settings.json').read_text()
                 look('51-choose-after-download')
+                # The same server a second time: the question has to tell the two apart,
+                # so each is named by the server and when it was fetched.
+                first = page.source_name
+                assert first.startswith(host + ', fetched ')
+                assert js("document.querySelector('header .src').textContent").replace('\xa0', ' ') == (
+                    'Working from ' + first)
+
+                def when_in_view():
+                    """The header never cuts off when the export was fetched."""
+                    return js("(function(){var w=document.querySelector('header .src .when')"
+                              ".getBoundingClientRect(),s=document.querySelector('header .src')"
+                              ".getBoundingClientRect();return w.width>0&&w.right<=s.right+0.5;})()")
+                assert when_in_view()
+                assert page.default_save_name().startswith('localhost-20')
+                page.clock = lambda: page.source_fetched + timedelta(minutes=4)
+                click('step-open'); click('to-connect')
+                fill('c-addr', address); fill('c-user', 'migration'); fill('c-pw', 'synthetic-password')
+                fill('c-epw', 'export-pass'); fill('c-epw2', 'export-pass')
+                click('conn-test')
+                see('This server uses a certificate your computer does not recognise.')
+                done = arm_dialog(ca, None)
+                press('Use my company certificate file…', wait=False); wait_for(done.is_set); settle()
+                click('conn-go', wait=False)
+                see('Switch to localhost', 'It was read successfully.')
+                second = page.ask['name']
+                assert second != first and second.startswith(host + ', fetched ')
+                see(f'Switch to {second}?', f'Switching closes {first}.', f'Keep working on {first}')
+                assert when_in_view()
+                look('52-sign-in-same-server-again')
+                click('ask-no')
+                assert page.source_name == first
                 print(f'UX walk passed at {width}x{height}: {len(shots)} states checked for overflow, '
                       'contrast and folded sections; nine jobs done through the real window, file and Save '
                       'windows, and a stand-in VCF Operations.', flush=True)

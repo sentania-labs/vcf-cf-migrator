@@ -142,6 +142,10 @@ exports the supported custom content; when the download finishes you choose
 content as usual. Keep the export password: the target asks for it at import,
 and it must meet the source instance's password requirements.
 
+A downloaded export is named by its server and when it was fetched, for example
+`ops.example.com, fetched 12 Nov 2026 13:05`, in the window and in the bundle's
+file name, so two downloads from one server can be told apart.
+
 Your user name and passwords are used once and never saved. The downloaded
 export is held in a private temporary folder until you replace it or close the
 app, so save your bundle before closing. After an abnormal shutdown, temporary
