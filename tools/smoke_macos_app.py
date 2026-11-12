@@ -216,7 +216,7 @@ def main():
                 # One click and no Save panel: the report goes straight to Downloads.
                 # "diagnostics" is on the button and nowhere else on the screen.
                 click('diagnostics', '/support-report')
-                report = wait_for(lambda: next(iter(downloads.glob('support-report-*.txt')), None)).read_text()
+                report = wait_for(lambda: next(iter(sorted(set(downloads.glob('support-report-*.txt')) - earlier_reports)), None)).read_text()
                 assert json.loads(report.splitlines()[0])['kind'] == 'vcfcf-migrator-diagnostics'
                 for private in (str(scratch), str(Path.home()), Path.home().name, socket.gethostname(),
                                 'Synthetic capacity metric', 'synthetic-login-', 'Invented Person', '@example.invalid'):

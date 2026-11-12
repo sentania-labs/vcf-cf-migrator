@@ -84,12 +84,12 @@
   source: dashboard ownership maps to local `admin` (several owners are merged),
   and directory-group sharing is removed and reported. Custom groups referenced
   anywhere in a dashboard's widgets are carried or reported, and unused
-  container scaffolding is pruned. A post-import checklist (beside the ZIP)
-  lists super metrics to enable and group policy assignments. References
-  already dangling on the source (missing views, dashboards, navigation
-  targets) are reported as inferences and no longer block. The desktop app
-  saves the build report beside the ZIP as `<name>-build-report.txt`. (#56,
-  #57, #58, #59, #60, #61)
+  container scaffolding is pruned. A checklist (beside the ZIP) lists super
+  metrics to enable and group policy assignments. References already dangling
+  on the source (missing views, dashboards, navigation targets) are reported
+  as inferences and no longer block. The desktop app saves the report and
+  checklist beside the ZIP as `<name>-report.txt` and `<name>-checklist.txt`.
+  (#56, #57, #58, #59, #60, #61)
 - Each Mac download is now one signed and notarized app archive that
   holds both the Finder app and the `vcfcf-migrator` command line, at
   `VCF Content Migrator.app/Contents/MacOS/vcfcf-migrator`. Running
