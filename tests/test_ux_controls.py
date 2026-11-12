@@ -115,16 +115,20 @@ def test_bridge_test_clears_fields_without_persisting_or_logging(state, tls_serv
     assert 'This server uses a certificate your computer does not recognise.' in page
     assert 'Use my company certificate file…' in page and 'Connect without checking' in page
     state.dialog = lambda kind, current: {'path': str(cert)} if kind == 'ca' else {}
-    dispatch(state, '/conn-cert-file', {})
-    assert state.conn['cert'] == {'mode': 'file', 'path': str(cert)} and state.conn['tested'] is None
-    assert 'Using the certificate file ca.pem.' in visible(state.render())
+    typed = form()
+    dispatch(state, '/conn-cert-file', typed)
+    assert not typed                       # the button sits in the form; nothing typed is kept
+    assert state.conn['cert'] == {'mode': 'file', 'path': str(cert), 'address': state._server(address)}
+    assert state.conn['tested'] is None
+    host = address.split('//')[1]
+    assert f'Using the certificate file ca.pem for {host}.' in visible(state.render())
     typed = form()
     page = visible(bridge.test_connection(typed)['html'])
     assert not typed and state.conn['tested'] == 'ok'
     assert 'Signed in fine. Nothing was exported.' in page
     dispatch(state, '/conn-cert-undo', {})
-    dispatch(state, '/conn-cert-skip', {})
-    assert 'Connecting without checking the certificate.' in visible(state.render())
+    dispatch(state, '/conn-cert-skip', form())
+    assert f'Connecting to {host} without checking the certificate.' in visible(state.render())
     bridge.test_connection(form())
     assert state.conn['tested'] == 'ok'
     # Nothing typed reached the log, the settings or the page.
@@ -139,7 +143,7 @@ def test_the_sign_in_choices_come_from_the_server(state, tls_server):
     bridge = desktop.Bridge(state)
     failed = bridge.login_sources(address)
     assert state.conn['lookup'] == 'failed' and 'Could not reach that address yet' in failed['address_hint']
-    state.conn['cert'] = {'mode': 'file', 'path': str(cert)}
+    state.conn['cert'] = {'mode': 'file', 'path': str(cert), 'address': state._server(address)}
     found = bridge.login_sources(address)
     assert state.conn['sources'] == ['Directory A', 'SSO / B']
     assert 'A local account on VCF Operations' in found['options']
@@ -732,3 +736,57 @@ def test_a_job_whose_result_cannot_be_swapped_in_still_ends(config_dir, export_z
     assert state.job is None and state.graph is None
     assert state.note.kind == 'bad' and 'That did not finish.' in state.note.text
     state.log.close()
+
+
+def test_a_certificate_choice_is_used_only_for_the_server_it_was_made_for(state, tls_server, monkeypatch):
+    """Review finding: "Connect without checking" stayed in force for the whole
+    session, so a later sign-in to a different address would have sent the
+    user name and passwords to a server nobody had verified."""
+    address, cert, _ = tls_server
+    bridge = desktop.Bridge(state)
+    state.screen = 'connect'
+    dispatch(state, '/conn-cert-skip', {'address': address, 'password': 'never-kept'})
+    assert state.conn['cert']['mode'] == 'skip'
+    assert bridge.login_sources(address)['options'].count('<option') == 3       # used for this server
+    built = []
+
+    class Recorder:
+        base = 'https://production.example/suite-api/api'
+        def __init__(self, address, **kwargs):
+            built.append((address, kwargs.get('ignore_ssl'), kwargs.get('ca_file')))
+        def acquire(self, *args):
+            raise source.SourceError('stop here')
+    monkeypatch.setattr(source, 'Client', Recorder)
+    # A different address: verification is back on, and the choice is gone.
+    dispatch(state, '/connect', dict(address='https://production.example', username='u', password='p',
+                                     export_password='e', export_password2='e'))
+    assert built[-1] == ('https://production.example', False, '')
+    assert state.conn['cert'] is None
+    assert 'without checking the certificate' not in visible(state.render())
+    # Editing the address away from the server the choice was made for drops it too.
+    dispatch(state, '/conn-cert-skip', {'address': address})
+    dispatch(state, '/conn-edited', {'address': 'https://elsewhere.example'})
+    assert state.conn['cert'] is None
+    dispatch(state, '/conn-cert-skip', {'address': address})
+    dispatch(state, '/conn-edited', {'address': address + '/'})       # the same server, spelled differently
+    assert state.conn['cert'] is not None
+    # A lookup or a test for another address verifies the certificate.
+    bridge.login_sources('https://production.example')
+    assert built[-1][1] is False and state.conn['cert'] is None
+
+
+def test_a_certificate_choice_ends_with_the_download_it_was_made_for(state, monkeypatch):
+    class Fetched:
+        base = 'https://lab.example/suite-api/api'
+        def __init__(self, *args, **kwargs):
+            self.progress = lambda stage: None
+        def acquire(self, *args):
+            snapshot = source.Snapshot()
+            snapshot.path.write_bytes(build_export_zip())
+            return snapshot
+    monkeypatch.setattr(source, 'Client', Fetched)
+    dispatch(state, '/conn-cert-skip', {'address': 'https://lab.example'})
+    dispatch(state, '/connect', dict(address='https://lab.example', username='u', password='p',
+                                     export_password='e', export_password2='e'))
+    assert state.source_snapshot is not None and state.conn['cert'] is None
+    state.close_source()

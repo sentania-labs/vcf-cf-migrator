@@ -377,8 +377,13 @@ def connect_screen(state) -> Tuple[str, str]:
     out.append('<div class="lat-card"><h3>Check before you start</h3><div class="rowbtns" style="margin-top:0">'
                + button('/conn-test', 'Test the sign-in', ident='conn-test', off=True) + status + '</div>')
     if cert:
-        how = (f'Using the certificate file {e(Path(cert.get("path", "")).name)}.' if cert.get('mode') == 'file'
-               else 'Connecting without checking the certificate.')
+        # Said with the server it applies to: the choice is dropped for any other address.
+        server = (cert.get('address') or '').split('//', 1)[-1].split('/', 1)[0]
+        to = f' for {e(server)}' if server else ''
+        how = (f'Using the certificate file {e(Path(cert.get("path", "")).name)}{to}.'
+               if cert.get('mode') == 'file' else
+               (f'Connecting to {e(server)} without checking the certificate.' if server
+                else 'Connecting without checking the certificate.'))
         out.append(f'<div class="lat-banner lat-banner--info" style="margin-top:10px">{how} '
                    + link('/conn-cert-undo', 'Undo') + '</div>')
     elif cert_open:

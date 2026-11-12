@@ -561,7 +561,15 @@ CLIENT_JS = r"""
       form.dataset.stale = '';
       act('/conn-edited', {});
     }
-    if (t.id === 'c-addr') { clearTimeout(srcTimer); srcTimer = setTimeout(loadSources, 500); }
+    if (t.id === 'c-addr') {
+      clearTimeout(srcTimer);
+      if (form.dataset.certmode) {
+        // A certificate choice was made for the address as it was. Tell the
+        // program the address has changed, so the choice is dropped for a
+        // different server before anything is sent to it.
+        srcTimer = setTimeout(function () { act('/conn-edited', {address: t.value}); }, 500);
+      } else { srcTimer = setTimeout(loadSources, 500); }
+    }
   });
 
   document.addEventListener('keydown', function (ev) {

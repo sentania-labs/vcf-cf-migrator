@@ -115,7 +115,9 @@ class Bridge:
 
     def _client(self, address: str, timeout: int = 10):
         from .source import Client
-        cert = self._state.conn.get('cert') or {}
+        # A certificate choice is used only for the server it was made for.
+        with self._state.action_lock:
+            cert = self._state.certificate_choice(address)
         return Client(address, ca_file=cert.get('path', ''), ignore_ssl=cert.get('mode') == 'skip',
                       request_timeout=timeout)
 

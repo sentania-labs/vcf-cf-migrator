@@ -550,7 +550,18 @@ def main():
                 look('46-sign-in-certificate-problem')
                 done = arm_dialog(ca, 'native-certificate-file')
                 press('Use my company certificate file…', wait=False); wait_for(done.is_set); settle()
-                see('Using the certificate file standin-ca.pem.')
+                host = address.split('//')[1]
+                see(f'Using the certificate file standin-ca.pem for {host}.')
+                # The choice is about this one server: typing another address drops it,
+                # and coming back means being asked again.
+                fill('c-addr', 'https://elsewhere.invalid')
+                wait_for(lambda: 'Using the certificate file' not in text())
+                assert page.conn['cert'] is None
+                fill('c-addr', address); click('conn-test')
+                see('This server uses a certificate your computer does not recognise.')
+                done = arm_dialog(ca, None)
+                press('Use my company certificate file…', wait=False); wait_for(done.is_set); settle()
+                see(f'Using the certificate file standin-ca.pem for {host}.')
                 wait_for(lambda: 'Found it. Sign-in choices loaded below.' in text())
                 assert 'An account from the company directory corp.example' in js(
                     "document.getElementById('c-src').innerText")

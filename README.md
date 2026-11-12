@@ -133,7 +133,9 @@ not browser SSO.
 starting an export. If the server uses a certificate your computer does not
 recognise, the test says so and offers two ways on: **Use my company certificate
 file…** (the safe one) or **Connect without checking**, which cannot prove it is
-the real server.
+the real server. Either answer is for that one server and that one download: a
+different address, or the next export, starts with the certificate being checked
+again.
 
 **Sign in and download** shows four stages and can be cancelled. Operations
 exports the supported custom content; when the download finishes you choose

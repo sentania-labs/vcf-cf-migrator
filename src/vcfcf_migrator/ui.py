@@ -474,6 +474,10 @@ class PageState:
         self.save_confirmed = ''
         self.screen, self.max_step = 'choose', 1
         count = len(new.graph.nodes)
+        if new.snapshot is not None:
+            # The sign-in is over. The next one, wherever it goes, verifies
+            # the server's certificate again unless it is asked not to.
+            self.conn['cert'], self.conn['tested'] = None, None
         text = f'<b>Opened {e(new.name)}.</b> It holds {plural(count, "thing")} you can move.'
         if mapping:
             text += (f' Your {plural(len(mapping), "choice was", "choices were")} ticked again.')
@@ -522,7 +526,7 @@ class PageState:
             if again is not None and again != export_password:
                 self.conn['error'] = ('other', 'The two export passwords do not match. Type them again.')
                 return
-            cert = self.conn.get('cert') or {}
+            cert = self.certificate_choice(address)
             try:
                 host = _source.endpoint(address).split('//', 1)[1].split('/', 1)[0]
                 client = _source.Client(address, ca_file=cert.get('path', ''),
@@ -583,6 +587,30 @@ class PageState:
             # Never expose connection exceptions, which may contain request data.
             self.conn['error'] = ('other', 'The connection or the download failed. Check the export job '
                                            'on the source before trying again.')
+
+    @staticmethod
+    def _server(address: str) -> str:
+        """An address in the one spelling a certificate choice is kept under."""
+        try:
+            return _source.endpoint(address or '')
+        except _source.SourceError:
+            return (address or '').strip().lower()
+
+    def certificate_choice(self, address: str) -> dict:
+        """How the certificate of the server at *address* is to be checked.
+
+        "Use my company certificate file" and "Connect without checking" are
+        answers about one server. Asked about any other address the choice is
+        dropped, so a sign-in somewhere else always starts with the
+        certificate being verified.
+        """
+        cert = self.conn.get('cert')
+        if not cert:
+            return {}
+        if cert.get('address') != self._server(address):
+            self.conn['cert'] = None
+            return {}
+        return cert
 
     @staticmethod
     def download_directory() -> Path:
@@ -1580,16 +1608,26 @@ def _act_log(state: "PageState", form: dict) -> str:
     return 'log-on'
 
 
-def _act_conn_cert_file(state: "PageState", _form: dict) -> str:
+def _cert_address(state: "PageState", form: dict) -> str:
+    """The server a certificate choice is being made for. The buttons sit in
+    the sign-in form, so everything typed there arrives with them; only the
+    address is read, and the rest is dropped at once."""
+    address = state._server(form.get('address', ''))
+    form.clear()
+    return address
+
+
+def _act_conn_cert_file(state: "PageState", form: dict) -> str:
+    address = _cert_address(state, form)
     chosen = state.dialog('ca', '') if state.dialog else {}
     if chosen and chosen.get('path'):
-        state.conn['cert'] = {'mode': 'file', 'path': chosen['path']}
+        state.conn['cert'] = {'mode': 'file', 'path': chosen['path'], 'address': address}
         state.conn['tested'] = None
     return ''
 
 
-def _act_conn_cert_skip(state: "PageState", _form: dict) -> str:
-    state.conn['cert'] = {'mode': 'skip'}
+def _act_conn_cert_skip(state: "PageState", form: dict) -> str:
+    state.conn['cert'] = {'mode': 'skip', 'address': _cert_address(state, form)}
     state.conn['tested'] = None
     return ''
 
@@ -1599,9 +1637,13 @@ def _act_conn_cert_undo(state: "PageState", _form: dict) -> str:
     return ''
 
 
-def _act_conn_edited(state: "PageState", _form: dict) -> str:
-    """The form changed, so an earlier test no longer says anything about it."""
+def _act_conn_edited(state: "PageState", form: dict) -> str:
+    """The form changed, so an earlier test no longer says anything about it,
+    and a certificate choice made for another address no longer applies."""
     state.conn['tested'], state.conn['error'] = None, None
+    if 'address' in form:
+        state.certificate_choice(form.get('address', ''))
+    form.clear()
     return ''
 
 

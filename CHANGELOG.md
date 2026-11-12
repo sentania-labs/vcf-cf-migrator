@@ -42,7 +42,8 @@
     tasks made for this bundle, each with why it matters and numbered steps,
     ticked off as you go.
   - **Sign in to the source** is one screen. The certificate options appear
-    only when the sign-in test reports a certificate problem. The export
+    only when the sign-in test reports a certificate problem, and the answer
+    holds for that one server and that one download only. The export
     password is typed twice, the download shows four stages and can be
     cancelled, and a wrong password asks for the password again without
     clearing the rest.

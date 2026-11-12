@@ -28,7 +28,7 @@ def test_report_preserves_operations_and_warnings_after_detail_eviction(config_d
     state = PageState()
     log = state.log
     log.event_cap = 8
-    with log.phase('page', action='/select-all'):
+    with log.phase('page', action='/add-shown'):
         with log.phase('select'):
             log.count('picked', 100)
             log.warn('ref.missing', name='Private Person')
@@ -42,7 +42,7 @@ def test_report_preserves_operations_and_warnings_after_detail_eviction(config_d
     child, parent = ends
     assert child['parent_operation'] == parent['operation']
     assert child['picked'] == 100 and child['start_t'] <= child['t']
-    assert parent['action'] == '/select-all'
+    assert parent['action'] == '/add-shown'
     assert any(e['event'] == 'ref.missing' for e in events)
     assert 'Private Person' not in out.read_text()
     assert head['retention']['dropped'] == log.dropped > 0
