@@ -67,8 +67,13 @@ def main():
                     metrics = json.loads(bundle.read('supermetrics.json'))
                     assert len(metrics) == 1
                     assert next(iter(metrics.values()))['name'] == 'Synthetic capacity metric 00000'
-                assert output.with_name('source-bundle-report.txt').exists()
-                assert output.with_name('source-bundle-checklist.txt').exists()
+                # The report is written after the bundle, so give it a moment.
+                companions = [output.with_name('source-bundle-report.txt'),
+                              output.with_name('source-bundle-checklist.txt')]
+                deadline = time.monotonic() + 15
+                while not all(path.exists() for path in companions) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                assert all(path.exists() for path in companions), 'The report and checklist were not written'
                 print('Packaged Linux native initial load, selection, and bundle save passed.')
             except Exception:
                 log.seek(0)

@@ -204,8 +204,8 @@ def main():
                 click('Next: review', '/go')        # no dashboards, so no owner to choose
                 click('Next: save', '/go')
                 click('Save the bundle', '/save', lowest=True)
-                wait_for(output.exists, timeout=30)
-                assert leftovers[1].exists() and leftovers[2].exists()
+                # The bundle is written first, then the checklist and the report.
+                wait_for(lambda: all(path.exists() for path in leftovers), timeout=30)
                 with zipfile.ZipFile(output) as bundle:
                     metrics = json.loads(bundle.read('supermetrics.json'))
                     assert len(metrics) == args.objects
