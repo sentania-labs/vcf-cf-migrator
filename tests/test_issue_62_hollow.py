@@ -157,6 +157,36 @@ def test_select_all_leaves_them_out_unless_named(export):
     assert selection.select_all(g, include_unfinished=True).left_out == []
 
 
+def _linking_export(tmp_path):
+    dashboards = _dashboards()
+    dashboards[0]['dashboardNavigations'] = {'w1': [{'id': HOLLOW, 'widgets': []}]}
+    path = tmp_path / 'linked.zip'
+    path.write_bytes(export_bytes(dashboards))
+    return path
+
+
+def test_a_finished_dashboard_linking_to_one_carries_it_and_says_so(tmp_path):
+    g = _graph(_linking_export(tmp_path))
+    hollow_key = f'dashboard:{HOLLOW}@{OWNER}'
+    picked = selection.select_all(g)
+    assert hollow_key in picked.keys
+    assert hollow_key not in picked.left_out
+    assert len(picked.left_out) == 1
+    text = selection.render(g, picked)
+    assert 'Left out: 1 dashboard not finished loading on the source' in text
+    assert 'Warning: 1 dashboard not finished loading on the source' in text
+    assert 'Loading dashboard' not in text.split('Left out:')[1].split('\n')[0]
+
+
+def test_the_page_does_not_call_a_pulled_in_dashboard_left_out(tmp_path):
+    state = PageState(str(_linking_export(tmp_path)))
+    state.select_all()
+    assert 'left out 1 dashboard not finished loading on the source' in state.message
+    state.clear()
+    state.select_shown()
+    assert 'Left out 1 dashboard not finished loading on the source' in state.message
+
+
 def test_build_select_all_report_names_what_was_left_out(export, tmp_path, capsys):
     out = tmp_path / 'bundle.zip'
     assert main(['build', str(export), '--select-all', '--out', str(out)]) == 0

@@ -321,14 +321,15 @@ def select_all(graph: Graph, include_unfinished: bool = False) -> Selection:
 
     A dashboard the source never finished loading is left out unless asked
     for: its references are unknown and a bundle carrying it cannot work on
-    the target. Naming it in a selection file still picks it.
+    the target. Naming it in a selection file still picks it, and so does a
+    finished dashboard that navigates to it: that one is carried, not left out.
     """
     nodes = graph.ordered()
     skipped = [] if include_unfinished else [n.key for n in nodes if n.hollow]
     selection = close(graph, [n.key for n in nodes if n.key not in skipped])
-    selection.left_out = skipped
-    if skipped:
-        runlog.info("selection.left_out", items=len(skipped),
+    selection.left_out = [k for k in skipped if k not in selection.keys]
+    if selection.left_out:
+        runlog.info("selection.left_out", items=len(selection.left_out),
                     reason=runlog.prose("dashboards the source never finished loading are left out of "
                                         "a select-everything unless they are named"))
     return selection

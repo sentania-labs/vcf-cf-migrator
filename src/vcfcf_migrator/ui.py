@@ -407,8 +407,9 @@ class PageState:
         if self.graph is None:
             self.error = "open an export first"
             return
-        left = [n for n in self.graph.ordered() if n.hollow]
         self._set_picked(n.key for n in self.graph.ordered() if not n.hollow)
+        included = self.selection_keys()
+        left = [n for n in self.graph.ordered() if n.hollow and n.key not in included]
         self.message = f"selected every object in the export ({len(self.picked)})"
         if left:
             self.message = (f"selected {len(self.picked)} objects; left out {_hollow.summary_line(len(left))}. "
@@ -453,7 +454,8 @@ class PageState:
         keys = list(dict.fromkeys(self.picked + [n.key for n in shown if not n.hollow]))
         self._set_picked(keys)
         self.message = "selected the shown content; existing selections are retained"
-        left = [n for n in shown if n.hollow and n.key not in self.picked]
+        included = self.selection_keys()
+        left = [n for n in shown if n.hollow and n.key not in included]
         if left:
             self.message += f". Left out {_hollow.summary_line(len(left))}; select one by name to include it anyway"
 
