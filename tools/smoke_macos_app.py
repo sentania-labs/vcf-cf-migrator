@@ -77,15 +77,18 @@ def main():
         scratch = Path(directory)
         source = scratch / 'source.zip'
         make_export(source, args.objects, args.identities)
-        # Bundles and support reports go to Downloads. Nothing of an earlier
-        # run may be there, or the app would rightly ask before replacing it.
+        # Bundles and support reports go to Downloads. The bundle's name must
+        # be free, or the app would rightly ask before replacing it.
         downloads = Path.home() / 'Downloads'
         downloads.mkdir(exist_ok=True)
         output = downloads / 'source-bundle.zip'
         leftovers = [output, output.with_name('source-bundle-report.txt'),
                      output.with_name('source-bundle-checklist.txt')]
-        for stale in leftovers + list(downloads.glob('support-report-*.txt')):
-            stale.unlink(missing_ok=True)
+        already = [str(path) for path in leftovers if path.exists()]
+        if already:
+            raise SystemExit('Refusing to run: these files already exist in Downloads and would be '
+                             'replaced or deleted: ' + ', '.join(already))
+        earlier_reports = set(downloads.glob('support-report-*.txt'))
         events_path = scratch / 'events.jsonl'
         before = {a.processIdentifier() for a in NSRunningApplication.runningApplicationsWithBundleIdentifier_(info['CFBundleIdentifier'])}
         running = None
@@ -233,7 +236,7 @@ def main():
                     print('\n'.join(json.dumps(e) for e in events() if e.get('phase') in ('page', 'render')))
                 raise
             finally:
-                for stale in leftovers + list(downloads.glob('support-report-*.txt')):
+                for stale in leftovers + sorted(set(downloads.glob('support-report-*.txt')) - earlier_reports):
                     stale.unlink(missing_ok=True)
                 if running is not None:
                     running.terminate()

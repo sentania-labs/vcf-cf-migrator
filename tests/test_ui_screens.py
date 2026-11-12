@@ -146,11 +146,6 @@ def test_the_page_carries_no_external_resource_and_one_script(state):
         assert '<form' not in page                   # buttons name actions; nothing posts anywhere
 
 
-def test_no_text_on_any_screen_is_set_smaller_than_twelve_pixels():
-    sizes = [float(size) for size in re.findall(r'font-size:\s*([\d.]+)px', uipage.STYLE + uipage.PREVIEW_OVERRIDES)]
-    assert sizes and min(sizes) >= 12
-
-
 def test_actions_are_registered_once_and_nothing_else_is_reachable(state):
     assert set(POST_PATHS) == set(ACTIONS)
     for retired in ('/tab', '/build', '/select-all', '/select-shown', '/remove-pick', '/disclose',

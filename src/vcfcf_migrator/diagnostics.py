@@ -13,7 +13,9 @@ import re
 
 
 EVENTS = frozenset('''
+build.failed build.missing_dependency build.missing_dependency_accepted build.refused
 bundle.directories bundle.unwritable bundle.written closure.added
+closure.missing_dependency corpus.missing_dependencies page.job_failed page.open_failed selection.left_out
 closure.not_carried closure.picked command.failed command.refused container.found
 container.judged container.rebuilt corpus.absent corpus.checked corpus.walk
 corpus.zip_checked document.absent document.unreadable graph.built
@@ -45,10 +47,16 @@ ENUMS = {
     'format': frozenset(('jsonl', 'text')),
     'type': frozenset(('ALL', 'CUSTOM')),
     'spelling': frozenset(('uuid', 'name')),
-    'action': frozenset(('/open', '/pick-export', '/select', '/select-all', '/clear',
-                         '/apply-lines', '/preview', '/filter', '/build',
-                         '/diagnostics', '/tab', '/disclose', '/inspect', '/tree',
-                         '/corpus-check', '/command')),
+    'action': frozenset((
+        '/add-shown', '/again', '/ask-no', '/ask-yes', '/back', '/cancel-job',
+        '/clear', '/close-doc', '/close-preview', '/conn-cert-file', '/conn-cert-skip',
+        '/conn-cert-undo', '/conn-edited', '/connect', '/doc', '/escape', '/filter',
+        '/find', '/finish', '/focus', '/fuller', '/get-update', '/gloss', '/go',
+        '/help', '/issue', '/keep-copy', '/keep-in', '/leave', '/log', '/open',
+        '/owner', '/pick-export', '/pick-save', '/preview', '/redraw',
+        '/report-problem', '/save', '/select', '/show-all', '/show-in-folder',
+        '/support-report', '/task', '/theme', '/tick', '/undo',
+    )),
 }
 # Measurements produced by the application, never account or content IDs.
 MEASUREMENTS = frozenset('''

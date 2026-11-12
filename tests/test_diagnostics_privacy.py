@@ -149,3 +149,37 @@ def test_a_report_that_cannot_go_to_downloads_falls_back_to_the_save_window(tmp_
         state.log.close()
     finally:
         (home / 'Downloads').chmod(0o700)
+
+
+def test_a_support_report_from_a_real_session_names_every_action_and_no_content(
+        tmp_path, export_zip, config_dir, monkeypatch):
+    import make_export_fixture as fixture
+    from vcfcf_migrator import diagnostics, ui
+
+    home = tmp_path / 'home'
+    (home / 'Downloads').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    state = PageState(str(export_zip))
+    key = next(k for k, node in state.graph.nodes.items() if node.kind == 'supermetric')
+    for path, form in (('/select', {'key': key, 'on': '1'}), ('/go', {'to': 'owner'}),
+                       ('/go', {'to': 'review'}), ('/go', {'to': 'save'}), ('/save', {}),
+                       ('/go', {'to': 'target'}), ('/theme', {'choice': 'dark'}),
+                       ('/support-report', {})):
+        ui.dispatch(state, path, form)
+    report = next((home / 'Downloads').glob('support-report-*.txt'))
+    body = report.read_text(encoding='utf-8')
+    rows = [json.loads(line) for line in body.splitlines()]
+    actions = [row['action'] for row in rows if row.get('event') == 'page.action']
+    assert {'/select', '/go', '/save', '/theme'} <= set(actions)
+    assert all(action in ui.ACTIONS for action in actions), actions
+    for private in [n.name for n in state.graph.nodes.values() if n.name]:
+        assert private not in body, private
+    for name in dir(fixture):
+        value = getattr(fixture, name)
+        if name.startswith(('PERSON_', 'SECRET_')) and isinstance(value, str) and value:
+            assert value not in body, name
+
+
+def test_every_registered_action_is_allowed_in_a_shared_report():
+    from vcfcf_migrator import diagnostics, ui
+    assert set(ui.ACTIONS) <= diagnostics.ENUMS['action']
