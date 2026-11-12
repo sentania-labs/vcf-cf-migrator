@@ -450,6 +450,8 @@ class PageState:
             for key in old_picked:
                 if key in new.graph.nodes:
                     mapping[key] = key
+            for key in old_picked:
+                if key in mapping:
                     continue
                 old = old_graph.nodes.get(key)
                 same = by_name.get((old.kind, old.name), []) if old else []
@@ -996,14 +998,19 @@ class PageState:
                     know.append(Issue('share-' + node.key, 'know',
                                       f'{self.label(node.key)}: sharing with {listing(groups)} is not carried',
                                       share=node))
-            for number, (kind, ident, owner, _key) in enumerate(self._merge()[1]):
+            notices: Dict[tuple, int] = {}
+            for kind, ident, owner, _key in self._merge()[1]:
+                notices[(kind, ident, owner)] = notices.get((kind, ident, owner), 0) + 1
+            for number, ((kind, ident, owner), count) in enumerate(notices.items()):
                 node = graph.nodes.get(f'dashboard:{ident}@{owner}')
                 name = self.label(node.key) if node else 'A dashboard'
-                know.append(Issue(f'merge-{number}', 'know',
-                                  f'{name}: one widget may stay empty under a shared owner'
-                                  if kind == 'unresolved' else
-                                  f'{name}: one of its texts is renamed inside the bundle',
-                                  merge=kind))
+                if kind == 'unresolved':
+                    head = ('one widget may stay empty under a shared owner' if count == 1 else
+                            f'{count} widgets may stay empty under a shared owner')
+                else:
+                    head = ('one of its texts is renamed inside the bundle' if count == 1 else
+                            f'{count} of its texts are renamed inside the bundle')
+                know.append(Issue(f'merge-{number}', 'know', f'{name}: {head}', merge=kind))
         tasks = self.tasks()
         for task in tasks:
             if task.know:

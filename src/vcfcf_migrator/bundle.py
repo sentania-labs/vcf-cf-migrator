@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -723,7 +724,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
     # page shows the same list; the command line names the file.
     from vcfcf_migrator import tasks as _tasks
     result.tasks = _tasks.build_tasks(graph, selection, keep_ownership, target_user,
-                                      out_path.name, out_path.resolve().parent.name, from_source,
+                                      out_path.name, Path(os.path.abspath(out_path)).parent.name, from_source,
                                       accepted_missing)
     result.checklist = _tasks.checklist_text(result.tasks, out_path.name)
     result.checklist_path = str(out_path.with_name(out_path.stem + '-checklist.txt'))

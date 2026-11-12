@@ -127,10 +127,23 @@ def test_one_dispatch_writes_the_page_action_log_line():
     assert 'page.action' not in inspect.getsource(desktop)
 
 
-def test_the_bridge_goes_through_dispatch():
-    assert "ui.dispatch(" in inspect.getsource(desktop.Bridge.act)
-    assert "ui.dispatch(" in inspect.getsource(desktop.Bridge.find)
-    assert "ui.dispatch(" in inspect.getsource(desktop.Bridge.dropped)
+def test_a_dropped_file_opens_through_the_logged_dispatch(config_dir, export_zip):
+    state = PageState()
+    event = {'dataTransfer': {'files': [{'pywebviewFullPath': str(export_zip)}]}}
+    desktop.Bridge(state).dropped(event)
+    logged = [e for e in state.log.snapshot()
+              if e.get('event') == 'page.action' and e.get('action') == '/open']
+    assert len(logged) == 1
+    assert state.graph is not None and state.screen == 'choose'
+
+
+def test_a_drop_with_no_file_path_does_nothing(config_dir):
+    state = PageState()
+    bridge = desktop.Bridge(state)
+    bridge.dropped({'dataTransfer': {'files': [{'name': 'x.zip'}]}})
+    bridge.dropped(None)
+    assert state.job is None and state.graph is None
+    assert [e for e in state.log.snapshot() if e.get('event') == 'page.action'] == []
 
 
 # --- nothing is listening --------------------------------------------------
@@ -148,10 +161,27 @@ def test_desktop_mode_binds_nothing(monkeypatch, config_dir, export_zip):
     assert opened["state"].graph is None and opened["kwargs"] == {'initial_zip': str(export_zip)}
 
 
-def test_desktop_path_never_constructs_a_server():
-    assert "ThreadingHTTPServer" not in inspect.getsource(ui.run_desktop)
-    assert "ThreadingHTTPServer" not in inspect.getsource(desktop)
-    assert "http_server=False" in inspect.getsource(desktop.run)
+def test_desktop_path_never_constructs_a_server(monkeypatch, config_dir):
+    import sys
+    import types
+
+    started = {}
+
+    class Loaded(list):
+        def __iadd__(self, fn):
+            self.append(fn)
+            return self
+
+    class Window:
+        def __init__(self):
+            self.events = types.SimpleNamespace(loaded=Loaded())
+
+    fake = types.ModuleType('webview')
+    fake.create_window = lambda *args, **kwargs: Window()
+    fake.start = lambda *args, **kwargs: started.update(kwargs)
+    monkeypatch.setitem(sys.modules, 'webview', fake)
+    desktop.run(PageState())
+    assert started.get('http_server') is False
 
 
 # --- the fallback ----------------------------------------------------------

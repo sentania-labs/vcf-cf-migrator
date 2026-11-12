@@ -299,8 +299,8 @@ def build_tasks(graph: Graph, selection, keep_ownership: bool = False, target_us
             + ([f'If the empty widgets are the ones that show a super metric, go back to "Switch on '
                 f'{plural(len(metrics), "super metric")}": it is probably still off in the policy those '
                 'objects use.'] if metrics else [])
-            + ([f'If other widgets stay empty, open Administration, then Integrations. {from_what[0].upper()}'
-                f'{from_what[1:]} should be listed there and shown as collecting data.',
+            + ([f'If other widgets stay empty, open Administration, then Integrations. '
+                f'Make sure {from_what} is listed there and shown as collecting data.',
                 'If it is not listed, the target is not connected to it yet. That has to be set up before '
                 'these dashboards can show anything.'] if reads else
                ['If other widgets stay empty, open Administration, then Integrations, and check that the '
