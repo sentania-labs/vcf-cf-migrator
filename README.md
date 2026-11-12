@@ -23,7 +23,6 @@ Choose the archive for your computer and extract it:
 | Your computer | Download |
 | --- | --- |
 | Mac with Apple silicon (M-series chip) | `vcfcf-migrator-macos-arm64-app.zip` |
-| Mac with an Intel processor | `vcfcf-migrator-macos-x86_64-app.zip` |
 | Linux x86-64 | `vcfcf-migrator-linux.tar.gz` |
 | Windows x86-64 | `vcfcf-migrator-windows.zip` |
 
