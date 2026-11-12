@@ -90,7 +90,7 @@ def _check_one(path: Path, scratch: Path) -> str:
                 f"{plural(len(graph.nodes), 'object')}, first: {first}")
 
     try:
-        picked = _selection.select_all(graph)
+        picked = _selection.select_all(graph, include_unfinished=True)
         out = scratch / (path.stem + "-bundle.zip")
         result = _bundle._write_bundle(members.data, members.order, graph, picked,
                                       out, marker=members.marker,

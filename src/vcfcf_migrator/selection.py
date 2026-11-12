@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from vcfcf_migrator import hollow as _hollow
 from vcfcf_migrator import runlog
 from vcfcf_migrator.graph import (
     Graph,
@@ -89,6 +90,9 @@ class Selection:
     ambiguous: List[str] = field(default_factory=list)
     unhandled: List[str] = field(default_factory=list)
     lines: int = 0
+    # Dashboards the source never finished loading that a "select everything"
+    # left out. Naming one picks it anyway.
+    left_out: List[str] = field(default_factory=list)
 
     def counts(self, graph: Graph) -> Dict[str, int]:
         out: Dict[str, int] = {}
@@ -311,10 +315,48 @@ def refuse_missing_dependencies(graph: Graph, selection: Selection) -> None:
     raise MissingDependency(gaps, lines)
 
 
-def select_all(graph: Graph) -> Selection:
+def select_all(graph: Graph, include_unfinished: bool = False) -> Selection:
     """Every node in the export. Closure is a no-op but still runs, so the
-    select-all path and the subset path write bundles the same way."""
-    return close(graph, [n.key for n in graph.ordered()])
+    select-all path and the subset path write bundles the same way.
+
+    A dashboard the source never finished loading is left out unless asked
+    for: its references are unknown and a bundle carrying it cannot work on
+    the target. Naming it in a selection file still picks it.
+    """
+    nodes = graph.ordered()
+    skipped = [] if include_unfinished else [n.key for n in nodes if n.hollow]
+    selection = close(graph, [n.key for n in nodes if n.key not in skipped])
+    selection.left_out = skipped
+    if skipped:
+        runlog.info("selection.left_out", items=len(skipped),
+                    reason=runlog.prose("dashboards the source never finished loading are left out of "
+                                        "a select-everything unless they are named"))
+    return selection
+
+
+def hollow_selected(graph: Graph, selection: Selection) -> List[Node]:
+    """The carried dashboards the source never finished loading, whether
+    picked by name or pulled in by something that points at them."""
+    return [graph.nodes[k] for k in selection.keys if k in graph.nodes and graph.nodes[k].hollow]
+
+
+def hollow_lines(graph: Graph, selection: Selection) -> List[str]:
+    """What a person is told about unfinished dashboards in this selection."""
+    lines: List[str] = []
+    left_out = [graph.nodes[k] for k in selection.left_out if k in graph.nodes]
+    if left_out:
+        lines.append(f"Left out: {_hollow.summary_line(len(left_out))}, "
+                     + ", ".join(dict.fromkeys(object_label(graph, n) for n in left_out))
+                     + ". Select one by name to include it anyway.")
+    carried = hollow_selected(graph, selection)
+    if carried:
+        lines.append(f"Warning: {_hollow.summary_line(len(carried))} "
+                     + ("is" if len(carried) == 1 else "are") + " in this selection. "
+                     + _hollow.NOT_TRUSTED)
+        for node in carried:
+            lines.append(f"  {object_label(graph, node)}: "
+                         + " ".join(_hollow.detail_lines(node.import_attempts, node.waiting_on)))
+    return lines
 
 
 
@@ -382,6 +424,7 @@ def render(graph: Graph, selection: Selection, target_user='admin', keep_ownersh
         lines.append(line + ". The build is refused until only one is selected.")
     for line in refusals:
         lines.append(line + ". The build is refused until the selection changes.")
+    lines.extend(hollow_lines(graph, selection))
     counts = selection.counts(graph)
     if counts:
         lines.append("Included: " + ", ".join(f"{content_kind_label(k)}: {v}" for k, v in sorted(counts.items())))
@@ -440,6 +483,8 @@ def as_dict(graph: Graph, selection: Selection) -> dict:
                                    if graph.nodes[k].kind == 'dashboard'
                                    and dashboard_binding_lines(graph, k)},
         "keys": list(selection.keys),
+        "dashboards_not_finished_on_source": [k for k in selection.keys if graph.nodes[k].hollow],
+        "left_out": list(selection.left_out),
         "counts": selection.counts(graph),
         "added": [{"key": a.key, "reason": a.reason} for a in selection.added],
         "ambiguous": list(selection.ambiguous),

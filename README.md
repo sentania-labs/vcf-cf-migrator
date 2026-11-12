@@ -220,6 +220,13 @@ In `selection.txt`, put one object name or identifier on each line. Blank lines
 and lines starting with `#` are ignored. Use an identifier when names are not
 unique. `vcfcf-migrator build --help` lists the build options.
 
+A dashboard that VCF Operations never finished loading is marked "not finished
+loading on the source" in the desktop window, `inspect` and `tree`, with what it
+was waiting on. Its references are unknown, so it is left out of Select all and
+`build --select-all`; naming it in a selection still includes it, with a
+warning. An export that says it holds dashboards but does not carry them is
+refused: take the export again from the source.
+
 For Python users, the release also includes a wheel. Install it with
 `python -m pip install /path/to/the-downloaded.whl` using Python 3.9 or newer.
 Installation downloads dependencies; working with local exports afterward

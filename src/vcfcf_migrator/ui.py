@@ -12,6 +12,7 @@ import vcfcf_core
 from vcfcf_migrator import __version__
 from vcfcf_migrator import bundle as _bundle
 from vcfcf_migrator import graph as _graph
+from vcfcf_migrator import hollow as _hollow
 from vcfcf_migrator.rawdoc import RawDocError
 from vcfcf_migrator import runlog as _runlog
 from vcfcf_migrator import selection as _selection
@@ -199,7 +200,7 @@ class PageState:
         except (NotAnExport, RawDocError) as e:
             self.error = str(e)
             if self.graph is not None:
-                still = f"; {self.zip_path} is still open"
+                still = f"{' ' if self.error.endswith('.') else '; '}{self.zip_path} is still open"
                 if self.picked:
                     still += f" with {plural(len(self.picked), 'object')} selected"
                 self.error += still
@@ -232,6 +233,9 @@ class PageState:
         counts = graph.counts()
         self.message = (f"Opened {Path(zip_path).name}: {len(graph.nodes)} objects available"
                         if counts else f"{zip_path}: no content objects")
+        if graph.hollow_dashboards():
+            self.message += (f". {_hollow.summary_line(len(graph.hollow_dashboards())).capitalize()}: "
+                             "they are marked, and left out when you select everything")
         return True
 
     def close_source(self) -> None:
@@ -357,6 +361,8 @@ class PageState:
                 self.message += (f"; pulled in {len(pulled)} it depends on: "
                                  + ", ".join(pulled[:6])
                                  + (f" and {len(pulled) - 6} more" if len(pulled) > 6 else ""))
+            if node.hollow:
+                self.message += f". This dashboard was {_hollow.NOT_FINISHED}; its references are unknown"
             gaps = self.graph.missing_for(key)
             if gaps:
                 self.message += (f". {plural(len(gaps), 'object')} it references "
@@ -401,8 +407,12 @@ class PageState:
         if self.graph is None:
             self.error = "open an export first"
             return
-        self._set_picked(n.key for n in self.graph.ordered())
+        left = [n for n in self.graph.ordered() if n.hollow]
+        self._set_picked(n.key for n in self.graph.ordered() if not n.hollow)
         self.message = f"selected every object in the export ({len(self.picked)})"
+        if left:
+            self.message = (f"selected {len(self.picked)} objects; left out {_hollow.summary_line(len(left))}. "
+                            "Select one by name to include it anyway")
 
     @serialized
     def clear(self) -> None:
@@ -439,9 +449,13 @@ class PageState:
 
     @serialized
     def select_shown(self):
-        keys = list(dict.fromkeys(self.picked + [n.key for n in self.visible_nodes()]))
+        shown = self.visible_nodes()
+        keys = list(dict.fromkeys(self.picked + [n.key for n in shown if not n.hollow]))
         self._set_picked(keys)
         self.message = "selected the shown content; existing selections are retained"
+        left = [n for n in shown if n.hollow and n.key not in self.picked]
+        if left:
+            self.message += f". Left out {_hollow.summary_line(len(left))}; select one by name to include it anyway"
 
     @serialized
     def remove_pick(self, key):

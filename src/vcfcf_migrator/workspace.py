@@ -6,6 +6,7 @@ from pathlib import Path
 from vcfcf_migrator import __version__
 from vcfcf_migrator import preview
 from vcfcf_migrator import wording
+from vcfcf_migrator import hollow
 from vcfcf_migrator.releases import RELEASE_PAGE
 from vcfcf_migrator.cli import version_lines
 from vcfcf_migrator.graph import KIND_ORDER, same_id_dashboard_lines, object_label
@@ -42,6 +43,7 @@ header.top .ver { font-family:inherit }
 .inventory .kindtag { display:block; overflow-wrap:anywhere; font-size:12px; color:var(--ink2) }
 .inventory .status { font-size:11px; color:var(--ink2); max-width:110px; overflow-wrap:anywhere }
 .inventory .status.warn { color:var(--warn) }
+.inventory .waiting { grid-column:2 / -1; font-size:12px; color:var(--warn); margin:2px 0 0 }
 .toolbar { margin:12px 0; display:flex; gap:6px; flex-wrap:wrap }
 .inspector { scroll-margin-top:76px; position:sticky; top:76px; max-height:calc(100vh - 180px); overflow:auto }
 .inspector .card { margin:0 }
@@ -218,18 +220,28 @@ def inventory(state):
            "<label for='filter'>Search name, kind or identifier</label>"
            f"<input id='filter' name='filter' type='text' value='{e(state.filter_text)}'></div>"
            + _button('Search') + _button('Clear search', 'clear-filter', '1') + '</form>',
-           f"<p class='note'>{len(nodes)} shown / {len(state.graph.nodes)} in export</p>",
-           "<div class='toolbar'>" + action('/select-shown', f'Select shown ({len(nodes)})')
-           + action('/select-all', f'Select all {len(state.graph.nodes)} objects')
-           + action('/clear', 'Clear selection') + '</div>'
-           + "<p class='note'>Adds shown items to your current selection. Select the checkbox to include; select the name to preview.</p>"]
+           f"<p class='note'>{len(nodes)} shown / {len(state.graph.nodes)} in export</p>"]
+    unfinished = state.graph.hollow_dashboards()
+    shown_eligible = sum(1 for n in nodes if not n.hollow)
+    out.append("<div class='toolbar'>" + action('/select-shown', f'Select shown ({shown_eligible})')
+               + action('/select-all', f'Select all {len(state.graph.nodes) - len(unfinished)} objects')
+               + action('/clear', 'Clear selection') + '</div>'
+               + "<p class='note'>Adds shown items to your current selection. Select the checkbox to include; select the name to preview.</p>")
+    if unfinished:
+        out.append("<p class='note warn' id='unfinished-note'><strong>"
+                   + e(hollow.summary_line(len(unfinished)).capitalize()) + ".</strong> They are marked below "
+                   "and left out when you select everything or select what is shown. Their references "
+                   "are unknown, so they are not shown as having none. Select one by name to include it anyway.</p>")
     picked, included = state.selected_keys(), state.selection_keys()
     for node in nodes:
         detail = identity(state, node)
         checked = node.key in included
         required = checked and node.key not in picked
         gaps = state.graph.missing_for(node.key)
-        status = 'You selected' if node.key in picked else ('Automatically required' if checked else 'Available')
+        status = ('You selected' if node.key in picked else 'Automatically required' if checked
+                  else hollow.NOT_FINISHED_CAP if node.hollow else 'Available')
+        if node.hollow and checked:
+            status += f' · {hollow.NOT_FINISHED}'
         if gaps:
             status += f' · {len(gaps)} missing'
         out.append(f"<div class='row{' sel' if checked else ''}{' preview-on' if state.preview_key == node.key else ''}' id='{e(anchor(node.key))}'>"
@@ -245,7 +257,9 @@ def inventory(state):
                    f"<input type='hidden' name='key' value='{e(node.key)}'>"
                    f"<button class='name-button' id='inspect-{e(anchor(node.key))}'>{e(display_name(state, node))}</button>"
                    f"<span class='kindtag'>{e(detail)}</span></form>"
-                   f"<span class='status{' warn' if gaps else ''}'>{e(status)}</span>"
+                   f"<span class='status{' warn' if gaps or node.hollow else ''}'>{e(status)}</span>"
+                   + (f"<p class='waiting'>{e(hollow.waiting_text(node.waiting_on) or 'The export does not say what it was waiting on.')}</p>"
+                      if node.hollow else '')
                    + (f"<div class='required-help' id='required-{e(anchor(node.key))}'>Required by your selections: "
                       + ''.join(action('/preview', display_name(state, n), {'key': n.key, 'panel': 'dependencies'})
                                 for n in affected_picks(state, node.key)) + '</div>' if required else '') + '</div>')
@@ -260,6 +274,8 @@ def inspector(state):
     if node is None:
         return ''.join(out) + '<p>Select an object name to inspect its preview, dependencies and details.</p></div></aside>'
     out.append(f'<h3>{e(display_name(state, node))}</h3>')
+    if node.hollow:
+        out.append(hollow_notice(node))
     out.append("<nav class='toolbar' aria-label='Object inspector'>")
     for key, label in [('preview', 'Preview'), ('dependencies', 'Dependencies'), ('details', 'Details')]:
         out.append(action('/inspector-tab', label, {'panel': key}, state.inspector_tab == key, pressed=state.inspector_tab == key))
@@ -284,7 +300,10 @@ def inspector(state):
                 out.append(action('/preview', display_name(state, child), {'key': child.key, 'panel': 'dependencies'}))
         for gap in gaps:
             out.append(f"<p class='missing'>missing {e(gap.kind)} {e(gap.ident)} (via {e(gap.via)})</p>")
-        if not targets and not gaps:
+        if node.hollow:
+            out.append(f"<p class='note'>References unknown: this dashboard was {hollow.NOT_FINISHED}, "
+                       "so what it needs cannot be read from the export.</p>")
+        elif not targets and not gaps:
             out.append('<p>No dependencies recorded in this export.</p>')
         required = state.required_by(node.key)
         if required:
@@ -298,9 +317,20 @@ def inspector(state):
         out.append('<dl>')
         for label, value in [('Kind', node.kind), ('Identifier', node.uuid or node.ident), ('Owner', node.owner)]:
             out.append(f'<dt>{label}</dt><dd>{e(value) or "Not recorded"}</dd>')
+        if node.hollow:
+            out.append(f'<dt>Loading on the source</dt><dd>{e(hollow.NOT_FINISHED_CAP)}. '
+                       + e(' '.join(hollow.detail_lines(node.import_attempts, node.waiting_on))) + '</dd>')
         out.append('</dl>')
     out.append(action('/preview', 'Close the preview', {'key': ''}))
     return ''.join(out) + '</div></aside>'
+
+
+def hollow_notice(node):
+    """The inspector's statement that a dashboard did not finish loading."""
+    return ("<div class='err' id='unfinished-notice'><strong>" + e(hollow.NOT_FINISHED_CAP) + ".</strong> "
+            + e(hollow.NOT_TRUSTED) + ''.join('<p>' + e(line) + '</p>'
+                                              for line in hollow.detail_lines(node.import_attempts, node.waiting_on))
+            + '</div>')
 
 
 def affected_picks(state, key):
@@ -366,6 +396,19 @@ def review(state):
         out.append('</div>')
     if any(state.graph.nodes[k].stock_or_derived for k in selection.keys):
         out.append("<p class='note'>Stock or derived dashboards stay selectable. Importing one can replace the dashboard with the same ID on the target.</p>")
+    unfinished = [state.graph.nodes[k] for k in selection.keys if state.graph.nodes[k].hollow]
+    if unfinished:
+        out.append("<div class='err' id='unfinished-review'><strong>"
+                   + e(hollow.summary_line(len(unfinished)).capitalize()) + " in this bundle.</strong>"
+                   "<p>" + e(hollow.NOT_TRUSTED) + (" Remove it unless you mean to carry it anyway." if len(unfinished) == 1
+                                                    else " Remove them unless you mean to carry them anyway.") + "</p><ul>"
+                   + ''.join('<li>' + e(display_name(state, n)) + ': '
+                             + e(' '.join(hollow.detail_lines(n.import_attempts, n.waiting_on))) + '</li>'
+                             for n in unfinished) + '</ul>'
+                   + ''.join(action('/remove-pick', 'Remove ' + display_name(state, pick), {'key': pick.key})
+                             for pick in {p.key: p for n in unfinished
+                                          for p in affected_picks(state, n.key)}.values())
+                   + '</div>')
     from vcfcf_migrator.graph import dashboard_binding_lines
     for key in selection.keys:
         node = state.graph.nodes[key]
@@ -394,7 +437,7 @@ def review(state):
             out.append('</li>')
         out.append('</ul></div>')
     elif not collisions and not refusals:
-        if selection.not_carried() or metrics or merge_notes or any(state.graph.dashboard_bindings.get(k) for k in selection.keys):
+        if selection.not_carried() or metrics or merge_notes or unfinished or any(state.graph.dashboard_bindings.get(k) for k in selection.keys):
             out.append("<p class='msg'>Ready to build with warnings. Review the information above.</p>")
         else:
             out.append("<p class='msg'>Ready to build. All recorded dependencies are included.</p>")

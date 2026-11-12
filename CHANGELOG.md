@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Dashboards the source never finished loading are detected instead of read as
+  clean. They are marked "not finished loading on the source" in the picker,
+  the dependency tree and `inspect`, with what they were waiting on and how
+  many times the source tried, and `inspect` reports how many there are. Their
+  references are shown as unknown, never as none. They are left out of Select
+  all, Select shown and `build --select-all`; naming one still picks it, and
+  Review and the build report then warn that it will not work on the target.
+  An export whose contents list says it holds dashboards that are not there
+  (empty or missing dashboard files, or a different number read than declared)
+  is refused with a plain message to take the export again, before any
+  dependency tree is built. (#62)
 - The desktop window is reorganized around a start page where you choose to open
   an export zip or connect to VCF Operations. Connecting adds a Browse control
   for a trusted PEM CA file, an opt-in **Ignore SSL validation** switch with a
