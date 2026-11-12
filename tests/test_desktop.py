@@ -11,6 +11,7 @@ Fixture only. Nothing here reads the corpus.
 """
 from __future__ import annotations
 
+import os
 import re
 
 import pytest
@@ -442,6 +443,34 @@ def test_initial_export_opens_after_the_window_bridge_is_ready(config_dir):
     page = desktop.page_html(ui.PageState(), initial_zip='/tmp/a</script>.zip')
     assert '/tmp/a</script>.zip' not in page
     assert r'/tmp/a\u003c/script>.zip' in page
+
+
+@pytest.mark.parametrize("platform,expect_icon", [
+    ("linux", True),
+    ("win32", False),      # WinForms loads only .ico; the exe's embedded icon is used
+    ("darwin", False),     # the .icns in the bundle is used
+])
+def test_only_linux_is_handed_the_png_icon(monkeypatch, platform, expect_icon):
+    import sys
+    import types
+
+    started = {}
+
+    class Loaded(list):
+        def __iadd__(self, fn):
+            self.append(fn)
+            return self
+
+    fake = types.ModuleType('webview')
+    fake.create_window = lambda *a, **k: types.SimpleNamespace(events=types.SimpleNamespace(loaded=Loaded()))
+    fake.start = lambda *a, **k: started.update(k)
+    monkeypatch.setitem(sys.modules, 'webview', fake)
+    monkeypatch.setattr(sys, 'platform', platform)
+    desktop.run(PageState())
+    if expect_icon:
+        assert started['icon'].endswith('app.png') and os.path.isfile(started['icon'])
+    else:
+        assert started['icon'] is None
 
 
 def test_app_icon_assets_ship_and_parse():
