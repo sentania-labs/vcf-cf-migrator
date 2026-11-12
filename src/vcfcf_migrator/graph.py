@@ -87,6 +87,7 @@ from vcfcf_core.supermetrics.crossref import crossref_names
 from vcfcf_migrator import containers as _containers
 from vcfcf_migrator import runlog
 from vcfcf_migrator import navigation
+from vcfcf_migrator import hollow as _hollow
 from vcfcf_migrator.containers import Container
 
 # The only regexes left, and both match inside a *value*, never across a
@@ -154,6 +155,11 @@ class Node:
     refs: List[Ref] = field(default_factory=list)
     description: str = ''
     modified: str = ''
+    # A dashboard the source never finished loading: its references are
+    # unknown, not absent.
+    hollow: bool = False
+    import_attempts: int = 0
+    waiting_on: List[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -179,6 +185,8 @@ class Node:
             "key": self.key, "kind": self.kind, "name": self.name,
             "uuid": self.uuid, "ident": self.ident, "member": self.member,
             "owner": self.owner or None, "stock_or_derived": self.stock_or_derived,
+            "not_finished_on_source": self.hollow,
+            "waiting_on": list(self.waiting_on),
             "refs": [{"kind": r.kind, "ident": r.ident, "via": r.via} for r in self.refs],
         }
 
@@ -234,6 +242,10 @@ class Graph:
     unhandled: List[Note] = field(default_factory=list)
     # node key -> resolved target keys, in the order the references appear
     edges: Dict[str, List[str]] = field(default_factory=dict)
+
+    def hollow_dashboards(self) -> List[Node]:
+        """Dashboards the source never finished loading, in listing order."""
+        return [n for n in self.ordered() if n.hollow]
 
     def by_kind(self, kind: str) -> List[Node]:
         return [n for n in self.ordered() if n.kind == kind]
@@ -1006,6 +1018,13 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
         actual = sum(len(c.entries()) for c in relevant)
         if relevant and isinstance(manifest.get(count_key), int) and manifest[count_key] == actual:
             complete_types.add(kind)
+    declared_dashboards = sum(len(c.entries()) for c in found if 'dashboard' in c.kinds)
+    problem = _hollow.incomplete_export_message(manifest, declared_dashboards)
+    if problem:
+        from vcfcf_migrator.export_reader import IncompleteExport
+        runlog.error("input.incomplete_export", declared=_hollow.declared_dashboards(manifest) or 0,
+                     items=declared_dashboards, reason=runlog.prose(problem))
+        raise IncompleteExport(problem)
     graph = Graph(containers=found, unknown_members=unknown)
     mappings = _json(members.get("usermappings.json", b""))
     if isinstance(mappings, dict):
@@ -1079,6 +1098,15 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
             if entry.kind == "dashboard" and isinstance(container, _containers.DashboardsContainer):
                 dashboard_doc = _json(entry.raw)
                 node.stock_or_derived = bool(dashboard_doc.get('adapterName')) if isinstance(dashboard_doc, dict) else False
+                unfinished = _hollow.unfinished(dashboard_doc)
+                if unfinished is not None:
+                    node.hollow = True
+                    node.import_attempts = unfinished.attempts
+                    node.waiting_on = list(unfinished.waiting_on)
+                    runlog.warn("node.hollow", kind=node.kind, uuid=node.uuid or "",
+                                name=node.name, owner=node.owner or None,
+                                reason=runlog.prose("the source never finished loading this dashboard, so "
+                                       "its references are unknown rather than absent"))
                 node.refs = _dashboard_refs(entry.raw, shapes, resource_entries)
             else:
                 node.refs = list(
@@ -1124,6 +1152,7 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 # even when its display identity is duplicated.
                 if node.kind == 'dashboard':
                     graph.nodes[node.key].stock_or_derived |= node.stock_or_derived
+                    graph.nodes[node.key].hollow |= node.hollow
                     existing = graph.nodes[node.key].refs
                     for ref in node.refs:
                         if ref not in existing:
@@ -1303,12 +1332,17 @@ def render_tree(graph: Graph, roots: Optional[Sequence[Node]] = None,
     counts = graph.counts()
     lines.append("items: " + (", ".join(f"{k}={counts[k]}" for k in KIND_ORDER if k in counts)
                               or "none"))
+    if graph.hollow_dashboards():
+        lines.append(_hollow.summary_line(len(graph.hollow_dashboards())))
     seen_global = set()
     starts = list(roots) if roots is not None else graph.roots()
 
     def walk(node: Node, depth: int, seen: set) -> None:
         pad = "  " * depth
-        lines.append(pad + node.label())
+        lines.append(pad + node.label() + (f" ({_hollow.NOT_FINISHED}; references unknown)" if node.hollow else ""))
+        if node.hollow and node.key not in seen:
+            for text in _hollow.detail_lines(node.import_attempts, node.waiting_on):
+                lines.append(f"{pad}  {text}")
         if node.key in seen or depth >= max_depth:
             if graph.edges.get(node.key):
                 lines.append(f"{pad}  (already shown above)")
@@ -1482,6 +1516,7 @@ def _reachable(graph: Graph, starts: Sequence[Node]) -> set:
 def as_dict(graph: Graph) -> dict:
     return {
         "counts": graph.counts(),
+        "dashboards_not_finished_on_source": len(graph.hollow_dashboards()),
         "dashboard_bindings": graph.dashboard_bindings,
         "nodes": [n.as_dict() for n in graph.ordered()],
         "edges": {k: v for k, v in sorted(graph.edges.items()) if v},

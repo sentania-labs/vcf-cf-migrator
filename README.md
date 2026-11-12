@@ -69,7 +69,8 @@ credentials. Command-line commands do not check for updates.
    local path and choose **Open export**.
 3. **Review and select.** Choose a content type and search by name. Click an
    object to see its preview, dependencies, and details. **Select shown** adds
-   the filtered results; **Select all** includes the whole readable inventory.
+   the filtered results; **Select all** includes the whole readable inventory, except dashboards the
+   source never finished loading (see below).
    Required objects are added automatically. Removing an object you selected
    keeps it included if another selected object still needs it.
 4. **Review the bundle.** Choose **Review bundle** to check your selections and the
@@ -219,6 +220,13 @@ vcfcf-migrator build source-export.zip --select selection.txt --out migration.zi
 In `selection.txt`, put one object name or identifier on each line. Blank lines
 and lines starting with `#` are ignored. Use an identifier when names are not
 unique. `vcfcf-migrator build --help` lists the build options.
+
+A dashboard that VCF Operations never finished loading is marked "not finished
+loading on the source" in the desktop window, `inspect` and `tree`, with what it
+was waiting on. Its references are unknown, so it is left out of Select all and
+`build --select-all`; naming it in a selection still includes it, with a
+warning. An export that says it holds dashboards but does not carry them is
+refused: take the export again from the source.
 
 For Python users, the release also includes a wheel. Install it with
 `python -m pip install /path/to/the-downloaded.whl` using Python 3.9 or newer.

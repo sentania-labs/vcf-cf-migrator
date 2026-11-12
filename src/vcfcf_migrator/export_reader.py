@@ -49,6 +49,7 @@ from vcfcf_core.extractor.extractor import (
 )
 
 from vcfcf_migrator import runlog, navigation
+from vcfcf_migrator import hollow as _hollow
 
 # Listing order for inspect output.
 KIND_ORDER = [
@@ -72,15 +73,26 @@ class NotAnExport(Exception):
     """The path is not a readable zip, or the zip is not a content export."""
 
 
+class IncompleteExport(NotAnExport):
+    """The export's own contents list says it holds dashboards that are not
+    there. Reading on would build a dependency tree from a partial export, so
+    every command stops here and says to take the export again."""
+
+
 @dataclass
 class Item:
     kind: str
     name: str
     uuid: str
     source: str  # zip member the item was read from
+    # A dashboard the source never finished loading.
+    hollow: bool = False
 
     def as_dict(self) -> dict:
-        return {"kind": self.kind, "name": self.name, "uuid": self.uuid, "source": self.source}
+        out = {"kind": self.kind, "name": self.name, "uuid": self.uuid, "source": self.source}
+        if self.kind == "dashboard":
+            out["not_finished_on_source"] = self.hollow
+        return out
 
 
 @dataclass
@@ -108,6 +120,10 @@ class Export:
             out[it.kind] = out.get(it.kind, 0) + 1
         return out
 
+    def hollow_count(self) -> int:
+        """Dashboards the source never finished loading."""
+        return sum(1 for it in self.items if it.hollow)
+
     def as_dict(self) -> dict:
         return {
             "path": self.path,
@@ -116,6 +132,7 @@ class Export:
             "owner": self.owner,
             "manifest": self.manifest,
             "counts": self.counts(),
+            "dashboards_not_finished_on_source": self.hollow_count(),
             "items": [it.as_dict() for it in self.sorted_items()],
             "carried": list(self.carried),
             "navigation_gaps": self.navigation_gaps,
@@ -336,7 +353,8 @@ def _dashboards_from_inner_zip(inner: bytes) -> List[dict]:
 
 
 def _dashboard_items(dashes: List[dict], source: str) -> List[Item]:
-    return [Item("dashboard", str(d.get("name") or "(unnamed)"), str(d.get("id") or ""), source) for d in dashes]
+    return [Item("dashboard", str(d.get("name") or "(unnamed)"), str(d.get("id") or ""), source,
+                 hollow=_hollow.unfinished(d) is not None) for d in dashes]
 
 
 def navigation_gaps(dashes: List[dict]) -> int:
@@ -500,6 +518,13 @@ def _read_export(path) -> Export:
 
             export.carried.append(name)
 
+    problem = _hollow.incomplete_export_message(export.manifest, len(all_dashboards))
+    if problem:
+        runlog.error("input.incomplete_export",
+                     declared=_hollow.declared_dashboards(export.manifest) or 0,
+                     items=len(all_dashboards), reason=runlog.prose(problem))
+        raise IncompleteExport(problem)
+
     # The same object can appear in two members (a full export embeds the
     # notification template inside notificationrules.json and again in
     # payloadtemplates.json). One listing per kind+uuid; the first wins.
@@ -519,6 +544,9 @@ def _read_export(path) -> Export:
     teach_content(export.items)
     counts = export.counts()
     for item in export.sorted_items():
+        if item.hollow:
+            runlog.warn("node.hollow", kind=item.kind, uuid=item.uuid or "", name=item.name,
+                        reason=runlog.prose("the source never finished loading this dashboard"))
         runlog.debug("item.listed", kind=item.kind, uuid=item.uuid or "",
                      name=item.name, member=item.source)
     for name in export.carried:
@@ -643,8 +671,12 @@ def render_text(export: Export) -> str:
         lines.append(f"note: {note}")
     counts = export.counts()
     lines.append(f"items: {len(export.items)}" + (" (" + ", ".join(f"{k}={counts[k]}" for k in KIND_ORDER if k in counts) + ")" if counts else ""))
+    if export.hollow_count():
+        lines.append(_hollow.summary_line(export.hollow_count()) + ": they are marked below, "
+                     "and a build leaves them out unless you select them by name")
     for it in export.sorted_items():
-        lines.append(f"  {it.kind:<21} {it.uuid or '(no uuid)':<40} {it.name}")
+        lines.append(f"  {it.kind:<21} {it.uuid or '(no uuid)':<40} {it.name}"
+                     + (f"  [{_hollow.NOT_FINISHED}]" if it.hollow else ""))
     if export.navigation_gaps:
         lines.append(f"dashboard navigation links pointing outside this export: "
                      f"{export.navigation_gaps} (selecting an affected dashboard blocks bundle "

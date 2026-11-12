@@ -18,11 +18,11 @@ closure.not_carried closure.picked command.failed command.refused container.foun
 container.judged container.rebuilt corpus.absent corpus.checked corpus.walk
 corpus.zip_checked document.absent document.unreadable graph.built
 grid.columns_defaulted grid.coords_unreadable grid.widened input.directories
-input.fingerprint input.listed input.not_a_zip input.not_an_export input.note
+input.fingerprint input.incomplete_export input.listed input.not_a_zip input.not_an_export input.note
 input.unreadable item.listed log.contents log.level log.truncated log.failed
 log.destination_lost log.reconfigured manifest.written marker.absent marker.copied marker.read
 marker.unknown_format member.carried_not_inspected member.not_carried member.read
-member.unknown member.unreadable node.duplicate node.found object.carries_nothing
+member.unknown member.unreadable node.duplicate node.found node.hollow object.carries_nothing
 output.document output.fingerprint output.unwritable owners.carried page.action
 phase.start phase.end preview.built preview.failed preview.kind_not_drawn
 preview.not_a_page preview.written ref.ambiguous ref.missing ref.optional_miss
