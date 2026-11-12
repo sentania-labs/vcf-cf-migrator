@@ -47,6 +47,14 @@ def visible(html: str) -> str:
     return ' '.join(' '.join(parser.out).split())
 
 
+def configure_log(state, **values):
+    """Set the log's file or level the way the command line and environment
+    do, in the settings file, and have the page open its log again."""
+    from vcfcf_migrator import settings
+    settings.save_settings(values)
+    state.open_log()
+
+
 def save_to(state, path, force=False):
     """Save the bundle at *path*, as the Save step does after "Change name or
     folder"."""

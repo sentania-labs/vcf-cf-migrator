@@ -25,7 +25,7 @@ from make_export_fixture import (
     SECRET_TOKEN,
     build_export_zip,
 )
-from pages import save_to, visible
+from pages import configure_log, save_to, visible
 from vcfcf_migrator import runlog
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.ui import PageState
@@ -351,8 +351,8 @@ def test_a_log_setting_change_keeps_what_the_page_learned_about_people(
     before = state.log.redactor.owners_seen()
     assert before > 0
     target = tmp_path / "after-change.jsonl"
-    state.save_setting({"log_file": str(target)})
-    state.save_setting({"log_level": "debug"})
+    configure_log(state, log_file=str(target))
+    configure_log(state, log_level="debug")
     state.render()
     state.add_shown()
     out = tmp_path / "diag.jsonl"
@@ -364,10 +364,29 @@ def test_a_log_setting_change_keeps_what_the_page_learned_about_people(
     assert state.log.redactor.owners_seen() >= before
 
 
+def test_switching_the_log_on_in_the_window_keeps_what_the_page_learned_about_people(
+        tmp_path, export_zip, config_dir, monkeypatch):
+    from vcfcf_migrator.ui import dispatch
+    home = tmp_path / 'home'
+    (home / 'Downloads').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    state = PageState(str(export_zip))
+    before = state.log.redactor.owners_seen()
+    assert before > 0
+    dispatch(state, '/log', {'on': '1'})
+    state.render()
+    state.log.close()
+    body = (home / 'Downloads' / 'vcf-content-migrator.log').read_text(encoding="utf-8")
+    assert body.strip()
+    for needle in EXCLUDED_FROM_THE_FIXTURE:
+        assert needle not in body, needle
+    assert state.log.redactor.owners_seen() >= before
+
+
 def test_the_page_logs_render_completion_without_ending_the_session(
         tmp_path, export_zip, config_dir):
     state = PageState(str(export_zip))
-    state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
+    configure_log(state, log_file=str(tmp_path / "page.jsonl"))
     state.render()
     state.render()
     assert not of(state.log.events, "run.end")
@@ -425,13 +444,13 @@ def test_the_header_the_page_keeps_is_the_one_the_run_is_using(tmp_path, export_
     **The assertion has to be on a field the second open changes.** It was on
     the declared source version, which is gone; counting the headers is not
     enough, because every other field of ``run.start`` is the same in both.
-    The level is what the second ``save_setting`` moves, so ``log.contents``
+    The level is what the second ``configure_log`` moves, so ``log.contents``
     is what tells a stale head from a fresh one: under first-one-wins this
     test goes red on the level, which is the regression it is named after.
     """
     state = PageState(str(export_zip))
-    state.save_setting({"log_file": str(tmp_path / "page.jsonl")})
-    state.save_setting({"log_level": "debug"})       # a second open_log
+    configure_log(state, log_file=str(tmp_path / "page.jsonl"))
+    configure_log(state, log_level="debug")          # a second open_log
     state.render()
     state.log.event_cap = 5                          # force the truncation
     for index in range(40):
@@ -489,14 +508,8 @@ def test_the_support_report_button_says_what_the_file_holds(state):
 def test_saving_a_log_file_setting_turns_the_log_on(tmp_path, export_zip, config_dir):
     state = PageState(str(export_zip))
     target = tmp_path / "page.jsonl"
-    state.save_setting({"log_file": str(target)})
+    configure_log(state, log_file=str(target))
     assert state.note.kind == 'ok'    # still the "Opened ..." line: nothing went wrong
     state.render()
     state.log.close()
     assert target.exists() and target.read_text(encoding="utf-8").strip()
-
-
-def test_a_log_level_the_tool_does_not_know_changes_nothing(state):
-    before = state.log_settings()[2]
-    state.save_setting({"log_level": "chatty"})
-    assert state.log_settings()[2] == before

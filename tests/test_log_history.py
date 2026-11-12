@@ -3,7 +3,8 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
-from vcfcf_migrator import runlog
+from pages import configure_log
+from vcfcf_migrator import runlog, settings
 from vcfcf_migrator.ui import PageState, dispatch
 
 
@@ -14,11 +15,12 @@ def test_settings_keep_clock_counters_and_active_operation(config_dir, tmp_path)
     for i in range(20):
         log.detail('closure.picked', index=i)
     before = log.written()
-    dispatch(state, '/settings', {'log_level': 'debug'})
+    settings.save_settings({'log_level': 'debug'})
+    dispatch(state, '/log', {'on': '0'})
     assert state.log is log
     assert log._t0 == origin and log.written() > before
     ends = [e for e in log.events if e['event'] == 'phase.end']
-    assert ends[-1]['action'] == '/settings'
+    assert ends[-1]['action'] == '/log'
     assert ends[-1]['operation']
 
 
@@ -141,7 +143,7 @@ def test_new_file_destinations_receive_original_session_context(config_dir, tmp_
     original = next(e.copy() for e in state.log.events if e['event'] == 'run.start')
     for basename in ('first.jsonl', 'second.jsonl'):
         path = tmp_path / basename
-        state.save_setting({'log_file': str(path)})
+        configure_log(state, log_file=str(path))
         rows = list(map(json.loads, path.read_text().splitlines()))
         assert next(e for e in rows if e['event'] == 'run.start') == original
     assert next(e for e in state.log.events if e['event'] == 'run.start') == original

@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from pages import configure_log
 from vcfcf_migrator import runlog
 from vcfcf_migrator.ui import PageState
 
@@ -82,7 +83,7 @@ def test_report_is_safe_after_settings_change_truncation_and_failure(tmp_path, e
     state.log.event_cap = 8
     for i in range(20):
         state.log.info('page.action', path='/Users/ava-login/private.zip', index=i)
-    state.save_setting({'log_level': 'debug'})
+    configure_log(state, log_level='debug')
     state.open_export('/home/ava-login/nonexistent.zip')
     out = tmp_path / 'report.jsonl'
     state.save_support_report(str(out))

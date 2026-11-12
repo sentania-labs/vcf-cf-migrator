@@ -1193,16 +1193,6 @@ class PageState:
                 value = ''
             _settings.save_settings({'log_file': value})
             self.open_log()
-            return
-        if 'log_file' in form:
-            _settings.save_settings({'log_file': form.get('log_file', '').strip()})
-            self.open_log()
-            return
-        if 'log_level' in form:
-            value = form.get('log_level', '').strip().lower()
-            if value in _runlog.LEVELS:
-                _settings.save_settings({'log_level': value})
-                self.open_log()
 
     @serialized
     def render(self) -> str:
@@ -1577,11 +1567,6 @@ def _act_get_update(state: "PageState", _form: dict) -> str:
     return ''
 
 
-def _act_settings(state: "PageState", form: dict) -> str:
-    state.save_setting(form)
-    return ''
-
-
 def _act_theme(state: "PageState", form: dict) -> str:
     # The choice travels as "choice", never as a data-theme attribute: the
     # page's colours are keyed on that attribute, and a control carrying it
@@ -1680,7 +1665,6 @@ ACTIONS = {
     '/support-report': _act_support_report,
     '/report-problem': _act_report_problem,
     '/get-update': _act_get_update,
-    '/settings': _act_settings,
     '/theme': _act_theme,
     '/log': _act_log,
     '/escape': _act_escape,
@@ -1691,7 +1675,7 @@ POST_PATHS = tuple(sorted(ACTIONS))
 # a reason to lose what the previous action said.
 KEEPS_NOTE = ('/focus', '/find', '/redraw', '/preview', '/close-preview', '/issue', '/task', '/tick',
               '/doc', '/close-doc', '/gloss', '/escape', '/help', '/back', '/conn-edited',
-              '/show-in-folder', '/settings', '/theme', '/log', '/support-report')
+              '/show-in-folder', '/theme', '/log', '/support-report')
 
 
 def run_desktop(zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,

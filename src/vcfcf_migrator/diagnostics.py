@@ -46,7 +46,7 @@ ENUMS = {
     'type': frozenset(('ALL', 'CUSTOM')),
     'spelling': frozenset(('uuid', 'name')),
     'action': frozenset(('/open', '/pick-export', '/select', '/select-all', '/clear',
-                         '/apply-lines', '/preview', '/filter', '/build', '/settings',
+                         '/apply-lines', '/preview', '/filter', '/build',
                          '/diagnostics', '/tab', '/disclose', '/inspect', '/tree',
                          '/corpus-check', '/command')),
 }
