@@ -69,7 +69,8 @@ credentials. Command-line commands do not check for updates.
    local path and choose **Open export**.
 3. **Review and select.** Choose a content type and search by name. Click an
    object to see its preview, dependencies, and details. **Select shown** adds
-   the filtered results; **Select all** includes the whole readable inventory.
+   the filtered results; **Select all** includes the whole readable inventory, except dashboards the
+   source never finished loading (see below).
    Required objects are added automatically. Removing an object you selected
    keeps it included if another selected object still needs it.
 4. **Review the bundle.** Choose **Review bundle** to check your selections and the

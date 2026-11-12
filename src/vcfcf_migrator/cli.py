@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--select", metavar="FILE",
                     help="selection file: one uuid or kind:uuid per line, # comments allowed")
     sp.add_argument("--select-all", action="store_true",
-                    help="carry every content object the export holds")
+                    help="carry every content object the export holds, except dashboards the source never finished loading")
     owner = sp.add_mutually_exclusive_group()
     owner.add_argument('--target-owner', metavar='USER', default='admin',
                        help='map dashboards to this target user (default: admin)')
