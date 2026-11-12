@@ -261,8 +261,8 @@ A dashboard that VCF Operations never finished loading is marked in the desktop
 window, `inspect` and `tree`, with what it was waiting on. Its references are
 unknown, so it is left out of **Add all of these** and `build --select-all`;
 ticking it or naming it in a selection still includes it, and the window asks
-you to confirm at Review. An export that says it holds dashboards but does not carry them is
-refused: take the export again from the source.
+you to confirm at Review. An export that says it holds dashboards but does not
+carry them is refused: take the export again from the source.
 
 For Python users, the release also includes a wheel. Install it with
 `python -m pip install /path/to/the-downloaded.whl` using Python 3.9 or newer.
