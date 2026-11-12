@@ -14,7 +14,8 @@
     their own message with what to do. An empty export is now refused instead
     of opened. Reading can be cancelled. Opening a different export asks in the
     page and ticks your choices again in the new one, saying how many were
-    found.
+    found. Anything decided at Review is asked again, because the same choice
+    can need something different in another export.
   - **Choose.** Search filters as you type, by name. One panel shows what an
     item is, what it needs as a tree (with anything missing in red) and what
     uses it. "Add all of these" replaces the three selection buttons, skips

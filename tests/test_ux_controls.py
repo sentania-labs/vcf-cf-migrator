@@ -511,15 +511,20 @@ def test_theme_default_persistence_validation_and_corpus_compatibility(config_di
     settings.save_settings({'corpus_dir': '/data/exports'})
     state = PageState()
     assert state.theme == 'light'
-    dispatch(state, '/settings', {'theme': 'dark'})
+    dispatch(state, '/theme', {'choice': 'dark'})
     # Applies at once, with no second button to press.
-    assert state.theme == 'dark' and 'data-theme="dark"' in state.render()
+    page = state.render()
+    assert state.theme == 'dark' and '<body data-theme="dark"' in page
+    # Only the page carries the theme attribute. A control that carried it
+    # would be drawn in the theme it offers rather than the one in force.
+    state.screen = 'help'
+    assert 'data-theme' not in state.render().split('<main>')[1].split('</main>')[0]
     second = PageState()
     assert second.theme == 'dark'
     assert settings.load_settings() == {'corpus_dir': '/data/exports', 'theme': 'dark'}
-    dispatch(state, '/settings', {'theme': 'invalid'})
+    dispatch(state, '/theme', {'choice': 'invalid'})
     assert state.theme == 'dark' and settings.load_settings()['theme'] == 'dark'
-    dispatch(second, '/settings', {'theme': 'light'})
+    dispatch(second, '/theme', {'choice': 'light'})
     third = PageState()
     assert third.theme == 'light'
     for item in (state, second, third):
@@ -548,3 +553,183 @@ def test_native_save_dialog_starts_at_the_real_default(state, kind, name, blank,
     assert bridge.pick_path(kind, blank) == {'path': ''}
     assert (Path(calls[0]['directory']), calls[0]['save_filename']) == (
         tmp_path.resolve(), name or state.save_name)
+
+
+# -- what an independent review of this change found ---------------------------
+
+def test_an_answer_given_at_review_never_follows_the_choice_into_another_export(
+        state, export_zip, tmp_path):
+    """The same choice can need something different in another export. An
+    answer that came along would approve a gap nobody was ever shown."""
+    from make_export_fixture import DASHBOARD_ID, OWNER
+    dash = f'dashboard:{DASHBOARD_ID}@{OWNER}'
+    state.toggle(dash, True)
+    issue, = state.open_issues()
+    state.keep_in(issue.id)
+    assert not state.open_issues() and state.accepted_missing()
+    for name in ('other.zip', 'fixture-export.zip'):          # a different export, then the same one re-read
+        path = export_zip if name == 'fixture-export.zip' else tmp_path / name
+        if path != export_zip:
+            path.write_bytes(build_export_zip())
+        state.open_export(str(path))
+        dispatch(state, '/ask-yes', {})
+        assert state.picked == [dash] and state.decided == {}
+        assert [i.id for i in state.open_issues()] == [issue.id]
+        assert state.accepted_missing() == []
+        if name == 'other.zip':
+            assert 'What you decided at Review is asked again' in state.note.text
+        save_to(state, tmp_path / f'after-{name}')
+        assert not (tmp_path / f'after-{name}').exists() and state.screen == 'review'
+        state.keep_in(issue.id)
+
+
+def test_a_save_that_stops_part_way_says_which_files_it_left(state, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    folder = tmp_path / 'out'
+    folder.mkdir()
+    out = folder / 'bundle.zip'
+    stuck = folder / 'bundle-report.txt'
+    stuck.mkdir()                       # the report cannot be written over a folder
+    save_to(state, out, force=True)
+    assert state.save_state == 'error' and state.save_problem.startswith('os:')
+    assert state.save_left == ['bundle.zip', 'bundle-checklist.txt']
+    state.screen = 'save'
+    page = visible(state.render())
+    assert 'Nothing was written.' not in page
+    assert ('It stopped part-way: bundle.zip and bundle-checklist.txt were written and the rest was not, '
+            'so do not use what is there.') in page
+
+
+def test_a_downloaded_export_gets_a_file_name_a_computer_accepts(state):
+    state.source_snapshot = object()
+    for address, name in (('ops.example.com:8443', 'ops.example.com-bundle.zip'),
+                          ('ops.example.com', 'ops.example.com-bundle.zip'),
+                          ('[fd00::5]', 'fd00-5-bundle.zip'), ('', 'vcf-operations-bundle.zip')):
+        state.source_name = address
+        assert state.default_save_name() == name
+        assert not set(state.default_save_name()) & set(':[]/\\')
+    state.source_snapshot = None
+
+
+def test_a_replace_agreed_for_a_bundle_that_is_not_there_does_not_cover_its_report(state, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    (tmp_path / 'x-report.txt').write_text('someone else wrote this')
+    state.dialog = lambda kind, current: {'path': str(tmp_path / 'x.zip'), 'confirmed': True}
+    dispatch(state, '/pick-save', {})
+    dispatch(state, '/save', {})
+    assert (state.save_state, state.save_problem) == ('exists', 'x-report.txt')
+    assert (tmp_path / 'x-report.txt').read_text() == 'someone else wrote this'
+
+
+def test_help_does_not_show_what_another_screen_said_and_gives_it_back(state):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    said = state.note
+    dispatch(state, '/add-shown', {})
+    assert state.undo
+    dispatch(state, '/help', {})
+    page = visible(state.render())
+    assert state.note is None and 'Added' not in page and 'Undo' not in page
+    dispatch(state, '/back', {})
+    assert state.note is not None and state.note is not said and 'Added' in state.note.text
+
+
+def test_a_question_on_screen_is_answered_before_anything_else(state, export_zip, tmp_path):
+    state.toggle('supermetric:' + EMPTY_SM_ID, True)
+    state.open_export(str(export_zip))
+    assert state.ask and state.ask['kind'] == 'switch'
+    pending = state.ask['new']
+    for path, form in (('/pick-export', {}), ('/select', {'key': 'customgroup:[Fixture] Web Tier', 'on': '1'}),
+                       ('/go', {'to': 'choose'}), ('/help', {})):
+        dispatch(state, path, form)
+        assert state.ask is not None and state.ask['new'] is pending and len(state.picked) == 1
+    dispatch(state, '/escape', {})
+    assert state.ask is None and state.screen == 'choose'
+
+
+def test_a_screen_that_cannot_be_drawn_does_not_trap_the_window(state, monkeypatch):
+    from vcfcf_migrator import preview
+    key = next(n.key for n in state.graph.ordered() if n.kind == 'dashboard')
+
+    def broken(*args, **kwargs):
+        raise RuntimeError('unexpected shape')
+    monkeypatch.setattr(preview, 'fragment', broken)
+    page = desktop.Bridge(state).act('/preview', {'key': key})['html']
+    assert state.preview_key == '' and 'That could not be shown.' in visible(page)
+    assert 'Find by name' in page          # the step itself is drawn again
+    # The window is usable again: the next action draws normally.
+    assert 'Help and settings' in visible(desktop.Bridge(state).act('/help', {})['html'])
+
+
+def test_a_local_read_runs_in_the_background_and_can_be_cancelled(config_dir, export_zip):
+    import threading
+    state = PageState()
+    state.background = True
+    started, release = threading.Event(), threading.Event()
+    real = state._read
+
+    def slow(job, *args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return real(job, *args, **kwargs)
+    state._read = slow
+    state.open_export(str(export_zip))
+    assert started.wait(5)
+    job = state.job
+    assert job.kind == 'read' and 'Reading fixture-export.zip' in visible(state.render())
+    dispatch(state, '/cancel-job', {})
+    release.set()
+    assert job.done.wait(5)
+    assert state.graph is None and state.job is None and 'Nothing was changed.' in state.note.text
+    # And without a cancel, the same read lands.
+    started.clear()
+    state.open_export(str(export_zip))
+    assert state.job.done.wait(5)
+    assert state.graph is not None and state.screen == 'choose' and state.job is None
+    state.log.close()
+
+
+def test_a_download_cancelled_after_it_arrived_lets_the_temporary_export_go(state, monkeypatch):
+    import threading
+    closed, arrived, release = [], threading.Event(), threading.Event()
+
+    class Fetched:
+        base = 'https://operations.example/suite-api/api'
+        def __init__(self, *args, **kwargs):
+            self.progress = lambda stage: None
+        def acquire(self, *args):
+            snapshot = source.Snapshot()
+            snapshot.path.write_bytes(build_export_zip())
+            real_close = snapshot.close
+            snapshot.close = lambda: (closed.append(True), real_close())
+            return snapshot
+    monkeypatch.setattr(source, 'Client', Fetched)
+    real = state._read
+
+    def slow(job, *args, **kwargs):
+        arrived.set()
+        assert release.wait(5)
+        return real(job, *args, **kwargs)
+    state._read = slow
+    state.background = True
+    before = state.graph
+    dispatch(state, '/connect', dict(address='https://operations.example', username='u', password='p',
+                                     export_password='e', export_password2='e'))
+    assert arrived.wait(5)
+    job = state.job
+    assert job.stage == 3                                   # reading what is inside
+    dispatch(state, '/cancel-job', {})
+    release.set()
+    assert job.done.wait(5)
+    assert closed and state.graph is before and state.source_snapshot is None
+
+
+def test_a_job_whose_result_cannot_be_swapped_in_still_ends(config_dir, export_zip, monkeypatch):
+    state = PageState()
+
+    def boom(new):
+        raise RuntimeError('unexpected')
+    monkeypatch.setattr(state, '_arrive', boom)
+    state.open_export(str(export_zip))
+    assert state.job is None and state.graph is None
+    assert state.note.kind == 'bad' and 'That did not finish.' in state.note.text
+    state.log.close()

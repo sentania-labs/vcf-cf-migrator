@@ -191,7 +191,13 @@ def main():
 
                 # No screen scrolls, so every control is where it is drawn.
                 wait_for(lambda: rendered_after('/open'))
-                click('Add all of these', '/add-shown')
+                if args.objects == 1:
+                    # One thing has no bulk button: click its name, then add it
+                    # from the panel that opens beside the list.
+                    click('Synthetic capacity metric 00000', '/focus')
+                    click('Add to bundle', '/select')
+                else:
+                    click('Add all of these', '/add-shown')
                 click('Next: review', '/go')        # no dashboards, so no owner to choose
                 click('Next: save', '/go')
                 click('Save the bundle', '/save', lowest=True)

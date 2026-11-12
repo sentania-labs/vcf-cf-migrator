@@ -498,8 +498,9 @@ def main():
                 click('ask-no'); assert page.picked == picked
                 click('step-open'); choose_file(good); click('ask-yes')
                 wait_for(lambda: page.graph is not None and ready())
-                see(f'Your {len(picked)} choices were ticked again.')
-                assert page.picked == picked
+                see(f'Your {len(picked)} choices were ticked again.',
+                    'What you decided at Review is asked again, because this is a different export.')
+                assert page.picked == picked and page.decided == {}
                 look('37-choose-choices-ticked-again')
 
                 # ---- Job 9: help and diagnostics --------------------------------------------
@@ -530,7 +531,7 @@ def main():
                 click('help-back'); see('In your bundle')
                 press('Datastore Health', '.nmb')
                 look('43-choose-dark')
-                click('next'); click('next'); see('Decided', 'Good to know, nothing to decide')
+                click('next'); click('next'); see('Decide before saving', 'Good to know, nothing to decide')
                 look('44-review-dark')
                 click('help-button'); click('theme-light')
                 wait_for(lambda: js('document.documentElement.dataset.theme') == 'light' and ready())

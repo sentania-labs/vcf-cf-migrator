@@ -1,5 +1,9 @@
 # docs
 
+`redesign/` holds a before-and-after picture of each screen from the change that
+made the window six steps (one image per screen, today's app above the new
+one).
+
 `design/` is why this tool is the way it is: the pass-through contract, the
 evidence from importing bundles into a live instance, the reasoning behind
 dropping version handling, and the release log. `reviews/` holds the review

@@ -237,9 +237,14 @@ def test_the_panel_shows_what_it_is_what_it_needs_and_what_uses_it(state):
     assert '<li class="gone">' in html and 'Not in this export' in html
     # Clicking a name in the tree goes to it, and the list follows.
     act(state, '/filter', f='dashboard')
-    act(state, '/focus', key=MAIL, reveal='1')
+    page = act(state, '/focus', key=MAIL, reveal='1')
     assert state.focus_key == MAIL and state.filter_kind == 'outboundsetting'
-    assert 'data-reveal' in state.render()
+    # Exactly one thing is brought into view: the row, never a link in the panel.
+    assert page.count(' data-into-view') == 1
+    assert 'data-into-view' in page.split(f'id="{uipage.anchor(MAIL)}"')[1].split('>')[0]
+    assert "querySelector('[data-into-view]')" in uipage.CLIENT_JS
+    assert "querySelector('[data-reveal]')" not in uipage.CLIENT_JS
+    assert ' data-into-view' not in state.render()          # once only, not on every redraw
 
 
 def test_search_is_by_name_and_survives_ticking_and_looking(state):

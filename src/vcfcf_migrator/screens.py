@@ -86,6 +86,8 @@ def _note(state, extra_class: str = '', style: str = '') -> str:
 
 def _folder(path: Path) -> str:
     """A folder as a person names it: Downloads, not a path."""
+    if path == Path.home():
+        return 'home'
     return path.name or str(path)
 
 
@@ -463,7 +465,7 @@ def _row(state, node, included, picked) -> str:
         sub += ' · left out unless ticked'
     focused = state.focus_key == key
     return (f'<div class="it{" in" if is_in else ""}{" focus" if focused else ""}" data-act="/focus" '
-            f'data-key="{e(key)}" id="{ident}"' + (' data-reveal' if focused and state.reveal else '')
+            f'data-key="{e(key)}" id="{ident}"' + (' data-into-view' if focused and state.reveal else '')
             + f'><label class="chk">{box}</label><span><button type="button" class="nmb" data-act="/focus" '
             f'data-key="{e(key)}" id="name-{ident}">{name}</button><div class="sub">{sub}</div></span>'
             f'<span class="tags">{"".join(tags)}</span></div>')
@@ -950,10 +952,16 @@ def _issue_detail(state, issue, tasks) -> str:
                        + button('/leave', f'Leave out {state.label(pick)} (recommended)', primary=True,
                                 key=pick, ident='leave-out', focus=True))
             if issue.hard:
+                # One answer covers everything listed above, so it says so
+                # when what is listed is more than the missing thing.
+                also = bool(issue.stock or issue.unfinished)
                 out.append(button('/fuller', 'Open an export that has what is missing…',
                                   want=_insight.missing_phrase(issue.hard[0][1])))
-                out.append(button('/keep-in', 'I have checked this already exists on the target. '
-                                              'Keep it in anyway', id=issue.id, ident='keep-in'))
+                out.append(button('/keep-in', ('I have checked what is missing already exists on the '
+                                               'target, and I accept the rest above. Keep it in anyway'
+                                               if also else
+                                               'I have checked this already exists on the target. '
+                                               'Keep it in anyway'), id=issue.id, ident='keep-in'))
                 out.append('</div><p class="sm muted" style="margin-top:10px">Leaving it out only affects '
                            'this bundle. Everything else you chose still goes. If you open another export, '
                            'your choices are ticked again in it wherever the same things exist. If you keep '
@@ -1121,7 +1129,11 @@ def save_screen(state) -> Tuple[str, str]:
             else:
                 why = ('That folder does not allow new files.' if problem == 'denied'
                        else f'The computer reported: {e(problem[3:])}.')
-                text = (f'<b>Could not save in {e(folder)}.</b> {why} Nothing was written. Choose a '
+                left = ('Nothing was written.' if not state.save_left else
+                        'It stopped part-way: ' + e(listing(state.save_left))
+                        + (' was' if len(state.save_left) == 1 else ' were')
+                        + ' written and the rest was not, so do not use what is there.')
+                text = (f'<b>Could not save in {e(folder)}.</b> {why} {left} Choose a '
                         'different folder, then save again.')
                 fix = 'Choose a different folder…'
             out.append(f'<div class="lat-banner lat-banner--bad" role="alert" style="margin-bottom:12px">{text}'
@@ -1279,7 +1291,7 @@ def help_screen(state) -> Tuple[str, str]:
     settings = ('<div class="lat-card"><h3>Settings</h3><div class="field" style="margin-bottom:6px">'
                 '<span class="lat-label">Appearance</span><div style="display:flex">'
                 + ''.join(f'<label class="radio"><input type="radio" name="theme" id="theme-{name}" '
-                          f'data-act="/settings" data-theme="{name}"{" checked" if state.theme == name else ""}>'
+                          f'data-act="/theme" data-choice="{name}"{" checked" if state.theme == name else ""}>'
                           f'{name.capitalize()}</label>' for name in ('light', 'dark'))
                 + f'</div></div><p class="muted sm" style="margin:10px 0 0">You have version {version}. '
                   f'{latest}</p></div>')

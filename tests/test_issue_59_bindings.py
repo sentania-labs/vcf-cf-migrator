@@ -56,7 +56,7 @@ def test_widget_bindings_report_objects_kinds_and_worlds(tmp_path):
     state = page_over(g, ['dashboard:d@a'])
     look = next(task for task in state.tasks() if task.id == 'look')
     assert 'vCenter (the system that manages your virtual machines)' in look.why
-    assert 'the system behind the "OtherAdapter" adapter' in look.why
+    assert 'the system that the adapter "OtherAdapter" reads from' in look.why
     assert any('the widget "Object widget" shows one particular object, "Cluster One"' in step
                for step in look.steps)
     assert not any('World widget' in step or 'Group widget' in step for step in look.steps)

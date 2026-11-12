@@ -93,7 +93,25 @@ class Bridge:
         self._release_lock = threading.Lock()
 
     def _page(self, focus: str = "") -> Dict[str, str]:
-        return {"html": page_html(self._state), "focus": focus or ""}
+        """The page as it stands. A screen that cannot be drawn must not
+        leave the window stuck on it: whatever was laid over the page is
+        closed and the step itself is drawn, with the reason said."""
+        from . import ui
+        state = self._state
+        try:
+            return {"html": page_html(state), "focus": focus or ""}
+        except Exception as exc:  # noqa: BLE001 - said on the page
+            state.preview_key, state.doc, state.gloss = '', '', False
+            if state.ask is not None:
+                state._drop_question()
+            state.note = ui.Note('bad', '<b>That could not be shown.</b> The app hit a problem it did not '
+                                        f'expect ({ui.e(type(exc).__name__)}). Nothing was changed.')
+            try:
+                return {"html": page_html(state), "focus": ""}
+            except Exception:  # noqa: BLE001
+                state.screen = 'open' if state.graph is None else 'choose'
+                state.focus_key, state.filter_kind, state.filter_text = '', 'all', ''
+                return {"html": page_html(state), "focus": ""}
 
     def _client(self, address: str, timeout: int = 10):
         from .source import Client

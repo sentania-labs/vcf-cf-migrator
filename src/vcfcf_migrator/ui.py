@@ -170,6 +170,7 @@ class PageState:
         self.screen = 'open'
         self.max_step = 0
         self.back = 'open'
+        self.parked_note: Optional[Note] = None
         self.note: Optional[Note] = None
         self.undo: Optional[dict] = None
         self.ask: Optional[dict] = None
@@ -197,6 +198,7 @@ class PageState:
         self.save_state = 'ready'          # ready, exists, error, saved
         self.save_problem = ''
         self.save_confirmed = ''           # a path the computer's own Save window already confirmed
+        self.save_left: List[str] = []     # files a failed save wrote before it stopped
         self.built_path = ''
         self.build_report = ''
         self.stale = False
@@ -325,16 +327,22 @@ class PageState:
                 error = exc
                 commit = lambda: failed(error)  # noqa: E731
             with self.action_lock:
-                if self.job is job:
-                    self.job = None
-                    if not job.cancel.is_set():
+                try:
+                    if self.job is job and not job.cancel.is_set():
+                        self.job = None
                         commit()
                     elif getattr(job, 'discard', None):
                         job.discard()
-                elif getattr(job, 'discard', None):
-                    job.discard()
-                self.version += 1
-                job.done.set()
+                except Exception as exc:  # noqa: BLE001 - the window must not sit on a working screen
+                    _runlog.error("page.job_failed", job=kind, failure=type(exc).__name__)
+                    self.note = Note('bad', '<b>That did not finish.</b> The app hit a problem it did not '
+                                            f'expect ({e(type(exc).__name__)}). Nothing was changed. If it '
+                                            'keeps happening, save a support report from Help and settings.')
+                finally:
+                    if self.job is job:
+                        self.job = None
+                    self.version += 1
+                    job.done.set()
 
         if self.background:
             job.thread = threading.Thread(target=run, name=f'migrator-{kind}', daemon=True)
@@ -378,6 +386,7 @@ class PageState:
         if not zip_path:
             return
         name = Path(zip_path).name
+        self._drop_question()
         self.open_error = None
         self.note = None
         self.screen = 'open'
@@ -426,7 +435,7 @@ class PageState:
         self._adopt(new, keep=False)
 
     def _adopt(self, new: Arrival, keep: bool) -> None:
-        old_graph, old_picked, old_decided = self.graph, list(self.picked), dict(self.decided)
+        old_graph, old_picked, had_answers = self.graph, list(self.picked), bool(self.decided)
         if self.source_snapshot is not None and self.source_snapshot is not new.snapshot:
             self.close_source()
         self.zip_path, self.source_name = new.path, new.name
@@ -450,10 +459,12 @@ class PageState:
                 else:
                     missing += 1
         self._set_picked(list(dict.fromkeys(mapping.values())))
-        if keep:
-            self.decided = {'i-' + mapping[k[2:]]: True for k in old_decided if k[2:] in mapping}
-        else:
-            self.owner_mode, self.target_user, self.decided = 'admin', 'admin', {}
+        # What was answered at Review was answered about the other export. The
+        # same choice can need something different here, so every "keep it in"
+        # is asked again; only the ticks and the owner choice carry over.
+        self.decided = {}
+        if not keep:
+            self.owner_mode, self.target_user = 'admin', 'admin'
         self.filter_kind, self.filter_text, self.focus_key, self.preview_key = 'all', '', '', ''
         self.issue, self.task, self.doc = '', '', ''
         self.save_state, self.save_problem, self.built_path, self.build_report = 'ready', '', '', ''
@@ -470,6 +481,8 @@ class PageState:
         if missing:
             text += (f' {plural(missing, "choice was", "choices were")} not found in this export and '
                      f'{"was" if missing == 1 else "were"} left out.')
+        if keep and had_answers and mapping:
+            text += ' What you decided at Review is asked again, because this is a different export.'
         unfinished = len(new.graph.hollow_dashboards())
         if unfinished:
             text += (f' {plural(unfinished, "dashboard")} never finished loading on the source; '
@@ -480,6 +493,14 @@ class PageState:
             text += (' The downloaded export is kept only while the app is open, so save your bundle '
                      'before you close it.')
         self.note = Note('ok', text)
+
+    def _drop_question(self) -> None:
+        """Forget a question that is on screen. An export that was read and
+        is waiting for "Switch?" is let go, with its temporary files."""
+        ask, self.ask = self.ask, None
+        new = (ask or {}).get('new')
+        if new is not None and new.snapshot is not None and new.snapshot is not self.source_snapshot:
+            new.snapshot.close()
 
     def close_source(self) -> None:
         if self.source_snapshot is not None:
@@ -522,6 +543,7 @@ class PageState:
 
         secrets = {'username': username, 'password': password, 'auth_source': auth_source,
                    'export_password': export_password}
+        self._drop_question()
         self.note = None
         self.screen = 'connect'
 
@@ -570,7 +592,11 @@ class PageState:
 
     def default_save_name(self) -> str:
         if self.source_snapshot is not None:
-            return (self.source_name or 'vcf-operations') + '-bundle.zip'
+            # From the server's name alone: a port's colon, or the brackets of
+            # an IPv6 address, are not characters a file name can carry.
+            host = re.sub(r'[^A-Za-z0-9._-]+', '-', (self.source_name or '').rsplit(':', 1)[0]
+                          if ']' not in (self.source_name or '') else self.source_name).strip('-.')
+            return (host or 'vcf-operations') + '-bundle.zip'
         if not self.zip_path:
             return 'bundle.zip'
         return Path(self.zip_path).stem + '-bundle.zip'
@@ -1082,10 +1108,16 @@ class PageState:
             self.save_problem = 'same'
             return
         existing = [f for f in files if f.exists()]
-        if existing and not force and self.save_confirmed != str(out):
+        # A Save window that asked "replace?" asked about the bundle. That
+        # covers the bundle and the two files that belong to it, and nothing
+        # when the bundle was not there to ask about.
+        agreed = self.save_confirmed == str(out) and out.exists()
+        if existing and not force and not agreed:
             self.save_state, self.save_problem = 'exists', existing[0].name
             return
         self.save_state, self.save_problem = 'ready', ''
+        self.save_left = []
+        before = {f: (f.stat().st_mtime_ns if f.exists() else None) for f in files}
         selection, graph, members = self.selection, self.graph, self.members
         report_head = _tasks.blocks_text(self.report_blocks())
         owner_mode, target_user = self.owner_mode, self.target_user
@@ -1108,7 +1140,13 @@ class PageState:
             files[1].write_text(report, encoding='utf-8')
             return lambda: self._saved(result, technical)
 
-        self._start('save', out.name, work, self._save_failed)
+        def failed(exc: BaseException) -> None:
+            # Which of the three files this attempt wrote before it stopped.
+            self.save_left = [f.name for f in files
+                              if f.exists() and f.stat().st_mtime_ns != before[f]]
+            self._save_failed(exc)
+
+        self._start('save', out.name, work, failed)
 
     def _saved(self, result, technical: str) -> None:
         self.built_path = str(Path(result.path).resolve())
@@ -1175,6 +1213,8 @@ class PageState:
 
 # What may still be pressed while a job is on screen.
 DURING_A_JOB = ('/cancel-job', '/escape', '/redraw', '/find')
+# What may be pressed while a question is on screen: its two answers.
+WHILE_ASKING = ('/ask-yes', '/ask-no', '/escape', '/redraw')
 # Actions that are not worth a line in the support report each time.
 QUIET = ('/find', '/redraw', '/conn-edited')
 
@@ -1187,6 +1227,8 @@ def dispatch(state: "PageState", path: str, form: dict) -> str:
     """
     action = ACTIONS[path]
     if state.job is not None and path not in DURING_A_JOB:
+        return ''
+    if state.ask is not None and path not in WHILE_ASKING:
         return ''
     # Content actions share the CLI event log. Never log connection fields.
     _runlog.set_current(state.log)
@@ -1347,6 +1389,9 @@ def _act_focus(state: "PageState", form: dict) -> str:
     if form.get('reveal'):
         if not any(n.key == key for n in state.visible_nodes()[:LIST_LIMIT]):
             state.filter_kind, state.filter_text = state.graph.nodes[key].kind, ''
+        if not any(n.key == key for n in state.visible_nodes()[:LIST_LIMIT]):
+            # Too far down a long list to be drawn: narrow the list to it.
+            state.filter_text = state.graph.nodes[key].name
         state.reveal = True
     return ''
 
@@ -1492,12 +1537,15 @@ def _act_again(state: "PageState", _form: dict) -> str:
 def _act_help(state: "PageState", _form: dict) -> str:
     if state.screen != 'help':
         state.back = state.screen
+        # What the last action said belongs to the screen it was said on.
+        state.parked_note, state.note = state.note, None
     state.screen = 'help'
     return ''
 
 
 def _act_back(state: "PageState", _form: dict) -> str:
     state.screen, state.gloss = state.back, False
+    state.note, state.parked_note = state.parked_note, None
     return ''
 
 
@@ -1528,6 +1576,14 @@ def _act_get_update(state: "PageState", _form: dict) -> str:
 def _act_settings(state: "PageState", form: dict) -> str:
     state.save_setting(form)
     return ''
+
+
+def _act_theme(state: "PageState", form: dict) -> str:
+    # The choice travels as "choice", never as a data-theme attribute: the
+    # page's colours are keyed on that attribute, and a control carrying it
+    # would be drawn in the theme it offers.
+    state.save_setting({'theme': form.get('choice', '')})
+    return 'theme-' + state.theme
 
 
 def _act_log(state: "PageState", form: dict) -> str:
@@ -1629,6 +1685,7 @@ ACTIONS = {
     '/report-problem': _act_report_problem,
     '/get-update': _act_get_update,
     '/settings': _act_settings,
+    '/theme': _act_theme,
     '/log': _act_log,
     '/log-where': _act_log_where,
     '/escape': _act_escape,
@@ -1639,7 +1696,7 @@ POST_PATHS = tuple(sorted(ACTIONS))
 # a reason to lose what the previous action said.
 KEEPS_NOTE = ('/focus', '/find', '/redraw', '/preview', '/close-preview', '/issue', '/task', '/tick',
               '/doc', '/close-doc', '/gloss', '/escape', '/help', '/back', '/conn-edited',
-              '/show-in-folder', '/settings', '/log', '/log-where', '/support-report')
+              '/show-in-folder', '/settings', '/theme', '/log', '/log-where', '/support-report')
 
 
 def run_desktop(zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,

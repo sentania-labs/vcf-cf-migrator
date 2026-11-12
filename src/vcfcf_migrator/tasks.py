@@ -75,7 +75,9 @@ def systems(graph: Graph, dashboards: Sequence[Node]) -> List[str]:
                 adapter = str(entry.get('name') or '')
             if adapter in _NOT_SYSTEMS:
                 continue
-            text = SYSTEMS.get(adapter, f'the system behind the "{adapter}" adapter')
+            # No plain name is known for it, so it is named the way the
+            # target's Integrations page lists its adapter.
+            text = SYSTEMS.get(adapter, f'the system that the adapter "{adapter}" reads from')
             if text not in out:
                 out.append(text)
     return out

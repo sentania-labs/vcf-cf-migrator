@@ -294,7 +294,8 @@ CLIENT_JS = r"""
 <script>
 (function () {
   if (window.migrator) { return; }
-  var busy = false, keep = {}, pollToken = 0, findTimer = null, findSeq = 0, slowTimer = null;
+  var busy = false, queued = null, keep = {}, pollToken = 0, findTimer = null, findSeq = 0, slowTimer = null;
+  var serverQ = '';
   var srcTimer = null, srcSeq = 0, lastLookup = '', secsTimer = null, secsStart = 0, secsFor = '';
   function api() { return window.pywebview && window.pywebview.api; }
   function $(id) { return document.getElementById(id); }
@@ -325,11 +326,20 @@ CLIENT_JS = r"""
     var active = document.activeElement, activeId = active && active.id, caret = null;
     try { caret = active && active.selectionStart; } catch (_) { caret = null; }
     var before = document.body.dataset.screen;
+    var oldQ = $('q'), typed = oldQ ? oldQ.value : null;
     var doc = new DOMParser().parseFromString(res.html, 'text/html');
     document.body.replaceWith(doc.body);
     document.documentElement.dataset.theme = document.body.dataset.theme;
     if (doc.title) { document.title = doc.title; }
     restore();
+    // Letters typed into the search box while the page was on its way back
+    // are kept, and the list is brought into line with them.
+    var newQ = $('q');
+    if (newQ && typed !== null && typed !== serverQ && newQ.value !== typed) {
+      newQ.value = typed;
+      clearTimeout(findTimer);
+      findTimer = setTimeout(find, 0);
+    } else if (newQ) { serverQ = newQ.value; }
     if (document.body.dataset.screen === before) {
       document.querySelectorAll('[data-scroll]').forEach(function (el) {
         if (el.dataset.scroll in scrolls) { el.scrollTop = scrolls[el.dataset.scroll]; }
@@ -343,8 +353,10 @@ CLIENT_JS = r"""
         if (caret !== null && target.id === activeId && target.setSelectionRange) { target.setSelectionRange(caret, caret); }
       } catch (_) { /* a control that cannot take a caret */ }
     }
-    var reveal = document.querySelector('[data-reveal]');
-    if (reveal) { reveal.scrollIntoView({block: 'nearest'}); }
+    // The row the list was asked to bring into view. (Not data-reveal: the
+    // links that ask for it carry that as the field they send.)
+    var row = document.querySelector('[data-into-view]');
+    if (row) { row.scrollIntoView({block: 'nearest'}); }
     afterDraw();
   }
 
@@ -403,7 +415,11 @@ CLIENT_JS = r"""
   }
 
   function call(run, failed) {
-    if (busy || !api()) { return Promise.resolve(); }
+    if (!api()) { return Promise.resolve(); }
+    // One action at a time. A second one pressed meanwhile is not dropped:
+    // it runs as soon as the first has drawn, so a tick box never shows a
+    // tick the program does not have.
+    if (busy) { queued = function () { return call(run, failed); }; return Promise.resolve(); }
     busy = true;
     document.body.setAttribute('aria-busy', 'true');
     slowTimer = setTimeout(function () { working(true); }, 500);
@@ -417,6 +433,7 @@ CLIENT_JS = r"""
       clearTimeout(slowTimer);
       working(false);
       document.body.removeAttribute('aria-busy');
+      if (queued) { var next = queued; queued = null; next(); }
     });
   }
   function act(path, data) {
@@ -438,7 +455,7 @@ CLIENT_JS = r"""
       });
     }
     var q = $('q');
-    if (q) { data.q = q.value; }
+    if (q) { data.q = q.value; serverQ = q.value; }
     if (extra) { Object.keys(extra).forEach(function (k) { data[k] = extra[k]; }); }
     var path = el.dataset.act;
     if (path === '/conn-test') {
@@ -476,6 +493,7 @@ CLIENT_JS = r"""
     var q = $('q');
     if (!q || !api()) { return; }
     var seq = ++findSeq;
+    serverQ = q.value;
     api().find(q.value).then(function (res) {
       if (seq !== findSeq || !res) { return; }
       ['list', 'cnt', 'addall'].forEach(function (id) {
