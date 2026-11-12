@@ -294,7 +294,7 @@ CLIENT_JS = r"""
 <script>
 (function () {
   if (window.migrator) { return; }
-  var busy = false, queued = null, keep = {}, pollToken = 0, findTimer = null, findSeq = 0, slowTimer = null;
+  var busy = false, queued = [], keep = {}, pollToken = 0, findTimer = null, findSeq = 0, slowTimer = null;
   var serverQ = '';
   var srcTimer = null, srcSeq = 0, lastLookup = '', secsTimer = null, secsStart = 0, secsFor = '';
   function api() { return window.pywebview && window.pywebview.api; }
@@ -416,10 +416,11 @@ CLIENT_JS = r"""
 
   function call(run, failed) {
     if (!api()) { return Promise.resolve(); }
-    // One action at a time. A second one pressed meanwhile is not dropped:
-    // it runs as soon as the first has drawn, so a tick box never shows a
-    // tick the program does not have.
-    if (busy) { queued = function () { return call(run, failed); }; return Promise.resolve(); }
+    // One action at a time. Whatever is pressed meanwhile is not dropped:
+    // each waits its turn and runs, in the order pressed, as soon as the one
+    // before it has drawn. So a tick box never shows a tick the program does
+    // not have, however many are ticked in a hurry.
+    if (busy) { queued.push(function () { return call(run, failed); }); return Promise.resolve(); }
     busy = true;
     document.body.setAttribute('aria-busy', 'true');
     slowTimer = setTimeout(function () { working(true); }, 500);
@@ -433,7 +434,7 @@ CLIENT_JS = r"""
       clearTimeout(slowTimer);
       working(false);
       document.body.removeAttribute('aria-busy');
-      if (queued) { var next = queued; queued = null; next(); }
+      if (queued.length) { queued.shift()(); }
     });
   }
   function act(path, data) {

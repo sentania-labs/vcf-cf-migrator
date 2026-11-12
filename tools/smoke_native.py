@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests' / 'fixtures'))
 from make_export_fixture import EMPTY_SM_ID, build_export_zip
-from vcfcf_migrator import desktop
+from vcfcf_migrator import desktop, ui
 from vcfcf_migrator.export_reader import read_export
 from vcfcf_migrator.ui import PageState
 from vcfcf_migrator.uipage import anchor
@@ -124,6 +124,48 @@ def main():
                 assert opened_releases == [desktop.releases.RELEASE_PAGE]
                 js("document.getElementById('q').value=''")
 
+                # Three boxes ticked while the first is still being acted on:
+                # every one has to reach the program, in the order ticked. A
+                # tick that only the page had would be undone by the next
+                # redraw and left out of the bundle without a word.
+                keys = json.loads(js(
+                    "JSON.stringify(Array.from(document.querySelectorAll("
+                    "'input[type=checkbox][data-act=\"/select\"]:not(:checked):not(:disabled)'))"
+                    ".slice(0, 3).map(function (el) { return el.dataset.key; }))"))
+                assert len(keys) == 3, keys
+                held, release = threading.Event(), threading.Event()
+                real_dispatch = ui.dispatch
+
+                def held_dispatch(page, path, fields):
+                    if path == '/select' and not release.is_set():
+                        held.set()
+                        release.wait(15)
+                    return real_dispatch(page, path, fields)
+
+                def tick_now(key):
+                    assert js("(function(){var el=document.getElementById(%s);el.click();return el.checked;})()"
+                              % json.dumps('tick-' + anchor(key)))
+
+                ui.dispatch = held_dispatch
+                try:
+                    tick_now(keys[0])
+                    wait_for(held.is_set)
+                    tick_now(keys[1])
+                    tick_now(keys[2])
+                    assert state.picked == []          # nothing has got through yet
+                    release.set()
+                    time.sleep(0.1)
+                    wait_for(ready)
+                finally:
+                    release.set()
+                    ui.dispatch = real_dispatch
+                assert state.picked == keys, f'ticked {keys}, but the program has {state.picked}'
+                for key in keys:
+                    assert js("document.getElementById(%s).checked" % json.dumps('tick-' + anchor(key))), key
+                for key in keys:
+                    click('tick-' + anchor(key))
+                wait_for(lambda: state.picked == [])
+
                 click('tick-' + anchor('supermetric:' + EMPTY_SM_ID))
                 wait_for(lambda: len(state.picked) == 1)
                 assert 'Added [Fixture] SM Empty.' in js('document.body.innerText')
@@ -152,7 +194,7 @@ def main():
                 assert '[Fixture]' not in text
                 assert EMPTY_SM_ID not in text
                 assert json.loads(text.splitlines()[0])['kind'] == 'vcfcf-migrator-diagnostics'
-                print('Native reading feedback, update notice/browser link, initial load, selection, '
+                print('Native reading feedback, update notice/browser link, initial load, quick ticks, selection, '
                       'save/readback, and anonymized support report passed.', flush=True)
             except Exception as exc:
                 continue_load.set()
