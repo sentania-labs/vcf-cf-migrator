@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The app has its own icon (two instances with content moving across), in the same
+  family as the Telegraf helper's. It shows on the window, the Windows
+  executable and the Mac app. The source is `src/vcfcf_migrator/assets/app.svg`;
+  `python tools/make_icons.py` regenerates the `.ico`, `.icns` and `.png`.
 - The desktop window is redesigned as six steps with one question each: Open an
   export, Choose content, Dashboard owner, Review, Save, Import on the target.
   A step bar shows where you are, the next step is always the button at the

@@ -179,7 +179,10 @@ jobs:
           # cannot see by following imports, so without --collect-all the
           # binary can build successfully while losing its native backend.
           # The smoke step below catches that before publication.
-          extra="--collect-all webview"
+          extra="--collect-all webview --collect-data vcfcf_migrator"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            extra="$extra --icon packaging/icons/app.ico"
+          fi
           if [ "$RUNNER_OS" = "Linux" ]; then
             extra="$extra --hidden-import PySide6.QtWebEngineCore --hidden-import PySide6.QtWebEngineWidgets --hidden-import PySide6.QtWebChannel"
           fi

@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from . import __version__, releases
@@ -369,7 +370,12 @@ def run(state: Any, title: str = "VCF Content Migrator", width: int = 1280,
                                              height=height, min_size=(min(width, 1024), min(height, 700)))
     bridge._window = holder["window"]
     holder["window"].events.loaded += lambda: _bind_drop(holder["window"], bridge)
-    webview.start(gui="qt" if sys.platform.startswith("linux") else None, http_server=False)
+    # Windows and macOS take the icon from the packaged executable or bundle,
+    # and their backends cannot load a PNG; only Qt (Linux) needs the image.
+    linux = sys.platform.startswith("linux")
+    icon = Path(__file__).parent / "assets" / "app.png"
+    webview.start(gui="qt" if linux else None, http_server=False,
+                  icon=str(icon) if linux and icon.is_file() else None)
 
 
 def show_in_folder(path: str) -> bool:
