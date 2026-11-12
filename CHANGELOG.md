@@ -24,11 +24,13 @@
   targets) are reported as inferences and no longer block. The desktop app
   saves the build report beside the ZIP as `<name>-build-report.txt`. (#56,
   #57, #58, #59, #60, #61)
-- Each Mac download is now one signed and notarized app archive per chip that
+- Each Mac download is now one signed and notarized app archive that
   holds both the Finder app and the `vcfcf-migrator` command line, at
   `VCF Content Migrator.app/Contents/MacOS/vcfcf-migrator`. Running
   `vcfcf-migrator install-cli` from there links it into `/usr/local/bin` or
   `~/.local/bin`. The separate Mac command-line zips are no longer published.
+  Mac builds are Apple silicon only; the Intel Mac archive is no longer
+  published.
 
 ## 0.5.2
 

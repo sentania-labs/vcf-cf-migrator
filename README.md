@@ -23,12 +23,10 @@ Choose the archive for your computer and extract it:
 | Your computer | Download |
 | --- | --- |
 | Mac with Apple silicon (M-series chip) | `vcfcf-migrator-macos-arm64-app.zip` |
-| Mac with an Intel processor | `vcfcf-migrator-macos-x86_64-app.zip` |
 | Linux x86-64 | `vcfcf-migrator-linux.tar.gz` |
 | Windows x86-64 | `vcfcf-migrator-windows.zip` |
 
-On a Mac, **Apple menu > About This Mac** shows the chip or processor. Extract
-the archive, drag **VCF Content Migrator.app** to **Applications**, and open it.
+On a Mac, extract the archive, drag **VCF Content Migrator.app** to **Applications**, and open it.
 The app opens its own window without a Terminal window. Mac app downloads are
 signed and notarized, with the notarization ticket attached to the app.
 

@@ -2,8 +2,9 @@
 #
 # Placement (github-ci skill): needs no lab, no Docker daemon, so
 # GitHub-hosted runners; free on this public repo. The three-OS PyInstaller
-# matrix is the reason this is not a lab job at all: a Windows binary has to
-# be built on Windows and a macOS binary on macOS.
+# matrix (Linux, Windows, Apple-silicon macOS) is the reason this is not a lab
+# job at all: a Windows binary has to be built on Windows and a macOS binary on
+# macOS.
 #
 # Order, each job a gate for the next: refuse a bad tag and run the suite;
 # build each platform download and smoke it (subcommands on a
@@ -129,13 +130,9 @@ jobs:
           - os: windows-latest
             name: windows
             ext: ".exe"
-          # macos-latest is Apple Silicon; macos-15-intel is the current Intel image
-          # (macos-13 is retired and an unknown label queues silently).
+          # macos-latest is Apple Silicon. That is the only Mac target.
           - os: macos-latest
             name: macos-arm64
-            ext: ""
-          - os: macos-15-intel
-            name: macos-x86_64
             ext: ""
     runs-on: ${{ matrix.os }}
     steps:
@@ -400,8 +397,8 @@ jobs:
           import hashlib
           from pathlib import Path
           paths = sorted([*Path("dist").glob("*.whl"), *Path("binaries").glob("*.zip"), *Path("binaries").glob("*.tar.gz")])
-          if len(paths) != 5:
-              raise SystemExit(f"Expected one wheel and four archives, found {len(paths)}")
+          if len(paths) != 4:
+              raise SystemExit(f"Expected one wheel and three archives, found {len(paths)}")
           Path("SHA256SUMS").write_text("".join(f"{hashlib.file_digest(p.open('rb'), 'sha256').hexdigest()}  {p.name}\n" for p in paths))
           PYCODE
 
