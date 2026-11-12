@@ -442,3 +442,15 @@ def test_initial_export_opens_after_the_window_bridge_is_ready(config_dir):
     page = desktop.page_html(ui.PageState(), initial_zip='/tmp/a</script>.zip')
     assert '/tmp/a</script>.zip' not in page
     assert r'/tmp/a\u003c/script>.zip' in page
+
+
+def test_app_icon_assets_ship_and_parse():
+    import struct
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "src/vcfcf_migrator/assets/app.svg").read_text().startswith("<svg")
+    assert (root / "src/vcfcf_migrator/assets/app.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    ico = (root / "packaging/icons/app.ico").read_bytes()
+    assert struct.unpack("<HHH", ico[:6])[1:] == (1, 7)
+    icns = (root / "packaging/icons/app.icns").read_bytes()
+    assert icns[:4] == b"icns" and struct.unpack(">I", icns[4:8])[0] == len(icns)
