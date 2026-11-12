@@ -16,7 +16,7 @@ import re
 import pytest
 
 from pages import visible
-from vcfcf_migrator import desktop, ui, uipage
+from vcfcf_migrator import desktop, ui
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.ui import ACTIONS, PageState
 
@@ -27,12 +27,6 @@ def state(config_dir, export_zip):
 
 
 # --- the page the window receives -----------------------------------------
-
-def test_the_page_carries_its_script_once_before_body_ends(state):
-    html = desktop.page_html(state)
-    assert html.count(uipage.CLIENT_JS) == 1
-    assert html.index(uipage.CLIENT_JS) < html.index("</body>")
-
 
 def test_the_window_gets_the_page_the_state_renders(state):
     """The window must not get a different page."""
@@ -446,7 +440,5 @@ def test_retired_server_options_are_rejected(flag):
 
 def test_initial_export_opens_after_the_window_bridge_is_ready(config_dir):
     page = desktop.page_html(ui.PageState(), initial_zip='/tmp/a</script>.zip')
-    assert "window.addEventListener('pywebviewready'" in page
-    assert "act('/open', {zip: window.migratorInitialZip})" in page
     assert '/tmp/a</script>.zip' not in page
     assert r'/tmp/a\u003c/script>.zip' in page

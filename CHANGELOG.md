@@ -61,23 +61,22 @@
   clean. They are marked "not finished loading on the source" in the picker,
   the dependency tree and `inspect`, with what they were waiting on and how
   many times the source tried, and `inspect` reports how many there are. Their
-  references are shown as unknown, never as none. They are left out of Select
-  all, Select shown and `build --select-all`; naming one still picks it, and
-  Review and the build report then warn that it will not work on the target.
+  references are shown as unknown, never as none. They are left out of a bulk
+  add and of `build --select-all`; naming one still picks it, and Review and
+  the build report then warn that it will not work on the target.
   An export whose contents list says it holds dashboards that are not there
   (empty or missing dashboard files, or a different number read than declared)
   is refused with a plain message to take the export again, before any
   dependency tree is built. (#62)
-- The desktop window is reorganized around a start page where you choose to open
-  an export zip or connect to VCF Operations. Connecting adds a Browse control
-  for a trusted PEM CA file, an opt-in **Ignore SSL validation** switch with a
-  warning, an editable login-source picker (Local by default, populated from the
-  server), and **Test connection**. Bundles and diagnostics are saved through
-  native Save As dialogs, an existing destination is confirmed once, and
-  replacing a loaded source asks before discarding your selection. Light and
-  dark themes (light by default) are under Help & diagnostics > Settings.
-  Inspect, tree/JSON, selection-file and corpus-check controls are removed from
-  the desktop window and remain command-line only.
+- The desktop window's start page offers to open an export zip or to connect to
+  VCF Operations. Connecting asks for the address, user name and password (with
+  a login-source picker that defaults to Local and is filled from the server),
+  has a **Test connection** button, and offers certificate choices when the
+  server's certificate cannot be checked. Replacing a loaded source asks before
+  discarding your selection. Light and dark themes (light by default) are on
+  the Help and settings screen. Inspect, tree/JSON, selection-file and
+  corpus-check controls are removed from the desktop window and remain
+  command-line only.
 - Dashboard navigation now includes linked dashboards automatically. Navigation
   gap counts use the complete export. (#3)
 - Bundles are built to import on a target that shares no login source with the

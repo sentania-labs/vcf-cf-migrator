@@ -10,3 +10,4 @@ corpus/
 .pytest_cache/
 .coverage
 htmlcov/
+uv.lock
