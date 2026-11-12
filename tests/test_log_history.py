@@ -3,7 +3,8 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
-from vcfcf_migrator import runlog
+from pages import configure_log
+from vcfcf_migrator import runlog, settings
 from vcfcf_migrator.ui import PageState, dispatch
 
 
@@ -14,11 +15,12 @@ def test_settings_keep_clock_counters_and_active_operation(config_dir, tmp_path)
     for i in range(20):
         log.detail('closure.picked', index=i)
     before = log.written()
-    dispatch(state, '/settings', {'log_level': 'debug'})
+    settings.save_settings({'log_level': 'debug'})
+    dispatch(state, '/log', {'on': '0'})
     assert state.log is log
     assert log._t0 == origin and log.written() > before
     ends = [e for e in log.events if e['event'] == 'phase.end']
-    assert ends[-1]['action'] == '/settings'
+    assert ends[-1]['action'] == '/log'
     assert ends[-1]['operation']
 
 
@@ -26,21 +28,21 @@ def test_report_preserves_operations_and_warnings_after_detail_eviction(config_d
     state = PageState()
     log = state.log
     log.event_cap = 8
-    with log.phase('page', action='/select-all'):
+    with log.phase('page', action='/add-shown'):
         with log.phase('select'):
             log.count('picked', 100)
             log.warn('ref.missing', name='Private Person')
     for i in range(100):
         log.detail('closure.picked', index=i)
     out = tmp_path / 'diagnostics.jsonl'
-    state.save_diagnostics(str(out))
+    state.save_support_report(str(out))
     head, *events = map(json.loads, out.read_text().splitlines())
     ends = [e for e in events if e['event'] == 'phase.end']
     assert len(ends) == 2
     child, parent = ends
     assert child['parent_operation'] == parent['operation']
     assert child['picked'] == 100 and child['start_t'] <= child['t']
-    assert parent['action'] == '/select-all'
+    assert parent['action'] == '/add-shown'
     assert any(e['event'] == 'ref.missing' for e in events)
     assert 'Private Person' not in out.read_text()
     assert head['retention']['dropped'] == log.dropped > 0
@@ -141,7 +143,7 @@ def test_new_file_destinations_receive_original_session_context(config_dir, tmp_
     original = next(e.copy() for e in state.log.events if e['event'] == 'run.start')
     for basename in ('first.jsonl', 'second.jsonl'):
         path = tmp_path / basename
-        state.save_setting({'log_file': str(path)})
+        configure_log(state, log_file=str(path))
         rows = list(map(json.loads, path.read_text().splitlines()))
         assert next(e for e in rows if e['event'] == 'run.start') == original
     assert next(e for e in state.log.events if e['event'] == 'run.start') == original

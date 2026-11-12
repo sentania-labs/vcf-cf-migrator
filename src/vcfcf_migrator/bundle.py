@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,12 +62,16 @@ class BuildResult:
     checklist_path: str = ''
     checklist: str = ''
     support_details: List[str] = field(default_factory=list)
+    # The same list the checklist file was written from, for a screen to show.
+    tasks: list = field(default_factory=list)
+    # Which policies the source used for the carried super metrics and groups.
+    policy_detail: str = ''
 
     def as_dict(self) -> dict:
         return {"path": self.path, "counts": self.counts, "members": self.members,
                 "skipped_members": self.skipped_members, "notes": self.notes,
                 "directories": self.directories, "checklist_path": self.checklist_path,
-                "checklist": self.checklist}
+                "checklist": self.checklist, "policy_detail": self.policy_detail}
 
 
 
@@ -75,7 +80,7 @@ def post_import_checklist(graph, selection):
     groups = [graph.nodes[k] for k in selection.keys if graph.nodes[k].kind == 'customgroup']
     if not metrics and not groups:
         return ''
-    lines = ['Post-import checklist', '',
+    lines = ['Policy detail from the source', '',
              'Policies are not included. Check policy assignments and enable super metrics on the target.']
     for node in metrics:
         kinds = graph.metric_kinds.get(node.ident, [])
@@ -349,6 +354,18 @@ def _merge_lines(graph, notices):
 
 def merge_preview(graph, selection, keep_ownership=False):
     """Return (refusals, notes) for combining the selected dashboard owners."""
+    refusals, notices = merge_notices(graph, selection, keep_ownership)
+    return refusals, _merge_lines(graph, notices)
+
+
+def merge_notices(graph, selection, keep_ownership=False):
+    """Return (refusals, notices) for combining the selected dashboard owners.
+
+    A notice is ``(kind, dashboard id, owner, key)``: ``unresolved`` for a
+    widget binding that cannot be kept, ``localization`` for a text key that
+    is renamed. A screen words these itself; ``merge_preview`` gives the
+    lines the command line prints.
+    """
     if keep_ownership:
         return [], []
     archives = []
@@ -363,7 +380,7 @@ def merge_preview(graph, selection, keep_ownership=False):
         _, _, _, notices = _merge_owner_archives(archives, {})
     except ValueError as exc:
         return [str(exc)], []
-    return [], _merge_lines(graph, notices)
+    return [], list(dict.fromkeys(notices))
 
 
 def _validate_dashboard_owners(written, by_owner, target_user="admin", keep_ownership=False):
@@ -443,35 +460,47 @@ def build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: 
                  selection: Selection, out_path, marker: Optional[str] = None,
                  directories: Sequence[str] = (),
                  directory_order: Optional[Dict[str, int]] = None,
-                 target_user: str = 'admin', keep_ownership: bool = False) -> BuildResult:
-    """Refuse missing dependencies before creating or touching an output file."""
+                 target_user: str = 'admin', keep_ownership: bool = False,
+                 from_source: bool = False, accepted_missing=()) -> BuildResult:
+    """Refuse missing dependencies before creating or touching an output file.
+
+    *from_source* says the export was fetched by this app with a password the
+    person made up, which changes one line of the checklist.
+    *accepted_missing* is the missing dependencies a person has confirmed
+    already exist on the target; see ``refuse_missing_dependencies``. Each
+    becomes a line on the checklist.
+    """
     if not keep_ownership and not target_user.strip():
         raise ValueError('Enter a target user name')
     target_user = target_user.strip()
-    refuse_missing_dependencies(graph, selection)
+    refuse_missing_dependencies(graph, selection, accepted_missing)
     same_id = same_id_dashboard_lines(graph, selection.keys, keep_ownership)
     if same_id:
         raise ValueError('; '.join(same_id))
     return _write_bundle(members, member_order, graph, selection, out_path, marker,
-                         directories, directory_order, target_user, keep_ownership)
+                         directories, directory_order, target_user, keep_ownership, from_source,
+                         accepted_missing)
 
 
 def _write_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
                  selection: Selection, out_path, marker: Optional[str] = None,
                  directories: Sequence[str] = (),
                  directory_order: Optional[Dict[str, int]] = None,
-                 target_user: str = 'admin', keep_ownership: bool = False) -> BuildResult:
+                 target_user: str = 'admin', keep_ownership: bool = False,
+                 from_source: bool = False, accepted_missing=()) -> BuildResult:
     """Write the bundle for *selection* and report what went into it."""
     with runlog.phase("build", out=str(out_path), carrying=len(selection.keys)):
         return _build_bundle(members, member_order, graph, selection, out_path, marker,
-                             directories, directory_order or {}, target_user, keep_ownership)
+                             directories, directory_order or {}, target_user, keep_ownership,
+                             from_source, accepted_missing)
 
 
 def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph: Graph,
                   selection: Selection, out_path, marker: Optional[str] = None,
                   directories: Sequence[str] = (),
                   directory_order: Optional[Dict[str, int]] = None,
-                  target_user: str = 'admin', keep_ownership: bool = False) -> BuildResult:
+                  target_user: str = 'admin', keep_ownership: bool = False,
+                  from_source: bool = False, accepted_missing=()) -> BuildResult:
     result = BuildResult(path=str(out_path))
     for key in selection.keys:
         node = graph.nodes.get(key)
@@ -691,11 +720,18 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                          "file format before it reads a document"))
 
     out_path = Path(out_path)
-    result.checklist = post_import_checklist(graph, selection)
-    if result.checklist:
-        result.checklist_path = str(out_path.with_name(out_path.stem + '-post-import.txt'))
-        result.notes.append('Post-import policy checklist: ' + result.checklist_path)
-        result.notes.append(result.checklist.rstrip())
+    # One list of what to do on the target, written beside every bundle. The
+    # page shows the same list; the command line names the file.
+    from vcfcf_migrator import tasks as _tasks
+    result.tasks = _tasks.build_tasks(graph, selection, keep_ownership, target_user,
+                                      out_path.name, Path(os.path.abspath(out_path)).parent.name, from_source,
+                                      accepted_missing)
+    result.checklist = _tasks.checklist_text(result.tasks, out_path.name)
+    result.checklist_path = str(out_path.with_name(out_path.stem + '-checklist.txt'))
+    result.notes.append('Checklist for the target: ' + result.checklist_path)
+    result.policy_detail = post_import_checklist(graph, selection)
+    if result.policy_detail:
+        result.notes.append(result.policy_detail.rstrip())
     try:
         if out_path.parent and str(out_path.parent):
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -707,8 +743,7 @@ def _build_bundle(members: Dict[str, bytes], member_order: Sequence[str], graph:
                     continue
                 z.writestr(zip_entry(name), written[name])
         out_path.write_bytes(buf.getvalue())
-        if result.checklist:
-            Path(result.checklist_path).write_text(result.checklist, encoding='utf-8')
+        Path(result.checklist_path).write_text(result.checklist, encoding='utf-8')
     except OSError as e:
         runlog.error("bundle.unwritable", path=str(out_path), reason=str(e),
                      members=len(ordered))

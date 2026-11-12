@@ -1,5 +1,10 @@
 # docs
 
+`redesign/` holds a before-and-after picture of each screen from the change that
+made the window six steps (one image per screen, today's app above the new
+one). Sheets 16 to 18 show three fixes made after an independent walk of that
+change: the change as it was walked above, the fix below at both window sizes.
+
 `design/` is why this tool is the way it is: the pass-through contract, the
 evidence from importing bundles into a live instance, the reasoning behind
 dropping version handling, and the release log. `reviews/` holds the review
@@ -70,11 +75,14 @@ rule below exists separately.
 
 # The screenshots in this directory
 
-Both images are rendered from `corpus/devel-9.0.2.0-2026-09-14-full.zip`, the
-lab's own development instance, and they show that instance's dashboard names,
-content uuids and the owner account uuid that the preview header prints.
+Both images (and the "after" half of each sheet in `redesign/`) are rendered
+from the invented export that `tools/demo_export.py` writes. Every name in it
+is made up, so they carry nothing from the lab's instance.
 
-That is authorized. Scott, verbatim, 2026-09-14: "As long as the references are
+Before the redesign these pictures were rendered from
+`corpus/devel-9.0.2.0-2026-09-14-full.zip`, the lab's own development instance,
+and showed its dashboard names, content uuids and owner account uuid. Using
+that export is authorized. Scott, verbatim, 2026-09-14: "As long as the references are
 my devel, who cares." The same message ruled out the other exports, and that
 rule stands: **screenshots come from the devel export only.** Not from the prod
 export, and not from either of the exports carrying another admin's content,

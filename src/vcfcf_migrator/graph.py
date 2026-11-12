@@ -225,8 +225,14 @@ class Graph:
     owner_names: Dict[str, str] = field(default_factory=dict)
     _label_cache: Dict[str, str] = field(default_factory=dict, repr=False)
     _label_cache_size: int = field(default=-1, repr=False)
+    _missing_index: Dict[str, list] = field(default_factory=dict, repr=False)
+    _missing_index_size: int = field(default=-1, repr=False)
     directory_shared_dashboards: set = field(default_factory=set)
     locally_shared_dashboards: set = field(default_factory=set)
+    # (owner, dashboard id) -> [(group name, is a directory group)], in the
+    # order the sharing file lists them, so a screen can say who a dashboard
+    # is shared with rather than only that it is.
+    dashboard_shares: Dict[tuple, List[tuple]] = field(default_factory=dict)
     ownership_source_known: bool = False
     policy_names: Dict[str, str] = field(default_factory=dict)
     metric_policies: Dict[str, List[str]] = field(default_factory=dict)
@@ -268,7 +274,14 @@ class Graph:
         return [n for n in self.ordered() if n.key not in pointed_at]
 
     def missing_for(self, key: str) -> List[MissingEdge]:
-        return [m for m in self.missing if m.source_key == key]
+        # Indexed once per length of the list: a screen asks this for every
+        # row, and scanning the whole list each time is quadratic.
+        if self._missing_index_size != len(self.missing):
+            index: Dict[str, List[MissingEdge]] = {}
+            for gap in self.missing:
+                index.setdefault(gap.source_key, []).append(gap)
+            self._missing_index, self._missing_index_size = index, len(self.missing)
+        return list(self._missing_index.get(key, ()))
 
     def notes_for(self, key: str) -> List[Note]:
         return [n for n in self.ambiguous + self.unhandled if n.source_key == key]
@@ -287,8 +300,15 @@ def object_label(graph: Graph, node: Node) -> str:
             if len(peers) == 1:
                 labels[peers[0].key] = peers[0].name
                 continue
-            details = {item.key: ([f"owner {graph.owner_names.get(item.owner, 'Unknown owner')}"]
-                                  if item.owner else []) for item in peers}
+            # Copies of one dashboard under several owners are told apart by
+            # whose copy each is; different objects that merely share a name
+            # are told apart by owner.
+            copies = len({item.ident for item in peers}) == 1 and all(item.owner for item in peers)
+
+            def whose(item):
+                owner = graph.owner_names.get(item.owner, 'Unknown owner')
+                return f"{owner}'s copy" if copies else f"owner {owner}"
+            details = {item.key: ([whose(item)] if item.owner else []) for item in peers}
             def signature(item):
                 return tuple(details[item.key])
             for field_name in ('modified', 'description'):
@@ -1024,7 +1044,8 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
         from vcfcf_migrator.export_reader import IncompleteExport
         runlog.error("input.incomplete_export", declared=_hollow.declared_dashboards(manifest) or 0,
                      items=declared_dashboards, reason=runlog.prose(problem))
-        raise IncompleteExport(problem)
+        raise IncompleteExport(problem, _hollow.declared_dashboards(manifest) or 0,
+                               declared_dashboards)
     graph = Graph(containers=found, unknown_members=unknown)
     mappings = _json(members.get("usermappings.json", b""))
     if isinstance(mappings, dict):
@@ -1052,9 +1073,15 @@ def _build_graph(members: Dict[str, bytes]) -> Graph:
                 continue
             target = (graph.directory_shared_dashboards if is_directory_group(group)
                       else graph.locally_shared_dashboards)
+            group_name = group.get("groupName") or group.get("name") or ""
             for dash in group.get("dashboards", []) or []:
                 if isinstance(dash, dict) and dash.get("dashboardId"):
                     target.add((owner, str(dash["dashboardId"])))
+                    shares = graph.dashboard_shares.setdefault((owner, str(dash["dashboardId"])), [])
+                    share = (str(group_name) if isinstance(group_name, str) else "",
+                             is_directory_group(group))
+                    if share not in shares:
+                        shares.append(share)
     policy_root = _xml(members.get("policies.xml", b""))
     graph.policy_file_present = "policies.xml" in members
     if policy_root is not None:
@@ -1279,7 +1306,6 @@ def _spelling(ident: str) -> str:
 
 _UUID_SHAPE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-
 
 def _add_rule_template_refs(found: Sequence[Container], graph: Graph) -> None:
     """``ruleNameToTemplateNameMap`` is a container-level table, so the edge

@@ -52,79 +52,114 @@ approval process. Include the release version and the exact message when
 reporting a startup problem.
 
 When the app opens, it checks GitHub for a newer stable release in the
-background. If one is available, a small link beside the current version opens
-the release page in your default browser. You choose whether to download and
-install it. If you are offline or already up to date, no notice appears and
-you can keep working. The check sends no export content or Operations
-credentials. Command-line commands do not check for updates.
+background. If one is available, an **Update available** button appears at the
+top of the window and opens the release page in your default browser. You
+choose whether to download and install it. If you are offline or already up to
+date, no button appears and you can keep working. The check sends no export
+content or Operations credentials. Command-line commands do not check for
+updates.
 
 ## Create a migration bundle
 
-1. **Export from the source.** In VCF Operations, go to **Administration >
-   Content > Export**, choose the content to export, and save the ZIP. Include
-   the dependencies of the objects you intend to move. If Operations asks for
-   an encryption password, keep it for the target import. The migrator does not
-   need that password.
-2. **Open the ZIP.** Choose **Open an export zip**, then **Browse**, or enter the file's
-   local path and choose **Open export**.
-3. **Review and select.** Choose a content type and search by name. Click an
-   object to see its preview, dependencies, and details. **Select shown** adds
-   the filtered results; **Select all** includes the whole readable inventory, except dashboards the
-   source never finished loading (see below).
-   Required objects are added automatically. Removing an object you selected
-   keeps it included if another selected object still needs it.
-4. **Review the bundle.** Choose **Review bundle** to check your selections and the
-   dependencies they bring along. Resolve blocking references by using a more
-   complete source export or removing the affected selections. Missing views and
-   dashboards are reported as possibly already missing on the source when the
-   export contains that content type; this is an offline inference. Check the
-   listed widget objects and adapter kinds on the target before import. A missing
-   object or kind can leave a dashboard loading.
-5. **Build and import.** The migrator builds the bundle but does not import
-   it. Use **Save As…** to choose a ZIP destination, or edit the path, then **Build bundle**. The app confirms the full destination and offers **Show in folder** where supported. Use the target instance's
-   content import. Supply the original export password if requested. Open the
-   imported objects on the target and check that their widgets, data sources,
-   and links work.
+The window walks six steps, shown across the top the whole time. Each screen
+asks one thing, and the button at the bottom right is always the next step.
+Steps you have finished stay clickable, so you can go back.
+
+![Choosing content: the list, and what the selected dashboard needs](docs/selection-and-dependencies.png)
+
+1. **Open an export.** In VCF Operations on the source, go to **Administration >
+   Content > Export**, tick what you want to move and the option to include what
+   it depends on, and save the ZIP. If Operations asks for a password, keep it
+   for the target import; the migrator does not need it. In the app, choose
+   **Choose the export file…** (the file window opens in Downloads), or drop the
+   ZIP on the window. A file that is damaged, is not an export, has lost its
+   dashboards or has nothing in it is refused with what happened and what to do,
+   and whatever you already had open stays open.
+2. **Choose content.** Pick a type on the left or type part of a name in **Find
+   by name**; the list narrows as you type. Click a name to see what it is, what
+   it needs and what uses it, and **See what it looks like** for a picture. Tick
+   what you want. Anything it needs is added for you and marked **Added
+   automatically** with the choice that needs it. **Add all of these** adds
+   everything shown that needs no decision from you.
+3. **Dashboard owner.** Every dashboard belongs to a user. Choose **The built-in
+   admin user** (the default, and the safest: that user exists on every target)
+   or **The same user as on the source**, which keeps sharing as it is but may
+   fail if one of those users is not on the target. A table shows what each
+   choice does to every dashboard. If you ticked two owners' copies of the same
+   dashboard, you are asked which to keep first.
+4. **Review.** **Decide before saving** lists anything that cannot be put right
+   after import: a dashboard the source never finished loading, one that would
+   replace a built-in dashboard, or something that needs a thing the export does
+   not hold. Each has a recommended answer (leave it out) and a way to keep it
+   in. **Good to know** lists what needs no answer. Saving is off until
+   everything under **Decide before saving** is answered.
+5. **Save.** The bundle goes to your Downloads folder unless you choose
+   **Change name or folder…**. A report and a checklist are saved beside it, and
+   both can be read in the app. The migrator saves the bundle; it does not
+   import it.
+6. **Import on the target.** The last screen is the checklist for this bundle,
+   one task at a time with the menus to click: import the file, switch on the
+   super metrics, check group policies, share again where sharing was not
+   carried. Tick tasks off as you go; the saved checklist file has the same
+   list for later or for someone else.
 
 ![Dashboard preview with sample values](docs/preview-dashboard.png)
 
-The preview helps you recognize content before moving it. It preserves the
-export's names, layout, columns, and metric keys, but its values are invented.
-It cannot confirm that the target has the adapters or resources a dashboard
-needs.
+The preview helps you recognize content before moving it. It shows the
+export's own titles, layout and columns, with invented values. It cannot
+confirm that the target has the adapters or resources a dashboard needs.
 
-## Connect directly to Operations
+### When something the bundle needs is not in the export
 
-Choose **Connect to VCF Operations** on the start page (or **Change source**
-after loading content). Enter the HTTPS server URL, username and login password.
-**Login source** starts at **Local** and offers the sources returned by the server;
-you can also type a directory or SSO source name. Discovery uses your connection
-security settings. A lookup failure does not prevent manual entry. This is a
-username/password sign-in, not browser SSO.
+A content export never carries some of the definitions that come with VCF
+Operations itself or with a management pack, and nothing in an export says
+which they are. So a missing dependency is refused by default, and the window
+lets you answer for it: at **Review**, either leave the thing out (recommended),
+open an export that has what is missing, or choose **I have checked this already
+exists on the target. Keep it in anyway**. That answer is written in the report,
+and the checklist gains a task to confirm it on the target after the import.
+The command line has no such override: `build` refuses a selection with a
+missing dependency.
 
-Certificate verification is on by default. Use **Browse…** beside **Trusted CA
-certificate bundle (PEM, optional)** for a private CA. **Ignore SSL validation**
-disables verification and the CA field while retaining its path. The warning on
-the form explains that the server's identity will not be verified.
+## Get the export from VCF Operations for me
 
-**Test connection** checks the URL, TLS and credentials without starting an
-export. Enter a separate **Export encryption password** when ready to download.
+Choose **Sign in and download…** on the first screen. Enter the address of the
+source, your user name and password, and make up a password for the export
+(typed twice). **This account is** starts as a local account and offers the
+sign-in choices the server returns. This is a user name and password sign-in,
+not browser SSO.
 
-Choose **Connect and load**. Operations exports the supported custom content;
-when the download finishes, select and build your bundle as usual. Keep the
-export encryption password for the target import. It must meet the source
-instance's password requirements.
+**Test the sign-in** checks the address, user name and password without
+starting an export. If the server uses a certificate your computer does not
+recognise, the test says so and offers two ways on: **Use my company certificate
+file…** (the safe one) or **Connect without checking**, which cannot prove it is
+the real server. Either answer is for that one server and that one download: a
+different address, or the next export, starts with the certificate being checked
+again.
 
-Credentials are not saved. The downloaded export is held in a private temporary
-folder until you replace it or close the app. Save your migration bundle before
-closing. After an abnormal shutdown, temporary files may remain on the workstation.
+**Sign in and download** shows four stages and can be cancelled. Operations
+exports the supported custom content; when the download finishes you choose
+content as usual. Keep the export password: the target asks for it at import,
+and it must meet the source instance's password requirements.
 
-Do not run another content export with the same account while connecting. The
-Operations API serves the account's latest export. The migrator checks the job
-identity before and after downloading, but cannot fully rule out a competing
-export started at the same time. If a connection fails or times out, check the
-source export job before trying again. Your existing inventory and selection
-remain available when the replacement cannot be loaded. A successfully loaded replacement asks for confirmation before discarding your current selection.
+A downloaded export is named by its server and when it was fetched, for example
+`ops.example.com, fetched 12 Nov 2026 13:05`, in the window and in the bundle's
+file name, so two downloads from one server can be told apart.
+
+Your user name and passwords are used once and never saved. The downloaded
+export is held in a private temporary folder until you replace it or close the
+app, so save your bundle before closing. After an abnormal shutdown, temporary
+files may remain on the workstation.
+
+Do not run another content export with the same account while this is running.
+The Operations API serves the account's latest export. The migrator checks the
+job identity before and after downloading, but cannot fully rule out a
+competing export started at the same time. If a download fails, times out or is
+cancelled after the source began preparing an export, check the source export
+job before trying again. Whatever you had open stays open when a replacement
+cannot be loaded. When you do switch to another export, your choices are ticked
+again in it wherever the same things exist, and the app says how many were
+found.
 
 ## What carries across
 
@@ -135,23 +170,27 @@ notification templates, and outbound settings.
 Selected content documents are copied unchanged, except that colliding local
 resource tokens are rewritten when dashboards from multiple owners are merged.
 Encrypted settings stay encrypted, and the original export remains your source
-copy. Dashboard ownership maps to local `admin` on the target by default; you
-can choose another target user or keep source owners and directory sharing in
-Review bundle. With the CLI, use `--target-owner USER` or
-`--keep-directory-ownership`. Other users and source directories must exist on
-the target or their dashboards will be skipped. By default, directory-group
-sharing is removed and must be set again there. If the same dashboard ID is
-selected under more than one owner, the build is refused until you choose one
-copy or keep source owners. The same applies when the owners' localization
-files cannot be safely combined; Review bundle says so before you build. The build report identifies any
-rewritten tokens and lists the target objects and adapter kinds to check. The
-desktop app also saves it beside the ZIP as `<name>-build-report.txt`.
+copy. Dashboard ownership maps to the built-in `admin` user on the target by
+default; the **Dashboard owner** step can keep the source owners and their
+directory sharing instead. Those users and directories must exist on the target
+or their dashboards are skipped. By default, sharing with company-directory
+groups is not carried and has to be set up again; the checklist says for which
+dashboards. From the command line, `--target-owner USER` gives every dashboard
+to one named user and `--keep-directory-ownership` keeps the source owners; the
+window does not offer the named-user choice. If the same dashboard is chosen
+under more than one owner, or the owners' localization files cannot be safely
+combined, the owner step asks before anything is saved.
 
-Policies are not included. When the bundle contains super metrics or custom
-groups, the build writes a post-import checklist beside the ZIP. Use it to enable
-super metrics and check group policy assignments on the target. The report lists
-source policy information where available. Check each world object's adapter has
-at least one collecting instance. The migrator does not verify the target.
+Three files are saved together: the bundle, `<name>-report.txt` and
+`<name>-checklist.txt`. The report says what is inside, what was added and why,
+who will own the dashboards, what was checked and what you chose to keep in;
+its last section is the technical detail support may ask for. The command line
+writes the same checklist beside its bundle.
+
+Policies are not included. The checklist tells you which super metrics to
+switch on and which groups had a policy of their own on the source, with the
+policy's name where the export records it. The migrator does not verify the
+target.
 
 Linked dashboards are included automatically, including their dependencies.
 Missing navigation targets and orphan widget links are reported; they do not
@@ -160,9 +199,9 @@ on the source. After import, check links and widget data on the target.
 
 ## If something goes wrong
 
-- **Missing dependencies:** export the required content from the source, or
-  remove the selections that depend on it. A target might already have an object,
-  but the offline tool cannot verify that.
+- **Missing dependencies:** export the required content from the source too, or
+  leave out what depends on it. If you have checked that the target already has
+  it, the Review step lets you keep the item in and records that you did.
 - **Unexpected inventory count:** do not assume a manifest total equals the
   selectable inventory. One reported dashboard-count discrepancy remains
   unresolved in [#37](https://github.com/sentania-labs/vcf-cf-migrator/issues/37).
@@ -172,19 +211,20 @@ on the source. After import, check links and widget data on the target.
   again. Include the export size and the operation you were performing in a
   problem report.
 
-In **Help & diagnostics**, choose **Save diagnostics…**, select a destination in the native save dialog, and attach
-that file to an [issue](https://github.com/sentania-labs/vcf-cf-migrator/issues).
-Include the application version, what you tried, and what happened.
+In **Help and settings**, choose **Save a support report (diagnostics)**. It is
+saved straight to your Downloads folder under a dated name; attach that file to
+an [issue](https://github.com/sentania-labs/vcf-cf-migrator/issues) (**Report a
+problem** opens that page). Include what you tried and what happened.
 
-Shared diagnostics retain counts, timings, and operation results while
-replacing paths, account details, machine details, and content identifiers with
-anonymous labels. **Local file logs are private, not anonymized diagnostics.**
-Do not attach them, source exports, or screenshots containing private content
-to a public issue. Previously saved reports are not changed by an upgrade.
+The support report keeps counts, timings and operation results while replacing
+paths, account details, machine details and content identifiers with anonymous
+labels. **A log file is private, not an anonymized report.** Do not attach one,
+a source export, or screenshots containing private content to a public issue.
+Previously saved reports are not changed by an upgrade.
 
-Appearance is under **Help & diagnostics > Settings**. Light is the default;
-your light/dark choice is saved for the next launch. Local log settings are in a
-separate disclosure beneath appearance.
+**Help and settings** also has the light or dark appearance (light is the
+default; the choice is saved for the next launch), a tick box for keeping a log
+file, your version, and **What the words mean**.
 
 ## Command-line use
 
@@ -221,12 +261,12 @@ In `selection.txt`, put one object name or identifier on each line. Blank lines
 and lines starting with `#` are ignored. Use an identifier when names are not
 unique. `vcfcf-migrator build --help` lists the build options.
 
-A dashboard that VCF Operations never finished loading is marked "not finished
-loading on the source" in the desktop window, `inspect` and `tree`, with what it
-was waiting on. Its references are unknown, so it is left out of Select all and
-`build --select-all`; naming it in a selection still includes it, with a
-warning. An export that says it holds dashboards but does not carry them is
-refused: take the export again from the source.
+A dashboard that VCF Operations never finished loading is marked in the desktop
+window, `inspect` and `tree`, with what it was waiting on. Its references are
+unknown, so it is left out of **Add all of these** and `build --select-all`;
+ticking it or naming it in a selection still includes it, and the window asks
+you to confirm at Review. An export that says it holds dashboards but does not
+carry them is refused: take the export again from the source.
 
 For Python users, the release also includes a wheel. Install it with
 `python -m pip install /path/to/the-downloaded.whl` using Python 3.9 or newer.

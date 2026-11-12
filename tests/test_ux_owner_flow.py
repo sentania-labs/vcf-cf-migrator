@@ -2,33 +2,11 @@
 import io
 import json
 import zipfile
-from html.parser import HTMLParser
 
+from pages import save_to, visible
 from vcfcf_migrator.cli import main
 from vcfcf_migrator.desktop import Bridge
-from vcfcf_migrator.ui import PageState
-
-
-class Text(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.parts = []
-        self.hidden = False
-    def handle_starttag(self, tag, attrs):
-        if tag in ('script', 'style'):
-            self.hidden = True
-    def handle_endtag(self, tag):
-        if tag in ('script', 'style'):
-            self.hidden = False
-    def handle_data(self, data):
-        if not self.hidden:
-            self.parts.append(data)
-
-
-def visible(html):
-    parser = Text()
-    parser.feed(html)
-    return ' '.join(parser.parts)
+from vcfcf_migrator.ui import PageState, can_go
 
 
 def make_source(tmp_path, same=False):
@@ -55,31 +33,77 @@ def choose(bridge, key):
     return bridge.act('/select', {'key': key, 'on': '1'})['html']
 
 
-def test_owner_choices_review_and_real_build(tmp_path, config_dir):
+def go(bridge, step):
+    return bridge.act('/go', {'to': step})['html']
+
+
+def test_the_owner_step_offers_two_choices_and_each_is_the_real_build(tmp_path, config_dir):
     state = PageState(str(make_source(tmp_path)))
     bridge = Bridge(state)
     choose(bridge, 'dashboard:d1@owner-secret-1')
-    page = visible(bridge.act('/tab', {'tab': 'review'})['html'])
-    assert 'Dashboard ownership will map to local admin' in page
-    assert 'Directory sharing will be removed for: Dashboard 1' in page
-    assert 'No sharing will remain for: Dashboard 1' in page
-    page = visible(bridge.act('/owner', {'owner_mode': 'other', 'target_user': 'target-user'})['html'])
-    assert 'will be skipped unless the exact user target-user exists' in page and 'Dashboard 1' in page
-    out = tmp_path / 'other.zip'
-    bridge.act('/build', {'out': str(out)})
+    html = go(bridge, 'owner')
+    page = visible(html)
+    assert 'Who should own this dashboard on the target?' in page
+    # Two choices and nothing else: no third option, no list to pick from, no name to type.
+    assert html.count('name="own"') == 2 and '<select' not in html
+    assert '<input class="lat-input"' not in html.split('<main>')[1].split('</main>')[0]
+    assert 'The built-in admin user Safest' in page and 'The same user as on the source May fail' in page
+    # The warning is on the choice itself, before it is picked.
+    assert state.owner_mode == 'admin'
+    assert ('Warning: The import, or the owner mapping, may fail if one of these users does not exist on '
+            'the target. A dashboard whose owner or group is missing there is skipped. This app works '
+            'from a file and cannot check the target for you.') in page
+    # What admin does, per dashboard.
+    assert 'Dashboard 1 admin Sharing not carried You share it with Directory team again after import' in page
+    assert 'Directory team is a group from your company’s staff directory.' in page
+    assert 'owner-secret-1' not in page
+    out = tmp_path / 'admin.zip'
+    save_to(state, out)
     with zipfile.ZipFile(out) as z:
-        assert json.loads(z.read('usermappings.json'))['users'][0]['userName'] == 'target-user'
-        assert json.loads(z.read('usermappings.json'))['sources'] == []
-    page = visible(bridge.act('/owner', {'owner_mode': 'source'})['html'])
-    assert 'will be skipped unless the same users and directories exist' in page
-    assert 'Alice' in page and 'Dashboard 1' in page
+        mapping = json.loads(z.read('usermappings.json'))
+        assert mapping['users'][0]['userName'] == 'admin' and mapping['sources'] == []
+    assert 'Share Dashboard 1 with Directory team again' in out.with_name('admin-checklist.txt').read_text()
+
+    # The same user as on the source: applies on click, and the table says where it can fail.
+    state.screen = 'owner'
+    page = visible(bridge.act('/owner', {'mode': 'source'})['html'])
+    assert state.owner_mode == 'source'
+    assert 'Dashboard 1 Alice Skipped if Alice is not on the target' in page
+    assert 'Shared with Directory team Whole dashboard skipped if the target has no such group' in page
+    review = visible(go(bridge, 'review'))
+    assert 'The import may fail if a dashboard owner is not on the target' in review
     out = tmp_path / 'source-owned.zip'
-    bridge.act('/build', {'out': str(out)})
+    save_to(state, out)
     with zipfile.ZipFile(out) as z:
         mapping = json.loads(z.read('usermappings.json'))
         assert mapping['users'][0]['userSourceId'] == 'directory-1'
         assert mapping['sources'] == [{'id': 'directory-1'}]
         assert json.loads(z.read('dashboardsharings/owner-secret-1'))[0]['sourceType'] == 'ACTIVE_DIRECTORY'
+    checklist = out.with_name('source-owned-checklist.txt').read_text()
+    assert checklist.index('First, make sure these users exist on the target: Alice') < checklist.index('Import source-owned.zip')
+    assert 'Look for the group Directory team there as well.' in checklist
+    state.log.close()
+
+
+def test_the_window_no_longer_sends_one_named_user_and_the_program_still_can(tmp_path, config_dir):
+    from vcfcf_migrator import bundle, selection
+    state = PageState(str(make_source(tmp_path)))
+    bridge = Bridge(state)
+    choose(bridge, 'dashboard:d1@owner-secret-1')
+    go(bridge, 'owner')
+    # Whatever a page sends, the window takes only the two choices it shows.
+    bridge.act('/owner', {'mode': 'other', 'target_user': 'target-user', 'owner_mode': 'other'})
+    assert (state.owner_mode, state.target_user) == ('admin', 'admin')
+    assert 'target-user' not in state.render()
+    # The capability is kept for later: the writer still maps to a named user.
+    out = tmp_path / 'named.zip'
+    picked = selection.close(state.graph, ['dashboard:d1@owner-secret-1'])
+    assert any('target-user' in line for line in selection.ownership_messages(state.graph, picked, 'target-user'))
+    result = bundle.build_bundle(state.members.data, state.members.order, state.graph, picked, out,
+                                 target_user='target-user')
+    with zipfile.ZipFile(out) as z:
+        assert json.loads(z.read('usermappings.json'))['users'][0]['userName'] == 'target-user'
+    assert result.tasks[0].title == 'First, make sure the user target-user exists on the target'
     state.log.close()
 
 
@@ -97,23 +121,57 @@ def test_cli_owner_choices_warn_and_write_requested_mapping(tmp_path, capsys):
             assert json.loads(z.read('usermappings.json'))['users'][0]['userName'] == expected
 
 
-def test_collision_blocks_review_and_can_remove_a_copy(tmp_path, config_dir):
+def test_two_copies_are_asked_about_first_and_one_can_be_kept(tmp_path, config_dir):
     state = PageState(str(make_source(tmp_path, same=True)))
     bridge = Bridge(state)
     choose(bridge, 'dashboard:same@owner-secret-1')
-    choose(bridge, 'dashboard:same@owner-secret-2')
-    html = bridge.act('/tab', {'tab': 'review'})['html']
+    html = choose(bridge, 'dashboard:same@owner-secret-2')
+    assert 'You now have both copies of this dashboard. The next step asks which to keep.' in visible(html)
+    html = go(bridge, 'owner')
     page = visible(html)
-    assert 'Overview' in page and 'Alice' in page and 'Bob' in page
+    assert 'First: which copy of Overview do you want?' in page
+    assert 'The copy owned by Alice' in page and 'The copy owned by Bob' in page
+    assert 'Both, under their original owners' in page and 'Shared with Directory team' in page
     assert 'owner-secret-1' not in page and 'owner-secret-2' not in page
-    assert 'Ready to build' not in page and "disabled>Build bundle" in html
-    assert 'Remove Overview' in page
-    html = bridge.act('/remove-pick', {'key': 'dashboard:same@owner-secret-2'})['html']
-    assert "disabled>Build bundle" not in html
+    # The owner question itself, and Review, wait for this answer.
+    assert 'Who should own' not in page and 'Next: review' not in page
+    assert not can_go(state, 'review')
+    go(bridge, 'review')
+    assert state.screen == 'owner'
+    page = visible(bridge.act('/keep-copy', {'key': 'dashboard:same@owner-secret-1'})['html'])
+    assert state.picked == ['dashboard:same@owner-secret-1']
+    assert 'The copy of Overview owned by Bob was left out of the bundle. The other copy stays in. Undo' in page
+    assert 'Who should own this dashboard on the target?' in page and can_go(state, 'review')
+    # Undo brings the question back.
+    bridge.act('/undo', {})
+    assert len(state.picked) == 2 and state.owner_question() == 'copies'
     state.log.close()
 
 
-def test_direct_metric_and_dangling_view_warnings_are_plain(tmp_path, config_dir):
+def test_a_copy_that_comes_with_something_else_cannot_be_dropped_on_its_own(tmp_path, config_dir):
+    path = make_source(tmp_path, same=True)
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, 'w') as z:
+        z.writestr('content.xml', '<Content><Reports><ReportDef id="r"><Title>Both copies report</Title>'
+                   '<Sections><Section><ContentType>Dashboard</ContentType><ContentKey>same</ContentKey>'
+                   '</Section></Sections></ReportDef></Reports></Content>')
+    with zipfile.ZipFile(path, 'a') as z:
+        z.writestr('reports.zip', inner.getvalue())
+    state = PageState(str(path))
+    bridge = Bridge(state)
+    choose(bridge, 'report:r')
+    page = visible(go(bridge, 'owner'))
+    assert 'First: which copy of Overview do you want?' in page
+    assert 'Keep this copy' not in page
+    assert 'The other copy comes along with Both copies report.' in page
+    bridge.act('/keep-copy', {'key': 'dashboard:same@owner-secret-1'})
+    assert state.owner_question() == 'copies'
+    bridge.act('/owner', {'mode': 'source', 'both': '1'})
+    assert state.owner_question() == '' and 'Both copies are kept' in state.note.text
+    state.log.close()
+
+
+def test_a_super_metric_and_a_deleted_view_are_good_to_know_in_plain_words(tmp_path, config_dir):
     sm = '11111111-1111-4111-8111-111111111111'
     source = tmp_path / 'warnings.zip'
     dashboard = {'id': 'dashboard-private-id', 'name': 'Summary', 'widgets': [
@@ -129,34 +187,45 @@ def test_direct_metric_and_dangling_view_warnings_are_plain(tmp_path, config_dir
         z.writestr('supermetrics.json', json.dumps({sm: {'name': 'Demand', 'formula': '', 'resourceKinds': []}}))
     state = PageState(str(source))
     bridge = Bridge(state)
-    choose(bridge, 'dashboard:dashboard-private-id')
+    html = choose(bridge, 'dashboard:dashboard-private-id')
+    assert 'One widget will be empty' in visible(html)     # on the row, before Review
     choose(bridge, 'supermetric:' + sm)
-    html = bridge.act('/tab', {'tab': 'review'})['html']
-    page = visible(html)
-    assert 'Enable these super metrics in a policy on the target: Demand' in page
-    assert 'Source policy information may be incomplete' in page
-    assert 'Ready to build with warnings' in page
-    assert 'Capacity view' in page and 'may already be missing on the source' in page
-    assert 'viewDefinitionId' not in page and 'dashboard-private-id' not in page and 'view-private-id' not in page
+    # No owner to choose: the dashboard in this export belongs to nobody.
+    assert 'Dashboard owner (not needed, no dashboards chosen)' in visible(state.render())
+    page = visible(go(bridge, 'review'))
+    assert 'Ready to save' in page and 'Good to know, nothing to decide' in page
+    assert 'Summary: one widget will be empty' in page
+    assert '1 super metric arrives switched off' in page
+    page = visible(bridge.act('/issue', {'id': 'i-dashboard:dashboard-private-id'})['html'])
+    assert ('Its widget "Capacity view" shows a view that is not in this export, most likely because '
+            'the view was deleted on the source.') in page
+    for private in ('viewDefinitionId', 'dashboard-private-id', 'view-private-id', 'widget-private-id'):
+        assert private not in page
     out = tmp_path / 'warnings-out.zip'
-    html = bridge.act('/build', {'out': str(out)})['html']
-    page = visible(html)
-    assert out.exists() and 'Capacity view' in page
-    assert 'viewDefinitionId' not in page and 'dashboard-private-id' not in page and 'view-private-id' not in page
+    save_to(state, out)
+    page = visible(state.render())
+    assert out.exists() and 'Bundle saved' in page
+    checklist = out.with_name('warnings-out-checklist.txt').read_text()
+    assert 'Switch on 1 super metric' in checklist and 'Tick Demand.' in checklist
+    assert 'Expect one empty widget on Summary' in checklist and 'Capacity view' in checklist
+    for private in ('viewDefinitionId', 'dashboard-private-id', 'view-private-id'):
+        assert private not in page and private not in checklist
     state.log.close()
 
 
-def test_missing_sharing_is_explained_before_build(tmp_path, config_dir):
+def test_a_private_dashboard_is_said_to_stay_private(tmp_path, config_dir):
     state = PageState(str(make_source(tmp_path)))
     bridge = Bridge(state)
     choose(bridge, 'dashboard:d2@owner-secret-2')
-    page = visible(bridge.act('/tab', {'tab': 'review'})['html'])
-    assert 'No sharing will remain for: Dashboard 2' in page
-    assert 'These dashboards will be private; set sharing on the target' in page
+    page = visible(go(bridge, 'owner'))
+    assert 'Dashboard 2 admin Private, as on the source' in page
     out = tmp_path / 'private.zip'
-    page = visible(bridge.act('/build', {'out': str(out)})['html'])
-    assert out.exists() and 'These dashboards will be private' in page
-    assert 'dashboardsharings/owner-secret-2' not in page
+    save_to(state, out)
+    assert out.exists()
+    report = out.with_name('private-report.txt').read_text()
+    assert 'Dashboards will belong to the built-in admin user on the target.' in report
+    assert 'These dashboards will be private' in report        # the technical section, for support
+    assert 'owner-secret-2' not in visible(state.render())
     state.log.close()
 
 
@@ -191,26 +260,29 @@ def test_cli_collision_identifies_owners_without_raw_ids(tmp_path, capsys):
     assert not out.exists()
 
 
-def test_same_named_owners_are_distinct_in_keep_source_warnings_and_report(tmp_path, config_dir):
+def test_copies_stay_distinct_when_both_are_kept_and_in_the_report(tmp_path, config_dir):
     state = PageState(str(make_source(tmp_path, same=True)))
     bridge = Bridge(state)
     choose(bridge, 'dashboard:same@owner-secret-1')
     choose(bridge, 'dashboard:same@owner-secret-2')
-    page = visible(bridge.act('/owner', {'owner_mode': 'source'})['html'])
-    alice, bob = 'Overview (owner Alice)', 'Overview (owner Bob)'
+    go(bridge, 'owner')
+    page = visible(bridge.act('/owner', {'mode': 'source', 'both': '1'})['html'])
+    alice, bob = "Overview (Alice's copy)", "Overview (Bob's copy)"
     assert alice in page and bob in page
-    private = page.split('No sharing will remain for:', 1)[1].split('These dashboards will be private', 1)[0]
-    assert bob in private and alice not in private
-    assert 'will be skipped unless the same users and directories exist on the target: ' + alice + ', ' + bob in page
+    assert 'Both copies are kept' in page and '"The same user as on the source" is selected below.' in page
+    assert f'{bob} Bob Skipped if Bob is not on the target Private, as on the source' in page
+    assert 'Choosing this takes you back to pick one copy of Overview.' in page
     out = tmp_path / 'both-owners.zip'
-    page = visible(bridge.act('/build', {'out': str(out)})['html'])
+    save_to(state, out)
     assert out.exists()
-    assert 'Source owners and directory sharing are kept for: ' + alice + ', ' + bob in page
-    assert 'No sharing remains for: ' + bob in page
+    report = out.with_name('both-owners-report.txt').read_text()
+    assert 'Dashboards will belong to the same users as on the source.' in report
+    assert 'Source owners and directory sharing are kept for: ' + alice + ', ' + bob in report
+    assert 'No sharing remains for: ' + bob in report
     state.log.close()
 
 
-def test_duplicate_view_descriptions_and_unique_short_ids_in_real_ui(tmp_path, config_dir):
+def test_same_named_views_are_told_apart_without_showing_an_id(tmp_path, config_dir):
     ids = ['11111111-1111-4111-8111-11111111abcd', '22222222-2222-4222-8222-22222222abcd',
            '33333333-3333-4333-8333-33333331abcd', '44444444-4444-4444-8444-44444442abcd']
     xml = ('<Views>'
@@ -228,29 +300,34 @@ def test_duplicate_view_descriptions_and_unique_short_ids_in_real_ui(tmp_path, c
         z.writestr('views.zip', inner.getvalue())
     state = PageState(str(source))
     bridge = Bridge(state)
-    inventory = visible(state.render())
+    listing = visible(state.render())
     production = 'CPU Overview (Production servers)'
     development = 'CPU Overview (Development servers)'
-    assert production in inventory and development in inventory
-    assert 'CPU Overview (id' not in inventory
-    assert 'Capacity (id …1abcd)' in inventory and 'Capacity (id …2abcd)' in inventory
+    assert production in listing and development in listing
+    assert 'CPU Overview (id' not in listing
+    assert 'Capacity (id …1abcd)' in listing and 'Capacity (id …2abcd)' in listing
     for ident in ids:
         choose(bridge, 'view:' + ident)
-    page = visible(bridge.act('/tab', {'tab': 'review'})['html'])
+    go(bridge, 'review')
+    page = visible(bridge.act('/issue', {'id': 'contents'})['html'])
     assert production in page and development in page
     out = tmp_path / 'views-out.zip'
-    page = visible(bridge.act('/build', {'out': str(out)})['html'])
+    save_to(state, out)
+    page = visible(bridge.act('/doc', {'k': 'report'})['html'])
     assert out.exists() and 'Capacity (id …1abcd)' in page and 'Capacity (id …2abcd)' in page
-    assert ids[2] not in page and ids[3] not in page
-    saved = (tmp_path / 'views-out-build-report.txt').read_text(encoding='utf-8')
-    assert 'Build report saved to:' in page
+    assert 'Bundle report' in page and 'What is inside (4)' in page
+    for ident in ids:
+        assert ident not in page
+    # The full ids are where support will look for them: at the end of the saved file.
+    saved = (tmp_path / 'views-out-report.txt').read_text(encoding='utf-8')
+    assert saved.index('Bundle report') < saved.index('Technical detail, for support')
     assert state.build_report in saved
     assert 'Support details\n' in saved
     assert ids[2] in saved and ids[3] in saved
     state.log.close()
 
 
-def test_report_lists_kept_and_pruned_localization_without_marker_pattern(tmp_path, config_dir):
+def test_the_saved_report_keeps_the_technical_detail_at_its_end(tmp_path, config_dir):
     nested = io.BytesIO()
     with zipfile.ZipFile(nested, 'w') as z:
         z.writestr('dashboard/dashboard.json', json.dumps({'entries': {
@@ -272,24 +349,29 @@ def test_report_lists_kept_and_pruned_localization_without_marker_pattern(tmp_pa
     bridge = Bridge(state)
     choose(bridge, 'dashboard:keep-dashboard')
     choose(bridge, 'customgroup:Keep group')
-    bridge.act('/tab', {'tab': 'review'})
     out = tmp_path / 'subset.zip'
-    html = bridge.act('/build', {'out': str(out)})['html']
+    save_to(state, out)
+    html = bridge.act('/doc', {'k': 'report'})['html']
     page = visible(html)
-    assert out.exists() and '<details open><summary>Bundle report' in html
-    assert 'Localization entries kept because they could not be matched: shared' in page
-    assert 'escaped\\ name' in page and 'continuedkey' in page and 'comment-next' in page
-    assert 'localization keys for unselected objects: other-dashboard.title' in page
-    assert 'unused custom group types: Other type' in page
-    assert 'unused object entries: VMWARE / Old cluster' in page
-    assert 'unused resource kind entries: Example / Old kind' in page
-    assert 'source export is missing its format marker' in page
-    assert '<digits>' not in page and 'L.v1' not in page
-    assert 'dashboard/resources/resources.properties' not in page
-    saved = (tmp_path / 'subset-build-report.txt').read_text(encoding='utf-8')
-    assert state.build_report == saved
-    assert 'unused custom group types: Other type' in saved
-    assert 'Localization entries kept because they could not be matched: shared' in saved
+    # On screen: the report a person reads, with nothing folded away and no
+    # block of fixed-width text.
+    assert out.exists() and '<details' not in html and '<pre' not in html
+    assert 'Chosen by you (2)' in page and 'Keep' in page and 'Keep group' in page
+    assert 'To do on the target' in page and 'The saved file ends with a technical section for support.' in page
+    assert 'unused custom group types' not in page
+    saved = (tmp_path / 'subset-report.txt').read_text(encoding='utf-8')
+    technical = saved.split('Technical detail, for support')[1]
+    assert state.build_report in technical
+    for line in ('Localization entries kept because they could not be matched: shared',
+                 'localization keys for unselected objects: other-dashboard.title',
+                 'unused custom group types: Other type',
+                 'unused object entries: VMWARE / Old cluster',
+                 'unused resource kind entries: Example / Old kind',
+                 'source export is missing its format marker'):
+        assert line in technical, line
+    assert 'escaped\\ name' in technical and 'continuedkey' in technical and 'comment-next' in technical
+    assert '<digits>' not in saved and 'L.v1' not in saved
+    assert 'dashboard/resources/resources.properties' not in saved
     state.log.close()
 
 
@@ -332,7 +414,8 @@ def _check_dates_in_review(tmp_path, times=('06:00 CST', '12:00 CST')):
     bridge = Bridge(state)
     choose(bridge, 'view:' + first)
     choose(bridge, 'view:' + second)
-    page = visible(bridge.act('/tab', {'tab': 'review'})['html'])
+    go(bridge, 'review')
+    page = visible(bridge.act('/issue', {'id': 'contents'})['html'])
     assert f'CPU (2026-01-15 {times[0]})' in page
     assert f'CPU (2026-01-15 {times[1]})' in page
     assert 'CPU (id …' not in page
@@ -362,13 +445,18 @@ def test_owner_merge_preserves_missing_binding_and_localized_values(tmp_path, co
     bridge = Bridge(state)
     choose(bridge, 'dashboard:a@a')
     choose(bridge, 'dashboard:b@b')
-    review = visible(bridge.act('/tab', {'tab': 'review'})['html'])
-    assert 'Dashboard b: a missing widget binding will remain unresolved' in review
-    assert 'Dashboard b: conflicting localization key shared.title will be renamed' in review
+    go(bridge, 'owner')
+    review = visible(go(bridge, 'review'))
+    assert 'Dashboard b: one widget may stay empty under a shared owner' in review
+    assert 'Dashboard b: one of its texts is renamed inside the bundle' in review
+    page = visible(bridge.act('/issue', {'id': 'merge-0'})['html'])
+    assert 'that tie cannot be kept, so the widget may stay empty on the target' in page
+    assert 'shared.title' not in review + page          # an internal name stays in the saved file
     out = tmp_path / 'combined.zip'
-    page = visible(bridge.act('/build', {'out': str(out)})['html'])
-    assert out.exists() and 'missing widget binding will remain unresolved' in page
-    report = (tmp_path / 'combined-build-report.txt').read_text(encoding='utf-8')
+    save_to(state, out)
+    assert out.exists()
+    report = (tmp_path / 'combined-report.txt').read_text(encoding='utf-8')
+    assert 'missing widget binding will remain unresolved' in report
     assert 'conflicting localization key shared.title' in report
     with zipfile.ZipFile(out) as outer:
         with zipfile.ZipFile(io.BytesIO(outer.read('dashboards/a'))) as inner:

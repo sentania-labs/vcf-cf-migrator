@@ -31,6 +31,19 @@ class SourceError(Exception):
     """A safe message that contains no response body, URL, or credentials."""
 
 
+class CertificateProblem(SourceError):
+    """The server's certificate could not be verified. Told apart from every
+    other failure so the sign-in screen can offer the two ways past it."""
+
+
+class SignInRefused(SourceError):
+    """The server answered, and did not accept the user name or password."""
+
+
+class Cancelled(SourceError):
+    """The person cancelled. Nothing was loaded."""
+
+
 class NoRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -97,8 +110,12 @@ def tls_context(ca_file='', ignore_ssl=False):
 
 class Client:
     def __init__(self, address, ca_file='', opener=None, progress=None,
-                 timeout=300, poll_interval=1, ignore_ssl=False, request_timeout=30):
+                 timeout=300, poll_interval=1, ignore_ssl=False, request_timeout=30,
+                 cancelled=None):
         self.base = endpoint(address)
+        # Asked between requests, between polls and between downloaded chunks.
+        # A request already on the wire runs to its own timeout.
+        self.cancelled = cancelled or (lambda: False)
         self.token = None
         self.auth_scheme = 'OpsToken'
         self.try_legacy = True
@@ -110,7 +127,13 @@ class Client:
         self.opener = opener or urllib.request.build_opener(
             urllib.request.HTTPSHandler(context=context), NoRedirects())
 
+    def _check_cancelled(self):
+        if self.cancelled():
+            raise Cancelled('Cancelled. Nothing was downloaded.')
+
     def _request(self, path, data=None, extra_headers=None):
+        if path != '/auth/token/release':
+            self._check_cancelled()
         headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
         if self.token:
             headers['Authorization'] = self.auth_scheme + ' ' + self.token
@@ -134,11 +157,13 @@ class Client:
                 404: 'This Operations endpoint does not offer the required content export API.',
                 429: 'Operations is busy. Wait before connecting again.',
             }
+            if code == 401 and path == '/auth/token/acquire':
+                raise SignInRefused(messages[401]) from None
             raise SourceError(messages.get(code, 'Operations could not complete the request. No automatic export retry was made.')) from None
         except (urllib.error.URLError, ssl.SSLError, OSError, socket.timeout) as exc:
             reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
             if isinstance(reason, ssl.SSLCertVerificationError):
-                raise SourceError('Certificate verification failed. Choose a trusted CA bundle or check the server certificate.') from None
+                raise CertificateProblem('Certificate verification failed. Choose a trusted CA bundle or check the server certificate.') from None
             raise SourceError('Connection failed. Check the address, trusted CA, network, and source availability. If export had started, check its status before retrying.') from None
 
     def _json(self, path, data=None, extra_headers=None):
@@ -210,6 +235,16 @@ class Client:
         finally:
             self.release()
 
+    def _pause(self):
+        """Wait one poll interval, in short steps so a cancel is noticed."""
+        deadline = time.monotonic() + self.poll_interval
+        while True:
+            self._check_cancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 0.2))
+
     def acquire(self, username, password, auth_source='', export_password=''):
         snapshot = None
         try:
@@ -240,12 +275,12 @@ class Client:
             while time.monotonic() < deadline:
                 current = self._status()
                 if current['state'] == 'NOT_INITIALIZED':
-                    time.sleep(self.poll_interval)
+                    self._pause()
                     continue
                 candidate = self._identity(current)
                 if identity is None:
                     if previous_id and (candidate[0] == previous_id[0] or candidate[1] <= previous_id[1]):
-                        time.sleep(self.poll_interval)
+                        self._pause()
                         continue
                     identity = candidate
                 if candidate != identity:
@@ -254,7 +289,7 @@ class Client:
                     raise SourceError('Operations could not export the content. Check the source content job and export password.')
                 if current['state'] == 'FINISHED':
                     break
-                time.sleep(self.poll_interval)
+                self._pause()
             else:
                 raise SourceError('Export timed out. The source job may still be running; check it before retrying.')
             self.progress('Downloading content export')
@@ -264,6 +299,7 @@ class Client:
                     snapshot.path.chmod(0o600)
                     count = 0
                     while True:
+                        self._check_cancelled()
                         chunk = response.read(1024 * 1024)
                         if not chunk:
                             break

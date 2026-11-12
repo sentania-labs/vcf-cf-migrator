@@ -3,9 +3,8 @@ import io
 import json
 import zipfile
 
+from pages import page_over
 from vcfcf_migrator import bundle, graph, selection
-from vcfcf_migrator.ui import PageState
-from vcfcf_migrator.workspace import identity, review
 
 
 def _members(include_views=True, count=1):
@@ -33,10 +32,16 @@ def test_view_in_complete_type_is_reported_per_widget_without_blocking(tmp_path)
     assert 'export may be incomplete' in selection.render(g, picked)
     out = tmp_path / 'bundle.zip'
     bundle.build_bundle(members, list(members), g, picked, out)
-    state = PageState()
-    state.graph, state.selection, state.picked, state.name_counts = g, picked, ['dashboard:d'], {}
-    assert 'stock or derived from stock' in identity(state, g.nodes['dashboard:d'])
-    assert 'can replace the dashboard with the same ID' in review(state)
+    state = page_over(g, ['dashboard:d'])
+    assert 'Replaces a built-in dashboard' in state.render()
+    # A dashboard that comes with the product is asked about; the two empty
+    # widgets are said under the same entry and are not a reason to refuse.
+    issue, = state.open_issues()
+    assert issue.title == 'Stock copy: would overwrite the target’s copy' and not issue.hard
+    assert [catch.badge for _node, catch in issue.catches] == ['2 widgets will be empty']
+    state.screen = 'review'
+    assert 'Importing yours overwrites the target’s copy for good.' in state.render()
+    state.log.close()
 
 
 def test_missing_or_inconsistent_view_type_blocks():

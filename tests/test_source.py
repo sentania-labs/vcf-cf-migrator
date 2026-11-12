@@ -1,4 +1,5 @@
 """Live source acquisition, operation identity, cleanup, and privacy."""
+from datetime import datetime
 import io
 import json
 import ssl
@@ -158,7 +159,8 @@ def test_native_action_keeps_secrets_out_of_logs_and_preserves_inventory(monkeyp
     monkeypatch.setattr(source, 'Client', Broken)
     result = Bridge(state).act('/connect', values)
     assert state.graph is old
-    state.save_diagnostics(str(tmp_path / 'shared.jsonl'))
+    assert state.conn['error'] and 'private' not in state.conn['error'][1]
+    state.save_support_report(str(tmp_path / 'shared.jsonl'))
     state.log.close()
     combined = result['html'] + log.read_text() + (tmp_path / 'shared.jsonl').read_text()
     assert all(value not in combined for value in values.values())
@@ -170,19 +172,21 @@ def test_snapshot_lifetime_and_output_location(monkeypatch, tmp_path):
     c, _ = client(replies())
     monkeypatch.setattr(source, 'Client', lambda *a, **k: c)
     form = dict(address='https://operations.example', username='user', password='pass', export_password='pass')
+    state.clock = lambda: datetime(2026, 11, 12, 13, 5, 42)
     state.connect_source(form)
     assert not form
-    assert not state.error
+    assert not state.conn['error'] and state.screen == 'choose'
     downloaded = Path(state.zip_path)
     assert downloaded.exists()
-    assert state.default_out() == str(state.download_directory() / 'bundle.zip')
-    assert state.default_diagnostics_out() == str(state.download_directory() / 'vcfcf-migrator-diagnostics.jsonl')
-    state.open_export(str(downloaded.parent / '.' / downloaded.name))
-    assert downloaded.exists()
-    assert state.source_snapshot is not None
-    assert state.default_out() == str(state.download_directory() / 'bundle.zip')
+    # A downloaded export has no file name of its own: the bundle is named
+    # after the server and when it was fetched, and goes to Downloads like
+    # every other bundle.
+    assert state.default_out() == str(state.download_directory()
+                                      / 'operations.example-2026-11-12-1305-bundle.zip')
+    assert 'kept only while the app is open' in state.note.text
     state.open_export('missing.zip')
-    assert downloaded.exists()
+    assert downloaded.exists() and state.source_snapshot is not None
+    assert state.open_error['kind'] == 'unreadable'
     export = tmp_path / 'fixture.zip'
     export.write_bytes(build_export_zip())
     state.open_export(str(export))
@@ -215,6 +219,27 @@ def test_legacy_negotiation_only_replays_the_initial_get():
     assert len(exports) == 1
     assert opener.requests[-1].full_url.endswith('/auth/token/release')
     assert opener.requests[-1].get_method() == 'POST'
+
+
+def _unauthorized():
+    return urllib.error.HTTPError('https://operations.example', 401, 'Unauthorized', {}, io.BytesIO(b''))
+
+
+def test_a_refused_password_is_a_refused_sign_in():
+    c, _opener = client([_unauthorized()])
+    with pytest.raises(source.SignInRefused):
+        c.acquire('user', 'wrong-password')
+
+
+def test_a_401_after_the_token_was_issued_is_not_a_refused_password():
+    values = replies()
+    values[1:2] = [_unauthorized(), _unauthorized()]
+    c, opener = client(values)
+    with pytest.raises(source.SourceError) as caught:
+        c.acquire('user', 'password')
+    assert not isinstance(caught.value, source.SignInRefused)
+    assert 'session expired' in str(caught.value)
+    assert opener.requests[-1].full_url.endswith('/auth/token/release')
 
 
 def test_release_failure_does_not_discard_successful_snapshot():

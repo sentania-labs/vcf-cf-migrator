@@ -2,39 +2,95 @@
 
 ## Unreleased
 
+- The desktop window is redesigned as six steps with one question each: Open an
+  export, Choose content, Dashboard owner, Review, Save, Import on the target.
+  A step bar shows where you are, the next step is always the button at the
+  bottom right, and no screen scrolls as a page (only lists scroll, inside
+  their own panel) at 1280 x 860 or at 1024 x 700. Nothing is folded away.
+  Internal type names, ids and file formats are out of the flow.
+  - **Open.** The file window opens first and in Downloads, and a ZIP can be
+    dropped on the window. A damaged file, a ZIP that is not an export, an
+    export that lost its dashboards and an export with nothing in it each get
+    their own message with what to do. An empty export is now refused instead
+    of opened. Reading can be cancelled. Opening a different export asks in the
+    page and ticks your choices again in the new one, saying how many were
+    found. Anything decided at Review is asked again, because the same choice
+    can need something different in another export.
+  - **Choose.** Search filters as you type, by name. One panel shows what an
+    item is, what it needs as a tree (with anything missing in red) and what
+    uses it. "Add all of these" replaces the three selection buttons, skips
+    anything that needs a decision and can be undone. Emptying the bundle asks
+    first.
+  - **Dashboard owner** is its own step with two choices that apply at once:
+    the built-in admin user (default) or the same user as on the source, which
+    carries its warning on the choice itself. A table shows the owner and the
+    sharing each dashboard ends up with. Two copies of one dashboard are asked
+    about first, side by side. Giving every dashboard to one named user is no
+    longer offered in the window; `--target-owner` on the command line is
+    unchanged.
+  - **Review** is a short list in two groups. "Decide before saving" must be
+    answered before Save comes on: a dashboard that never finished loading,
+    one that replaces a built-in dashboard, or a missing dependency. "Good to
+    know" needs no answer. Leaving something out can be undone.
+  - **Save** defaults to Downloads for every export, asks in the page before
+    replacing a file, and writes three files: the bundle, `<name>-report.txt`
+    (readable, with the technical detail at the end) and
+    `<name>-checklist.txt`. Both can be read in the app. They replace
+    `<name>-build-report.txt` and `<name>-post-import.txt`; the command line
+    writes the same checklist.
+  - **Import on the target** is the checklist as a screen: one ordered list of
+    tasks made for this bundle, each with why it matters and numbered steps,
+    ticked off as you go.
+  - **Sign in to the source** is one screen. The certificate options appear
+    only when the sign-in test reports a certificate problem, and the answer
+    holds for that one server and that one download only. The export
+    password is typed twice, the download shows four stages and can be
+    cancelled, and a wrong password asks for the password again without
+    clearing the rest. A downloaded export is named by its server and when
+    it was fetched, in the window and in the bundle's file name.
+  - **Help and settings** saves a support report in one click, straight to
+    Downloads under a dated name, and has the appearance (applies at once), a
+    log-file tick box, the version, and a glossary.
+- A missing dependency no longer makes a save impossible in the window. It is
+  still refused by default; at Review the person can leave the item out
+  (recommended), open a fuller export, or answer "I have checked this already
+  exists on the target. Keep it in anyway". Each such answer is written in the
+  report and adds a task to the checklist to confirm it on the target. The
+  command line still refuses, with no override. This is how issue #64 is
+  settled: an export never carries some definitions that ship with the product,
+  and nothing in an export says which. (#64)
 - Dashboards the source never finished loading are detected instead of read as
   clean. They are marked "not finished loading on the source" in the picker,
   the dependency tree and `inspect`, with what they were waiting on and how
   many times the source tried, and `inspect` reports how many there are. Their
-  references are shown as unknown, never as none. They are left out of Select
-  all, Select shown and `build --select-all`; naming one still picks it, and
-  Review and the build report then warn that it will not work on the target.
+  references are shown as unknown, never as none. They are left out of a bulk
+  add and of `build --select-all`; naming one still picks it, and Review and
+  the build report then warn that it will not work on the target.
   An export whose contents list says it holds dashboards that are not there
   (empty or missing dashboard files, or a different number read than declared)
   is refused with a plain message to take the export again, before any
   dependency tree is built. (#62)
-- The desktop window is reorganized around a start page where you choose to open
-  an export zip or connect to VCF Operations. Connecting adds a Browse control
-  for a trusted PEM CA file, an opt-in **Ignore SSL validation** switch with a
-  warning, an editable login-source picker (Local by default, populated from the
-  server), and **Test connection**. Bundles and diagnostics are saved through
-  native Save As dialogs, an existing destination is confirmed once, and
-  replacing a loaded source asks before discarding your selection. Light and
-  dark themes (light by default) are under Help & diagnostics > Settings.
-  Inspect, tree/JSON, selection-file and corpus-check controls are removed from
-  the desktop window and remain command-line only.
+- The desktop window's start page offers to open an export zip or to connect to
+  VCF Operations. Connecting asks for the address, user name and password (with
+  a login-source picker that defaults to Local and is filled from the server),
+  has a **Test connection** button, and offers certificate choices when the
+  server's certificate cannot be checked. Replacing a loaded source asks before
+  discarding your selection. Light and dark themes (light by default) are on
+  the Help and settings screen. Inspect, tree/JSON, selection-file and
+  corpus-check controls are removed from the desktop window and remain
+  command-line only.
 - Dashboard navigation now includes linked dashboards automatically. Navigation
   gap counts use the complete export. (#3)
 - Bundles are built to import on a target that shares no login source with the
   source: dashboard ownership maps to local `admin` (several owners are merged),
   and directory-group sharing is removed and reported. Custom groups referenced
   anywhere in a dashboard's widgets are carried or reported, and unused
-  container scaffolding is pruned. A post-import checklist (beside the ZIP)
-  lists super metrics to enable and group policy assignments. References
-  already dangling on the source (missing views, dashboards, navigation
-  targets) are reported as inferences and no longer block. The desktop app
-  saves the build report beside the ZIP as `<name>-build-report.txt`. (#56,
-  #57, #58, #59, #60, #61)
+  container scaffolding is pruned. A checklist (beside the ZIP) lists super
+  metrics to enable and group policy assignments. References already dangling
+  on the source (missing views, dashboards, navigation targets) are reported
+  as inferences and no longer block. The desktop app saves the report and
+  checklist beside the ZIP as `<name>-report.txt` and `<name>-checklist.txt`.
+  (#56, #57, #58, #59, #60, #61)
 - Each Mac download is now one signed and notarized app archive that
   holds both the Finder app and the `vcfcf-migrator` command line, at
   `VCF Content Migrator.app/Contents/MacOS/vcfcf-migrator`. Running

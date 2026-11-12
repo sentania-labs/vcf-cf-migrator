@@ -70,13 +70,31 @@ _MARKER_RE = re.compile(r"^(\d+)L\.v(\d+)$")
 
 
 class NotAnExport(Exception):
-    """The path is not a readable zip, or the zip is not a content export."""
+    """The path is not a readable zip, or the zip is not a content export.
+
+    ``kind`` says which, so a screen can word the problem itself instead of
+    passing this sentence through: ``unreadable`` (the file could not be
+    read at all), ``not_zip``, ``not_export`` or ``incomplete``.
+    """
+
+    def __init__(self, message: str = "", kind: str = "not_export"):
+        super().__init__(message)
+        self.kind = kind
 
 
 class IncompleteExport(NotAnExport):
     """The export's own contents list says it holds dashboards that are not
     there. Reading on would build a dependency tree from a partial export, so
-    every command stops here and says to take the export again."""
+    every command stops here and says to take the export again.
+
+    ``declared`` is how many dashboards the contents list names and ``found``
+    how many could be read.
+    """
+
+    def __init__(self, message: str = "", declared: int = 0, found: int = 0):
+        super().__init__(message, kind="incomplete")
+        self.declared = declared
+        self.found = found
 
 
 @dataclass
@@ -382,11 +400,11 @@ def _read_export(path) -> Export:
         data = path.read_bytes()
     except OSError as e:
         runlog.error("input.unreadable", path=str(path), reason=str(e))
-        raise NotAnExport(f"cannot read {path}: {e}") from e
+        raise NotAnExport(f"cannot read {path}: {e}", kind="unreadable") from e
     if not zipfile.is_zipfile(io.BytesIO(data)):
         runlog.error("input.not_a_zip", path=str(path), bytes=len(data),
                      reason=runlog.prose("the file does not open as a zip archive"))
-        raise NotAnExport(f"{path} is not a zip file")
+        raise NotAnExport(f"{path} is not a zip file", kind="not_zip")
 
     export = Export(path=str(path))
     all_dashboards = []
@@ -523,7 +541,8 @@ def _read_export(path) -> Export:
         runlog.error("input.incomplete_export",
                      declared=_hollow.declared_dashboards(export.manifest) or 0,
                      items=len(all_dashboards), reason=runlog.prose(problem))
-        raise IncompleteExport(problem)
+        raise IncompleteExport(problem, _hollow.declared_dashboards(export.manifest) or 0,
+                               len(all_dashboards))
 
     # The same object can appear in two members (a full export embeds the
     # notification template inside notificationrules.json and again in
@@ -601,11 +620,11 @@ def _read_members(path) -> Members:
         raw = path.read_bytes()
     except OSError as e:
         runlog.error("input.unreadable", path=str(path), reason=str(e))
-        raise NotAnExport(f"cannot read {path}: {e}") from e
+        raise NotAnExport(f"cannot read {path}: {e}", kind="unreadable") from e
     if not zipfile.is_zipfile(io.BytesIO(raw)):
         runlog.error("input.not_a_zip", path=str(path), bytes=len(raw),
                      reason=runlog.prose("the file does not open as a zip archive"))
-        raise NotAnExport(f"{path} is not a zip file")
+        raise NotAnExport(f"{path} is not a zip file", kind="not_zip")
     members = Members(path=str(path))
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         for position, name in enumerate(zf.namelist()):

@@ -2,20 +2,15 @@
 import io
 import json
 import zipfile
-from collections import Counter
 
+from pages import page_over, visible
 from vcfcf_migrator import graph
 from vcfcf_migrator.graph import dashboard_binding_lines
-from vcfcf_migrator.ui import PageState
-from vcfcf_migrator.workspace import display_name, identity
 
 
 def _state(members):
     g = graph.build_graph(members)
-    state = PageState()
-    state.graph = g
-    state.name_counts = Counter((n.kind, n.name) for n in g.nodes.values())
-    return state, g
+    return page_over(g), g
 
 
 def test_same_named_views_get_distinct_labels_and_unique_names_stay_plain():
@@ -29,12 +24,16 @@ def test_same_named_views_get_distinct_labels_and_unique_names_stay_plain():
     state, g = _state({'views.zip': raw.getvalue()})
     views = {n.key: n for n in g.nodes.values() if n.kind == 'view'}
     assert len(views) == 3
-    cpu = [display_name(state, n) for n in views.values() if n.name == 'CPU Overview']
+    cpu = [state.label(n.key) for n in views.values() if n.name == 'CPU Overview']
     assert len(set(cpu)) == 2
     assert 'CPU Overview (id …a41f)' in cpu and 'CPU Overview (id …c7e2)' in cpu
     memory = [n for n in views.values() if n.name == 'Memory'][0]
-    assert display_name(state, memory) == 'Memory'
-    assert identity(state, memory) == 'view'
+    assert state.label(memory.key) == 'Memory'
+    # The list names the kind in plain words and never shows a full id.
+    page = state.render()
+    assert 'aaaa1111-0000-0000-0000-00000000a41f' not in visible(page)
+    assert '<div class="sub">View</div>' in page
+    state.log.close()
 
 
 def test_unnamed_widgets_are_told_apart_by_type_and_position():
@@ -64,3 +63,12 @@ def test_an_ownerless_copy_does_not_get_empty_label_decoration():
     g = Graph(nodes={n.key: n for n in (without_owner, with_owner)}, owner_names={'a': 'Alice'})
     assert object_label(g, without_owner) == 'Overview'
     assert object_label(g, with_owner) == 'Overview (owner Alice)'
+
+
+def test_copies_of_one_dashboard_are_told_apart_by_whose_copy_each_is():
+    from vcfcf_migrator.graph import Graph, Node, object_label
+    first = Node('dashboard', 'same', 'Overview', 'same', 'dashboards/a', 0, owner='a')
+    second = Node('dashboard', 'same', 'Overview', 'same', 'dashboards/b', 0, owner='b')
+    g = Graph(nodes={n.key: n for n in (first, second)}, owner_names={'a': 'alice', 'b': 'bob'})
+    assert object_label(g, first) == "Overview (alice's copy)"
+    assert object_label(g, second) == "Overview (bob's copy)"

@@ -4,23 +4,22 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from vcfcf_migrator import selection, workspace
+from pages import page_over, visible
+from vcfcf_migrator import selection
 from vcfcf_migrator.desktop import Bridge
 from vcfcf_migrator.graph import Graph, Node
-from vcfcf_migrator.ui import PageState, dispatch
+from vcfcf_migrator.ui import dispatch
 
 
 def state():
-    page = PageState()
-    page.graph = Graph()
+    graph = Graph()
     for i in range(78):
         node = Node('dashboard', str(i), 'Dashboard ' + str(i), str(i), 'synthetic', i)
-        page.graph.nodes[node.key] = node
+        graph.nodes[node.key] = node
     report = Node('report', 'report', 'Report', 'report', 'synthetic', 0)
-    page.graph.nodes[report.key] = report
-    page.graph.edges[report.key] = ['dashboard:' + str(i) for i in range(4)]
-    page._reclose()
-    return page
+    graph.nodes[report.key] = report
+    graph.edges[report.key] = ['dashboard:' + str(i) for i in range(4)]
+    return page_over(graph)
 
 
 @pytest.mark.parametrize('entry', ['direct', 'dispatch', 'bridge'])
@@ -39,17 +38,19 @@ def test_clear_waits_for_pending_selection_and_wins(monkeypatch, entry):
 
     def act(action):
         if entry == 'direct':
-            return page.select_all() if action == '/select-all' else page.clear()
+            return page.add_shown() if action == '/add-shown' else page.clear()
         if entry == 'dispatch':
             return dispatch(page, action, {})
         return Bridge(page).act(action, {})
 
     def clear():
         clearing.set()
-        return act('/clear')
+        # Emptying the bundle asks first; this is the answer to that question.
+        page.ask = {'kind': 'clear'}
+        return act('/clear') if entry == 'direct' else act('/ask-yes')
 
     with ThreadPoolExecutor(2) as pool:
-        first = pool.submit(act, '/select-all')
+        first = pool.submit(act, '/add-shown')
         assert entered.wait(2)
         last = pool.submit(clear)
         assert clearing.wait(2)
@@ -73,15 +74,18 @@ def test_selection_failure_preserves_previous_committed_state(monkeypatch):
 
     monkeypatch.setattr(selection, 'close', fail)
     with pytest.raises(ValueError):
-        page.select_all()
+        page.add_shown()
     assert (page.picked, page.selection.keys) == previous
 
 
-def test_counts_include_dependencies_and_explicit_zero():
+def test_the_footer_counts_what_was_chosen_and_what_came_with_it():
     page = state()
+    assert 'Tick at least one thing to continue.' in visible(page.render())
     page.toggle('report:report', True)
-    assert '1 you selected + 4 automatically required = 5 included' in workspace.footer(page)
+    assert ('In your bundle: 5 things. 1 you chose, 4 added automatically because your choice needs '
+            'them.') in visible(page.render())
     page.clear()
-    assert '0 you selected + 0 automatically required = 0 included' in workspace.footer(page)
-    page.select_all()
-    assert '79 you selected + 0 automatically required = 79 included' in workspace.footer(page)
+    assert 'Tick at least one thing to continue.' in visible(page.render())
+    page.add_shown()
+    assert 'In your bundle: 79 things. 79 you chose.' in visible(page.render())
+    page.log.close()

@@ -25,22 +25,30 @@ def test_policy_enablement_checklist_and_dashboard_notice(tmp_path):
     assert g.metric_policies[SM] == ['p1']
     assert any(m.kind == 'policy' and m.ident == 'p1' for m in g.missing_for('supermetric:' + SM))
     # Ownerless dashboards still need a policy notice.
+    from vcfcf_migrator import insight
     from vcfcf_migrator.ui import PageState
-    from vcfcf_migrator.workspace import review
     state = PageState()
-    state.graph, state.selection, state.picked = g, picked, ['dashboard:d']
-    state.name_counts = {}
-    assert 'Uses 1 super metric that must be enabled' in review(state)
+    state.graph, state.insight = g, insight.build(g)
+    state._set_picked(['dashboard:d', 'customgroup:Group'])
+    assert '1 super metric arrives switched off' in [i.title for i in state.issues()]
+    state.log.close()
     out = tmp_path / 'bundle.zip'
     result = bundle.build_bundle(members, list(members), g, picked, out)
     with zipfile.ZipFile(out) as z:
         assert 'policies.xml' not in z.namelist()
-    checklist = out.with_name('bundle-post-import.txt').read_text()
-    assert 'Metric' in checklist and 'Adapter / Thing' in checklist
-    assert 'Production' in checklist and 'Disabled' not in checklist
-    assert 'Custom group: Group' in checklist and 'Source policy: Production' in checklist
+    # One checklist beside the bundle: the tasks, in plain words.
+    assert not out.with_name('bundle-post-import.txt').exists()
+    checklist = out.with_name('bundle-checklist.txt').read_text()
     assert checklist == result.checklist
-    assert checklist.rstrip() in bundle.render(result)
+    assert 'Switch on 1 super metric' in checklist and 'Tick Metric.' in checklist
+    assert 'On the source, Metric was switched on in the policy Production.' in checklist
+    assert 'Group used the policy Production on the source.' in checklist
+    assert 'Disabled' not in checklist
+    # The technical detail stays with the report, for support.
+    detail = result.policy_detail
+    assert 'Adapter / Thing' in detail and 'Disabled' not in detail
+    assert 'Custom group: Group' in detail and 'Source policy: Production' in detail
+    assert detail.rstrip() in bundle.render(result)
 
 
 def _checklist(policies):

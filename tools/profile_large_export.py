@@ -55,16 +55,21 @@ def main() -> None:
     started = time.perf_counter()
     state = PageState(str(source), log_level_cli='detail')
     opened = time.perf_counter()
-    state.select_all()
+    state.add_shown()
     selected = time.perf_counter()
     state.render()
+    # Every screen a person passes on the way to a bundle, not only the list.
+    for screen in ('review', 'save'):
+        state.screen = screen
+        state.render()
     rendered = time.perf_counter()
     profiler.disable()
     profiler.dump_stats(str(args.directory / 'operations.prof'))
-    assert state.graph and len(state.graph.nodes) == args.objects, state.error
+    assert state.graph and len(state.graph.nodes) == args.objects, state.open_error
     assert state.selection and len(state.selection.keys) == args.objects
-    state.build(str(args.directory / 'bundle.zip'))
-    assert not state.error, state.error
+    state.save_folder, state.save_name = args.directory, 'bundle.zip'
+    state.save()
+    assert state.save_state == 'saved', (state.save_state, state.save_problem)
     previous = runlog.set_current(runlog.NULL)
     try:
         rebuilt = graph.build_graph(read_members(args.directory / 'bundle.zip').data)
@@ -72,7 +77,7 @@ def main() -> None:
         assert rebuilt.edges == state.graph.edges
     finally:
         runlog.set_current(previous)
-    state.save_diagnostics(str(args.directory / 'diagnostics.jsonl'))
+    state.save_support_report(str(args.directory / 'support-report.txt'))
     print(json.dumps(dict(objects=args.objects, identities=args.identities,
                           edges=sum(map(len, state.graph.edges.values())),
                           open_seconds=round(opened-started, 3),

@@ -3,178 +3,11 @@
 import json
 import os
 import threading
+import time
 import webbrowser
 from typing import Any, Dict, Optional, Tuple
 
 from . import __version__, releases
-
-# Kept verbatim in one place so the test that proves the bridge carries a named
-# submit button has something to point at.
-_BRIDGE_JS = """
-<script>
-(function () {
-  var releaseTag = null;
-  function showRelease() {
-    var link = document.getElementById('release-notice');
-    if (link && releaseTag) {
-      link.textContent = releaseTag + ' available ↗';
-      link.hidden = false;
-    }
-  }
-  window.addEventListener('pywebviewready', function () {
-    window.pywebview.api.check_release().then(function (tag) {
-      releaseTag = tag;
-      showRelease();
-    }).catch(function () {});
-  }, {once: true});
-  document.addEventListener('click', function (ev) {
-    if (ev.target.closest && ev.target.closest('#release-notice')) {
-      ev.preventDefault();
-      window.pywebview.api.open_release().catch(function () {});
-    }
-  });
-  var lookupGeneration = 0, lookupTimer = null, testGeneration = 0;
-  function invalidateConnection() {
-    lookupGeneration++;
-    testGeneration++;
-    clearTimeout(lookupTimer);
-    var status = document.getElementById('test-status');
-    if (status) status.textContent = '';
-  }
-  function loadSources() {
-    var address = document.getElementById('source-address');
-    var ca = document.getElementById('source-ca_file');
-    var ignore = document.getElementById('source-ignore');
-    if (!address || !ca || !ignore) return;
-    ca.disabled = ignore.checked;
-    document.querySelector('[data-pick="ca"]').disabled = ignore.checked;
-    document.getElementById('ssl-warning').hidden = !ignore.checked;
-    var seq = ++lookupGeneration;
-    var status = document.getElementById('source-status');
-    var list = document.getElementById('login-sources');
-    list.replaceChildren();
-    var local = document.createElement('option'); local.value = 'Local'; list.appendChild(local);
-    // Invalid addresses do not dispatch a request. Python also validates at the trust boundary.
-    try {
-      var url = new URL(address.value);
-      if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.search || url.hash ||
-          !['', '/', '/suite-api', '/suite-api/', '/suite-api/api', '/suite-api/api/'].includes(url.pathname)) throw Error();
-    } catch (_) { status.textContent = 'Enter a valid HTTPS server URL to load login sources. Manual entry is always available.'; return; }
-    status.textContent = 'Loading login sources…';
-    window.pywebview.api.login_sources(address.value, ca.value, ignore.checked).then(function (result) {
-      if (seq !== lookupGeneration || !list.isConnected) return;
-      (result.sources || []).filter(function(name) { return name.toLowerCase() !== 'local'; }).forEach(function (name) {
-        var option = document.createElement('option'); option.value = name; list.appendChild(option);
-      });
-      status.textContent = result.error ? result.error + ' Enter a login source manually.' :
-        (result.sources.length ? 'Login sources loaded. You can also enter one manually.' : 'No additional login sources returned. Use Local or enter one manually.');
-    }).catch(function () {
-      if (seq === lookupGeneration && list.isConnected) status.textContent = 'Could not load login sources. Enter one manually.';
-    });
-  }
-  document.addEventListener('input', function (ev) {
-    if (!ev.target.closest('.connect-form')) return;
-    testGeneration++;
-    document.getElementById('test-status').textContent = '';
-    if (['source-address', 'source-ca_file'].includes(ev.target.id)) {
-      invalidateConnection();
-      document.getElementById('source-status').textContent = 'Waiting for server settings…';
-      lookupTimer = setTimeout(loadSources, 400);
-    }
-  });
-  document.addEventListener('change', function (ev) {
-    if (!['source-address', 'source-ca_file', 'source-ignore'].includes(ev.target.id)) return;
-    invalidateConnection();
-    loadSources();
-  });
-  document.addEventListener('click', function (ev) {
-    var picker = ev.target.closest('[data-pick]');
-    if (picker && !picker.disabled) {
-      var input = document.getElementById(picker.dataset.target);
-      picker.disabled = true;
-      window.pywebview.api.pick_path(picker.dataset.pick, input.value).then(function (result) {
-        if (!input.isConnected) return;
-        if (result.error) { banner(result.error); return; }
-        if (result.path) { input.value = result.path; input.dataset.picked = result.confirmed ? result.path : ''; input.dispatchEvent(new Event('change', {bubbles:true})); }
-      }).catch(function () { banner('The file picker could not open. Enter the path manually.'); })
-        .finally(function () { picker.disabled = picker.dataset.pick === 'ca' && document.getElementById('source-ignore')?.checked; });
-    }
-    if (ev.target.id === 'test-connection') {
-      var button = ev.target, form = button.form, data = {};
-      // Testing does not require the unrelated export encryption password.
-      var inputs = ['source-address', 'source-username', 'source-password'];
-      if (inputs.some(function(id) { return !document.getElementById(id).reportValidity(); })) return;
-      new FormData(form).forEach(function (value, key) { if (key !== 'export_password') data[key] = value; });
-      var seq = ++testGeneration;
-      var status = document.getElementById('test-status');
-      status.textContent = 'Testing connection…'; button.disabled = true;
-      window.pywebview.api.test_connection(data).then(function (result) {
-        if (seq === testGeneration && status.isConnected) status.textContent = result;
-      }).catch(function () {
-        if (seq === testGeneration && status.isConnected) status.textContent = 'Connection failed. Check the server settings and credentials.';
-      }).finally(function () { data = null; button.disabled = false; });
-    }
-  });
-  function banner(text) {
-    var bar = document.createElement('div');
-    bar.setAttribute('role', 'alert');
-    bar.className = 'err';
-    bar.textContent = text;
-    document.body.insertBefore(bar, document.body.firstChild);
-  }
-  // Delegated on document, never on the body, because every action replaces
-  // the body wholesale. A listener bound to the body would work exactly once.
-  document.addEventListener('submit', function (ev) {
-    var form = ev.target;
-    if (!form || form.tagName !== 'FORM') { return; }
-    ev.preventDefault();
-    var data = {};
-    // The submitting button goes in FIRST, so that a field of the same name
-    // wins over it, including repeated fields in selection forms.
-    var by = ev.submitter;
-    if (by && by.name) { data[by.name] = by.value; }
-    new FormData(form).forEach(function (value, key) { data[key] = value; });
-    var action = form.getAttribute('action') || '/';
-    var out = action === '/build' ? form.querySelector('#out') : null;
-    if (out && out.dataset.picked && out.dataset.picked === out.value) { data.picked = '1'; }
-    invalidateConnection();
-    if (!window.migratorActivity.start(action)) { return; }
-    if (action === '/connect') { form.reset(); }
-    var navigation = window.migratorNavigation.capture(action);
-    Promise.resolve().then(function () {
-      if (action === '/diagnostics' && data.manual !== '1') {
-        return window.pywebview.api.pick_path('diagnostics', data.out || '').then(function (result) {
-          if (result.error) { throw Error(result.error); }
-          if (!result.path) return null;
-          data.out = result.path;
-          if (result.confirmed) { data.picked = '1'; }
-          return window.pywebview.api.act(action, data);
-        });
-      }
-      return window.pywebview.api.act(action, data);
-    }).then(function (res) {
-      data = null;
-      if (!res) return;
-      var doc = new DOMParser().parseFromString(res.html, 'text/html');
-      document.body.replaceWith(doc.body);
-      document.documentElement.dataset.theme = document.body.dataset.theme;
-      showRelease();
-      if (doc.title) { document.title = doc.title; }
-      // Keep the selected object in view after the page is redrawn.
-      var target = res.anchor ? document.getElementById(res.anchor) : null;
-      if (navigation) { window.migratorNavigation.restore(navigation); }
-      else if (target) { target.scrollIntoView(); } else { window.scrollTo(0, 0); }
-    }).catch(function (err) {
-      data = null;
-      // Without this the window just stops responding to a button, with
-      // nothing on screen and the reason on a stderr nobody launched it from.
-      banner(action === '/connect' ? 'Connection failed. Check the source export job before retrying.' : 'That action failed, and the page below may now be out of date: ' + err);
-    }).finally(function () { window.migratorActivity.finish(); });
-  }, true);
-})();
-</script>
-"""
-
 
 # Which module actually opens a window, per platform. Importing `webview`
 # proves only that a pure-Python package was installed or bundled; the backend
@@ -236,23 +69,20 @@ def short_reason(reason: str) -> str:
 
 
 def page_html(state: Any, initial_zip: Optional[str] = None) -> str:
-    """The page as the window should receive it: rendered, plus the bridge."""
+    """The page as the window should receive it.
+
+    The page carries its own script. The only thing added here is the export
+    to open once the bridge is ready, when the app was started with one.
+    """
     html = state.render()
-    bridge_script = _BRIDGE_JS
-    if initial_zip:
-        path_json = json.dumps(str(initial_zip)).replace("<", "\\u003c")
-        bridge_script += """<script>
-window.addEventListener('pywebviewready', function () {
-  var input = document.getElementById('zip');
-  if (input) { input.value = PATH; input.form.requestSubmit(); }
-}, {once: true});
-</script>""".replace('PATH', path_json)
-    # Before </body> so the document is parsed by the time it runs, and so a
-    # page that somehow lacks the tag still gets the script rather than
-    # silently losing every button on it.
+    if not initial_zip:
+        return html
+    path_json = json.dumps(str(initial_zip)).replace("<", "\\u003c")
+    script = f"<script>window.migratorInitialZip = {path_json};</script>"
+    # Before </body> so a page that somehow lacks the tag still gets it.
     if "</body>" in html:
-        return html.replace("</body>", bridge_script + "</body>", 1)
-    return html + bridge_script
+        return html.replace("</body>", script + "</body>", 1)
+    return html + script
 
 
 class Bridge:
@@ -261,54 +91,107 @@ class Bridge:
     def __init__(self, state: Any) -> None:
         self._state = state
         self._release_lock = threading.Lock()
-        self._release_checked = False
-        self._release_tag = None
 
-    def login_sources(self, address: str, ca_file: str, ignore_ssl: bool) -> dict:
-        from .source import Client, SourceError
+    def _page(self, focus: str = "") -> Dict[str, str]:
+        """The page as it stands. A screen that cannot be drawn must not
+        leave the window stuck on it: whatever was laid over the page is
+        closed and the step itself is drawn, with the reason said."""
+        from . import ui
+        state = self._state
         try:
-            return {'sources': Client(address, ca_file=ca_file, ignore_ssl=ignore_ssl, request_timeout=10).login_sources()}
-        except SourceError as exc:
-            return {'error': str(exc)}
-        except Exception:
-            return {'error': 'Could not load login sources. Enter a source manually.'}
+            return {"html": page_html(state), "focus": focus or ""}
+        except Exception as exc:  # noqa: BLE001 - said on the page
+            state.preview_key, state.doc, state.gloss = '', '', False
+            if state.ask is not None:
+                state._drop_question()
+            state.note = ui.Note('bad', '<b>That could not be shown.</b> The app hit a problem it did not '
+                                        f'expect ({ui.e(type(exc).__name__)}). Nothing was changed.')
+            try:
+                return {"html": page_html(state), "focus": ""}
+            except Exception:  # noqa: BLE001
+                state.screen = 'open' if state.graph is None else 'choose'
+                state.focus_key, state.filter_kind, state.filter_text = '', 'all', ''
+                return {"html": page_html(state), "focus": ""}
 
-    def test_connection(self, form: dict) -> str:
-        from .source import Client, SourceError
+    def _client(self, address: str, timeout: int = 10):
+        from .source import Client
+        # A certificate choice is used only for the server it was made for.
+        with self._state.action_lock:
+            cert = self._state.certificate_choice(address)
+        return Client(address, ca_file=cert.get('path', ''), ignore_ssl=cert.get('mode') == 'skip',
+                      request_timeout=timeout)
+
+    def login_sources(self, address: str) -> dict:
+        """The sign-in choices the server at *address* offers, as the markup
+        for the "This account is" list and the two hints beside it."""
+        from . import screens
+        from .source import SourceError
         try:
-            Client(form.get('address', ''), ca_file=form.get('ca_file', ''),
-                   ignore_ssl=form.get('ignore_ssl') in (True, '1'), request_timeout=10).test_connection(
-                form.get('username', ''), form.get('password', ''), form.get('auth_source', ''))
-            return 'Connection succeeded. No export was started.'
-        except SourceError as exc:
-            return str(exc)
+            names = self._client(address).login_sources()
+        except SourceError:
+            names = None
         except Exception:
-            return 'Connection failed. Check the address and credentials.'
+            names = None
+        lookup = 'failed' if names is None else 'ok'
+        with self._state.action_lock:
+            self._state.conn['sources'] = names or []
+            self._state.conn['lookup'] = lookup
+        return {'options': screens.source_options(names or []),
+                'address_hint': screens.ADDRESS_HINTS[lookup],
+                'source_hint': screens.SOURCE_HINTS[lookup]}
+
+    def test_connection(self, form: dict) -> Dict[str, str]:
+        """Check the address, user name and password. Starts no export.
+
+        The network call runs without the action lock, so the window stays
+        usable; only the result is written under it. Nothing typed is kept or
+        logged.
+        """
+        from .source import CertificateProblem, SignInRefused, SourceError
+        state = self._state
+        result, text = 'ok', ''
+        try:
+            self._client(str(form.get('address', ''))).test_connection(
+                str(form.get('username', '')), str(form.get('password', '')),
+                str(form.get('auth_source', '')))
+        except CertificateProblem:
+            result = 'cert'
+        except SignInRefused:
+            result = 'auth'
+        except SourceError as exc:
+            result, text = 'other', str(exc)
+        except Exception:
+            result, text = 'other', 'The server could not be reached. Check the address.'
         finally:
             form.clear()
+        with state.action_lock:
+            state.conn['tested'], state.conn['tested_text'], state.conn['error'] = result, text, None
+            if result == 'cert':
+                # Whatever certificate choice was in force did not work.
+                state.conn['cert'] = None
+            state.version += 1
+            return self._page('conn-test')
 
     def pick_path(self, kind: str, current: str = '') -> dict:
+        """One of the computer's own file windows: a certificate to open, or a
+        place to save a bundle or a support report."""
         from pathlib import Path
         import webview
         window = getattr(self, '_window', None)
-        if not window or kind not in ('ca', 'bundle', 'diagnostics'):
-            return {'error': 'The file picker is unavailable. Enter the path manually.'}
-        # Test hook for the frozen Linux smoke under Xvfb, whose native Save
-        # dialog cannot be driven reliably. Unset in normal app launches.
-        # Keep overwrite confirmation: this hook does not confirm an overwrite.
-        test_out = os.environ.get('VCFCF_MIGRATOR_TEST_BUNDLE_OUT')
-        if kind == 'bundle' and test_out:
-            return {'path': self._state.output_path(test_out, '.zip'), 'confirmed': False}
+        if not window or kind not in ('ca', 'bundle', 'report'):
+            return {'error': 'The file window is not available here.'}
         try:
             if kind == 'ca':
                 chosen = window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
                     file_types=('PEM certificates (*.pem;*.crt)', 'All files (*.*)'))
             else:
-                extension = '.zip' if kind == 'bundle' else '.jsonl'
-                target = Path(self._state.output_path(current, extension, self._state.default_out() if kind == 'bundle' else self._state.default_diagnostics_out()))
+                extension = {'bundle': '.zip', 'report': '.txt'}[kind]
+                default = (self._state.default_out() if kind == 'bundle'
+                           else str(self._state.download_directory() / 'support-report.txt'))
+                target = Path(self._state.output_path(current, extension, default))
+                types = {'bundle': 'Zip files (*.zip)', 'report': 'Text files (*.txt)'}[kind]
                 chosen = window.create_file_dialog(webview.SAVE_DIALOG, directory=str(target.parent),
-                    save_filename=target.name,
-                    file_types=(('Zip files (*.zip)' if kind == 'bundle' else 'JSON lines (*.jsonl)'),))
+                    save_filename=target.name, file_types=(types,))
             value = (chosen[0] if chosen else '') if isinstance(chosen, (list, tuple)) else (chosen or '')
             if value and kind != 'ca':
                 exact = str(Path(value).expanduser().resolve())
@@ -316,20 +199,49 @@ class Bridge:
                 return {'path': value, 'confirmed': value == exact}
             return {'path': value}
         except Exception:
-            return {'error': 'The file picker could not open. Enter the path manually.'}
+            return {'error': 'The file window could not be opened.'}
 
-    def check_release(self) -> Optional[str]:
+    def check_release(self) -> dict:
+        """Ask once whether a newer version exists, and hand back the header
+        button that says so."""
         # pywebview invokes bridge methods on worker threads. This lock is
         # separate from content actions, so the network never holds them up.
+        from . import screens
         with self._release_lock:
-            if not self._release_checked:
-                self._release_checked = True
-                self._release_tag = releases.newer_release(__version__)
-            return self._release_tag
+            if not self._state.update_checked:
+                tag, reached = releases.release_status(__version__)
+                self._state.update_tag, self._state.update_known = tag, reached
+                self._state.update_checked = True
+            return {'tag': self._state.update_tag, 'html': screens.update_button(self._state)}
 
-    def open_release(self) -> bool:
-        # Never accept a URL from the page or the release API.
-        return webbrowser.open(releases.RELEASE_PAGE, new=2)
+    def progress(self, version: Any = '') -> Dict[str, str]:
+        """Wait a moment for the page to change, and return it if it did.
+
+        The window calls this in a loop while a job is on screen. It holds no
+        lock while it waits, so Cancel gets through.
+        """
+        state = self._state
+        deadline = time.monotonic() + 1.0
+        while str(state.version) == str(version) and time.monotonic() < deadline:
+            job = state.job
+            if job is not None:
+                job.done.wait(0.1)
+            else:
+                time.sleep(0.05)
+        if str(state.version) == str(version):
+            return {}
+        with state.action_lock:
+            return self._page()
+
+    def find(self, text: Any = '') -> Dict[str, str]:
+        """The list for what has been typed in the search box, and nothing else."""
+        from . import screens, ui
+        state = self._state
+        with state.action_lock:
+            if state.graph is None or state.job is not None:
+                return {}
+            ui.dispatch(state, '/find', {'q': '' if text is None else str(text)})
+            return screens.list_parts(state)
 
     def act(self, path: str, form: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         from . import ui
@@ -337,23 +249,60 @@ class Bridge:
         with self._state.action_lock:
             path = str(path)
             fields = {str(k): "" if v is None else str(v) for k, v in (form or {}).items()}
-            anchor = ""
+            focus = ""
             # The lookup is checked separately from running the action. Wrapping
             # both in `except KeyError` would report a stray KeyError from deep
             # inside an action as "no such page action", which is a lie that would
             # cost someone an afternoon.
             if path not in ui.ACTIONS:
-                self._state.message = ""
-                self._state.error = f"this build has no page action called {path!r}"
+                self._state.note = ui.Note('bad', f'This version of the app has no action called {ui.e(path)}.')
             else:
                 try:
-                    anchor = ui.dispatch(self._state, path, fields)
+                    focus = ui.dispatch(self._state, path, fields)
                 except Exception as exc:
                     # The window has no status bar and no console the user will
                     # find. An action that dies has to say so on the page.
-                    self._state.message = ""
-                    self._state.error = f"{type(exc).__name__}: {exc}"
-            return {"html": page_html(self._state), "anchor": anchor or ""}
+                    # What went wrong while signing in can carry what was
+                    # typed, so only its kind is shown for those actions.
+                    detail = (type(exc).__name__ if path.startswith('/conn')
+                              else f'{type(exc).__name__}: {exc}')
+                    self._state.note = ui.Note(
+                        'bad', '<b>That did not work.</b> The app hit a problem it did not expect '
+                               f'({ui.e(detail)}). Nothing was saved. If it keeps '
+                               'happening, save a support report from Help and settings.')
+            job = self._state.job
+        # A job that finishes at once should not flash a working screen: give
+        # it a moment, with the lock released so it can swap its result in.
+        if job is not None:
+            job.done.wait(0.3)
+        with self._state.action_lock:
+            return self._page(focus)
+
+    def dropped(self, event: Any) -> None:
+        """A file was dropped on the window. Open it like a chosen file, then
+        have the page draw itself again."""
+        from . import ui
+        try:
+            files = (event or {}).get('dataTransfer', {}).get('files', [])
+            path = next((f.get('pywebviewFullPath') for f in files if f.get('pywebviewFullPath')), None)
+        except AttributeError:
+            path = None
+        if not path:
+            return
+        state = self._state
+        with state.action_lock:
+            if state.job is not None or state.ask or state.screen not in ('open', 'connect'):
+                return
+            try:
+                ui.dispatch(state, '/open', {'zip': str(path)})
+            except Exception:
+                return
+        window = getattr(self, '_window', None)
+        if window is not None:
+            try:
+                window.evaluate_js('window.migrator && window.migrator.refresh()')
+            except Exception:
+                pass
 
 
 def _picker_for(holder: Dict[str, Any]) -> Any:
@@ -361,70 +310,70 @@ def _picker_for(holder: Dict[str, Any]) -> Any:
 
     The window is taken out of ``holder`` when the button is pressed, not when
     this is built. The page has to be rendered before there is a window to
-    create, and the render is what decides whether the button appears at all,
-    so binding the window eagerly would hide the button on the first page and
-    show it only after some other action had redrawn.
+    create.
 
     ``holder`` is the seam that makes this testable without a display: a test
-    puts an object with a ``create_file_dialog`` method in it. An earlier
-    version of this function was marked no-cover and guarded only by a test
-    that grepped its source, which passed while the function was broken.
+    puts an object with a ``create_file_dialog`` method in it.
+
+    The file window starts in Downloads, which is where a browser puts an
+    export.
     """
     import webview
+    from pathlib import Path
 
     def pick() -> Any:
         window = holder.get("window")
         if window is None:
             return None
-        try:
-            chosen = window.create_file_dialog(
-                webview.OPEN_DIALOG,
-                allow_multiple=False,
-                file_types=("Content export (*.zip)", "All files (*.*)"),
-            )
-        except Exception:
-            # A broken file chooser must not take the window down with it:
-            # the path box beside it still works.
-            return None
-        return chosen
+        downloads = Path.home() / 'Downloads'
+        return window.create_file_dialog(
+            webview.OPEN_DIALOG,
+            directory=str(downloads) if downloads.is_dir() else '',
+            allow_multiple=False,
+            file_types=("Content export (*.zip)", "All files (*.*)"),
+        )
 
     return pick
 
 
-def run(state: Any, title: str = "VCF content migrator", width: int = 1280,
+def _bind_drop(window: Any, bridge: "Bridge") -> None:
+    """Let a file be dropped onto the window, where the platform passes its
+    path on. Where it does not, the button beside the drop area still works."""
+    try:
+        from webview.dom import DOMEventHandler
+        document = window.dom.document
+        document.events.dragover += DOMEventHandler(lambda event: None, True, True)
+        document.events.drop += DOMEventHandler(bridge.dropped, True, True)
+    except Exception:
+        pass
+
+
+def run(state: Any, title: str = "VCF Content Migrator", width: int = 1280,
         height: int = 860, initial_zip: Optional[str] = None) -> None:  # pragma: no cover - needs a display
     """Open the window and block until the user closes it."""
+    import shutil
+    import sys
     import webview
 
     bridge = Bridge(state)
     holder: Dict[str, Any] = {}
-    # Set before the first render, so the very first page carries the button.
+    # Set before the first render, so the very first page is the real one.
     state.file_picker = _picker_for(holder)
-    if initial_zip:
-        state.source_mode = 'zip'
-    state.confirm = lambda title, message: holder['window'].create_confirmation_dialog(title, message)
-    import shutil
-    import sys
+    state.dialog = bridge.pick_path
+    state.open_url = lambda url: bool(webbrowser.open(url, new=2))
+    state.background = True
     if sys.platform in ('darwin', 'win32') or shutil.which('xdg-open'):
         state.show_in_folder = show_in_folder
     holder["window"] = webview.create_window(title, html=page_html(state, initial_zip),
                                              js_api=bridge, width=width,
-                                             height=height)
+                                             height=height, min_size=(min(width, 1024), min(height, 700)))
     bridge._window = holder["window"]
-    def progress(stage):
-        try:
-            holder['window'].evaluate_js('window.migratorActivity.stage(' + json.dumps(stage) + ')')
-        except Exception:
-            pass
-
-    state.source_progress = progress
-    import sys
-
+    holder["window"].events.loaded += lambda: _bind_drop(holder["window"], bridge)
     webview.start(gui="qt" if sys.platform.startswith("linux") else None, http_server=False)
 
 
 def show_in_folder(path: str) -> bool:
-    """Reveal only a successfully written bundle, without invoking a shell."""
+    """Reveal only a file this app wrote, without invoking a shell."""
     import os
     from pathlib import Path
     import subprocess

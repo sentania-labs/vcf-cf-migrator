@@ -15,9 +15,10 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests' / 'fixtures'))
 from make_export_fixture import EMPTY_SM_ID, build_export_zip
-from vcfcf_migrator import desktop
+from vcfcf_migrator import desktop, ui
 from vcfcf_migrator.export_reader import read_export
 from vcfcf_migrator.ui import PageState
+from vcfcf_migrator.uipage import anchor
 import webview
 import webview.http
 
@@ -43,6 +44,10 @@ def main():
     failures = []
     with tempfile.TemporaryDirectory(prefix='migrator-native-') as directory:
         scratch = Path(directory)
+        # Bundles and support reports go to Downloads, so the smoke gets a home
+        # of its own rather than writing into the real one.
+        (scratch / 'home' / 'Downloads').mkdir(parents=True)
+        os.environ['HOME'] = os.environ['USERPROFILE'] = str(scratch / 'home')
         os.environ['VCFCF_MIGRATOR_CONFIG_DIR'] = str(scratch / 'settings')
         source = scratch / 'source.zip'
         source.write_bytes(build_export_zip())
@@ -50,7 +55,7 @@ def main():
         original_start = webview.start
         load_started = threading.Event()
         continue_load = threading.Event()
-        original_open = state.open_export
+        original_read = state._read
         check_started = threading.Event()
         continue_check = threading.Event()
         opened_releases = []
@@ -58,19 +63,19 @@ def main():
         def delayed_release_check(version):
             check_started.set()
             if not continue_check.wait(30):
-                return None
-            return 'v99.0.0'
+                return None, False
+            return 'v99.0.0', True
 
-        desktop.releases.newer_release = delayed_release_check
+        desktop.releases.release_status = delayed_release_check
         desktop.webbrowser.open = lambda url, new: opened_releases.append(url) or True
 
-        def delayed_open(path):
+        def delayed_read(job, *args, **kwargs):
             load_started.set()
             if not continue_load.wait(15):
                 raise AssertionError('Loading feedback was not acknowledged')
-            return original_open(path)
+            return original_read(job, *args, **kwargs)
 
-        state.open_export = delayed_open
+        state._read = delayed_read
 
         def reject_server(*args, **kwargs):
             raise AssertionError('The native UI must not start an HTTP server')
@@ -81,63 +86,116 @@ def main():
         def exercise():
             try:
                 window = webview.windows[0]
+                js = window.evaluate_js
+
+                def ready():
+                    return js("Boolean(window.migrator) && !document.body.hasAttribute('aria-busy') "
+                              "&& document.body.dataset.busy !== '1'")
+
+                def click(ident):
+                    found = js("(function(){var el=document.getElementById(%s);if(!el)return 'missing';"
+                               "if(el.disabled)return 'disabled';el.click();return 'ok';})()" % json.dumps(ident))
+                    assert found == 'ok', f'{ident}: {found}'
+                    time.sleep(0.1)
+                    wait_for(ready)
+
                 wait_for(load_started.is_set)
                 wait_for(check_started.is_set)
-                assert window.evaluate_js("document.getElementById('release-notice').hidden")
+                assert js("document.getElementById('update-slot').innerText") == ''
                 assert state.graph is None
-                wait_for(lambda: window.evaluate_js("document.body.getAttribute('aria-busy') === 'true' && document.getElementById('operation-progress').innerText.includes('Opening export')"))
-                wait_for(lambda: window.evaluate_js("document.getElementById('operation-progress').innerText.includes('(1 seconds)')"), timeout=3)
+                # The export named on the command line is being read: the window
+                # says so, counts the seconds and offers Cancel.
+                wait_for(lambda: js("document.body.dataset.busy === '1' && "
+                                    "document.body.innerText.includes('Reading source.zip')"))
+                assert js("Boolean(document.getElementById('cancel-job'))")
+                wait_for(lambda: js("document.getElementById('secs').textContent") not in ('0', None), timeout=4)
                 continue_load.set()
                 wait_for(lambda: state.graph is not None)
-                wait_for(lambda: window.evaluate_js("!document.body.hasAttribute('aria-busy') && Boolean(document.querySelector('form[action=\"/select\"]'))"))
+                wait_for(lambda: ready() and js("Boolean(document.getElementById('q'))"))
                 # Content loading finishes while the update request is still
-                # deliberately stalled. Publishing the notice changes no form.
-                window.evaluate_js("document.querySelector('[name=filter]').value='unfinished search'")
+                # deliberately stalled. Publishing the notice redraws nothing.
+                js("document.getElementById('q').value='unfinished search'")
                 continue_check.set()
-                wait_for(lambda: window.evaluate_js("document.getElementById('release-notice').textContent === 'v99.0.0 available ↗'"))
-                assert window.evaluate_js("document.querySelector('[name=filter]').value") == 'unfinished search'
-                window.evaluate_js("document.getElementById('release-notice').click()")
+                wait_for(lambda: js("document.getElementById('update-slot').innerText")
+                         == 'Update available: version 99.0.0')
+                assert js("document.getElementById('q').value") == 'unfinished search'
+                js("document.querySelector('#update-slot button').click()")
                 wait_for(lambda: len(opened_releases) == 1)
                 assert opened_releases == [desktop.releases.RELEASE_PAGE]
+                js("document.getElementById('q').value=''")
 
-                def submit(action, field=None, value=None):
-                    selector = "f.getAttribute('action') === " + json.dumps(action)
-                    if field:
-                        selector += " && f.querySelector('[name=" + field + "]')?.value === " + json.dumps(value)
-                    window.evaluate_js("(function(){ var f=Array.from(document.querySelectorAll('form')).find(f=>" + selector + "); if(!f)throw Error('Form missing'); f.requestSubmit(); })()")
+                # Three boxes ticked while the first is still being acted on:
+                # every one has to reach the program, in the order ticked. A
+                # tick that only the page had would be undone by the next
+                # redraw and left out of the bundle without a word.
+                keys = json.loads(js(
+                    "JSON.stringify(Array.from(document.querySelectorAll("
+                    "'input[type=checkbox][data-act=\"/select\"]:not(:checked):not(:disabled)'))"
+                    ".slice(0, 3).map(function (el) { return el.dataset.key; }))"))
+                assert len(keys) == 3, keys
+                held, release = threading.Event(), threading.Event()
+                real_dispatch = ui.dispatch
 
-                submit('/select', 'key', 'supermetric:' + EMPTY_SM_ID)
+                def held_dispatch(page, path, fields):
+                    if path == '/select' and not release.is_set():
+                        held.set()
+                        release.wait(15)
+                    return real_dispatch(page, path, fields)
+
+                def tick_now(key):
+                    assert js("(function(){var el=document.getElementById(%s);el.click();return el.checked;})()"
+                              % json.dumps('tick-' + anchor(key)))
+
+                ui.dispatch = held_dispatch
+                try:
+                    tick_now(keys[0])
+                    wait_for(held.is_set)
+                    tick_now(keys[1])
+                    tick_now(keys[2])
+                    assert state.picked == []          # nothing has got through yet
+                    release.set()
+                    time.sleep(0.1)
+                    wait_for(ready)
+                finally:
+                    release.set()
+                    ui.dispatch = real_dispatch
+                assert state.picked == keys, f'ticked {keys}, but the program has {state.picked}'
+                for key in keys:
+                    assert js("document.getElementById(%s).checked" % json.dumps('tick-' + anchor(key))), key
+                for key in keys:
+                    click('tick-' + anchor(key))
+                wait_for(lambda: state.picked == [])
+
+                click('tick-' + anchor('supermetric:' + EMPTY_SM_ID))
                 wait_for(lambda: len(state.picked) == 1)
-                wait_for(lambda: window.evaluate_js("!document.querySelector('form[action=\"/tab\"] button').disabled"))
-                submit('/tab', 'tab', 'review')
-                wait_for(lambda: window.evaluate_js("Boolean(document.getElementById('out'))"))
-                assert window.evaluate_js("!document.getElementById('release-notice').hidden")
-                output = scratch / 'bundle.zip'
-                window.evaluate_js("document.getElementById('out').value=" + json.dumps(str(output)))
-                submit('/build')
+                assert 'Added [Fixture] SM Empty.' in js('document.body.innerText')
+                click('next')                      # no dashboards chosen, so straight to Review
+                wait_for(lambda: 'Ready to save' in js('document.body.innerText'))
+                click('next')
+                wait_for(lambda: 'Save the bundle' in js('document.body.innerText'))
+                output = scratch / 'home' / 'Downloads' / 'source-bundle.zip'
+                assert 'source-bundle.zip' in js('document.body.innerText')
+                click('save')
                 wait_for(output.exists)
-                wait_for(lambda: 'bundle built and saved' in window.evaluate_js('document.body.innerText'))
+                wait_for(lambda: 'Bundle saved' in js('document.body.innerText'))
                 assert read_export(output).counts() == {'supermetric': 1}
-                submit('/tab', 'tab', 'settings')
-                wait_for(lambda: window.evaluate_js("Boolean(document.getElementById('diag_out'))"))
-                report = scratch / 'diagnostics.jsonl'
-                window.evaluate_js("document.getElementById('diag_out').value=" + json.dumps(str(report)))
-                # Native dialog interaction is covered by smoke_ux.py. Here guard
-                # the bridge path and the diagnostics file contract.
+                assert output.with_name('source-bundle-report.txt').exists()
+                assert output.with_name('source-bundle-checklist.txt').exists()
+                click('help-button')
+                wait_for(lambda: js("Boolean(document.getElementById('support-report'))"))
+                # One click, no file window: straight into Downloads.
                 dialogs = []
-                def save_dialog(*args, **kwargs):
-                    dialogs.append((args, kwargs))
-                    return str(report)
-                window.create_file_dialog = save_dialog
-                submit('/diagnostics')
-                wait_for(report.exists)
-                assert dialogs[0][0] == (webview.SAVE_DIALOG,)
-                text = report.read_text()
+                window.create_file_dialog = lambda *args, **kwargs: dialogs.append(args) or None
+                click('support-report')
+                wait_for(lambda: list(output.parent.glob('support-report-*.txt')))
+                assert not dialogs
+                text = next(output.parent.glob('support-report-*.txt')).read_text()
                 assert str(scratch) not in text
                 assert '[Fixture]' not in text
                 assert EMPTY_SM_ID not in text
                 assert json.loads(text.splitlines()[0])['kind'] == 'vcfcf-migrator-diagnostics'
-                print('Native delayed-load feedback, update notice/browser link, initial load, selection, build/readback, and anonymized diagnostics passed.', flush=True)
+                print('Native reading feedback, update notice/browser link, initial load, quick ticks, selection, '
+                      'save/readback, and anonymized support report passed.', flush=True)
             except Exception as exc:
                 continue_load.set()
                 continue_check.set()

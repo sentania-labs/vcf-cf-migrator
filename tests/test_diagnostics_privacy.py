@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from pages import configure_log
 from vcfcf_migrator import runlog
 from vcfcf_migrator.ui import PageState
 
@@ -24,7 +25,7 @@ def test_saved_diagnostics_remove_identity_from_every_surface(tmp_path, export_z
     state.log.events = [{'event': 'run.start', 'tool': '0.4.0', 'cwd': needles[7]}, event,
                         {'event': 'output.fingerprint', 'files': [payload]}]
     path = tmp_path / 'shared.jsonl'
-    state.save_diagnostics(str(path))
+    state.save_support_report(str(path))
     assert path.is_file()
     body = path.read_text()
     for needle in needles:
@@ -82,10 +83,10 @@ def test_report_is_safe_after_settings_change_truncation_and_failure(tmp_path, e
     state.log.event_cap = 8
     for i in range(20):
         state.log.info('page.action', path='/Users/ava-login/private.zip', index=i)
-    state.save_setting({'log_level': 'debug'})
+    configure_log(state, log_level='debug')
     state.open_export('/home/ava-login/nonexistent.zip')
     out = tmp_path / 'report.jsonl'
-    state.save_diagnostics(str(out))
+    state.save_support_report(str(out))
     body = out.read_text()
     assert 'ava-login' not in body and 'nonexistent.zip' not in body
     assert json.loads(body.splitlines()[0])['privacy'] == 'anonymized'
@@ -107,7 +108,78 @@ def test_large_untrusted_integers_do_not_prevent_diagnostics():
     assert json.loads(doc.splitlines()[0])['privacy'] == 'anonymized'
 
 
-def test_default_attachment_name_does_not_reuse_source_identity():
-    state = PageState()
-    state.zip_path = '/private/Ava-Example-export.zip'
-    assert state.default_diagnostics_out() == '/private/vcfcf-migrator-diagnostics.jsonl'
+def test_the_one_click_report_goes_to_downloads_under_a_name_that_gives_nothing_away(
+        tmp_path, monkeypatch, export_zip):
+    import re
+    downloads = tmp_path / 'home' / 'Downloads'
+    downloads.mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    private = tmp_path / 'Ava-Example-export.zip'
+    private.write_bytes(export_zip.read_bytes())
+    state = PageState(str(private))
+    state.save_support_report()
+    state.save_support_report()
+    saved = sorted(p.name for p in downloads.iterdir())
+    # Dated, never named after the export, and a second click never overwrites the first.
+    assert len(saved) == 2
+    assert all(re.fullmatch(r'support-report-\d{4}-\d{2}-\d{2}-\d{6}(-\d+)?\.txt', name) for name in saved)
+    assert state.report_saved == str(downloads / saved[-1]) or state.report_saved == str(downloads / saved[0])
+    body = (downloads / saved[0]).read_text()
+    assert 'Ava-Example' not in body and '[Fixture]' not in body
+    assert json.loads(body.splitlines()[0])['privacy'] == 'anonymized'
+    state.screen = 'help'
+    assert 'to your Downloads folder.' in state.render()
+    state.log.close()
+
+
+def test_a_report_that_cannot_go_to_downloads_falls_back_to_the_save_window(tmp_path, monkeypatch):
+    home = tmp_path / 'home'
+    (home / 'Downloads').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    (home / 'Downloads').chmod(0o500)
+    try:
+        state = PageState()
+        state.save_support_report()
+        assert not state.report_saved and 'could not be saved in Downloads' in state.note.text
+        elsewhere = tmp_path / 'elsewhere.txt'
+        asked = []
+        state.dialog = lambda kind, current: asked.append(kind) or {'path': str(elsewhere)}
+        state.save_support_report()
+        assert asked == ['report'] and state.report_saved == str(elsewhere) and elsewhere.is_file()
+        state.log.close()
+    finally:
+        (home / 'Downloads').chmod(0o700)
+
+
+def test_a_support_report_from_a_real_session_names_every_action_and_no_content(
+        tmp_path, export_zip, config_dir, monkeypatch):
+    import make_export_fixture as fixture
+    from vcfcf_migrator import diagnostics, ui
+
+    home = tmp_path / 'home'
+    (home / 'Downloads').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    state = PageState(str(export_zip))
+    key = next(k for k, node in state.graph.nodes.items() if node.kind == 'supermetric')
+    for path, form in (('/select', {'key': key, 'on': '1'}), ('/go', {'to': 'owner'}),
+                       ('/go', {'to': 'review'}), ('/go', {'to': 'save'}), ('/save', {}),
+                       ('/go', {'to': 'target'}), ('/theme', {'choice': 'dark'}),
+                       ('/support-report', {})):
+        ui.dispatch(state, path, form)
+    report = next((home / 'Downloads').glob('support-report-*.txt'))
+    body = report.read_text(encoding='utf-8')
+    rows = [json.loads(line) for line in body.splitlines()]
+    actions = [row['action'] for row in rows if row.get('event') == 'page.action']
+    assert {'/select', '/go', '/save', '/theme'} <= set(actions)
+    assert all(action in ui.ACTIONS for action in actions), actions
+    for private in [n.name for n in state.graph.nodes.values() if n.name]:
+        assert private not in body, private
+    for name in dir(fixture):
+        value = getattr(fixture, name)
+        if name.startswith(('PERSON_', 'SECRET_')) and isinstance(value, str) and value:
+            assert value not in body, name
+
+
+def test_every_registered_action_is_allowed_in_a_shared_report():
+    from vcfcf_migrator import diagnostics, ui
+    assert set(ui.ACTIONS) <= diagnostics.ENUMS['action']
