@@ -516,10 +516,10 @@ def main():
                     assert private not in body, 'a real name reached the support report'
                 look('39-help-support-report-saved')
                 press('Report a problem'); wait_for(lambda: opened == [ui.ISSUES_PAGE])
-                click('log-on'); see('Writing to Downloads / vcf-content-migrator.log', 'How much to record')
+                click('log-on'); see('Writing to Downloads / vcf-content-migrator.log'); gone('How much to record'); gone('Change…')
                 assert (downloads / 'vcf-content-migrator.log').exists()
                 look('40-help-log-file-on')
-                click('log-on'); gone('How much to record')
+                click('log-on'); gone('Writing to')
                 click('gloss'); see('What the words mean', 'Never finished loading', 'Management pack')
                 look('41-what-the-words-mean')
                 click('close-gloss')

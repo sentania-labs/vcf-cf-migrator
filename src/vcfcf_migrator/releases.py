@@ -49,8 +49,3 @@ def release_status(current):
         # Offline, rate limits, certificate errors and invalid responses are
         # irrelevant to the user's content work. Do not log response bodies.
         return None, False
-
-
-def newer_release(current):
-    """Return a validated tag or None. No credentials, content, or retries."""
-    return release_status(current)[0]

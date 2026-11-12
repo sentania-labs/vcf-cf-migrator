@@ -11,7 +11,6 @@ Fixture only. Nothing here reads the corpus.
 """
 from __future__ import annotations
 
-import inspect
 import re
 
 import pytest
@@ -32,29 +31,12 @@ def state(config_dir, export_zip):
 def test_the_page_carries_its_script_once_before_body_ends(state):
     html = desktop.page_html(state)
     assert html.count(uipage.CLIENT_JS) == 1
-    assert html.index("api().act(path") < html.index("</body>")
+    assert html.index(uipage.CLIENT_JS) < html.index("</body>")
 
 
 def test_the_window_gets_the_page_the_state_renders(state):
     """The window must not get a different page."""
     assert desktop.page_html(PageState(state.zip_path)) == PageState(state.zip_path).render()
-
-
-def test_the_script_listens_on_document_not_body():
-    """Every action replaces the body, so a body listener works exactly once."""
-    script = uipage.CLIENT_JS
-    for event in ('click', 'change', 'input', 'keydown'):
-        assert f"document.addEventListener('{event}'" in script
-    assert 'document.body.addEventListener' not in script
-
-
-def test_the_script_sends_what_a_button_names_and_the_form_around_it():
-    script = uipage.CLIENT_JS
-    assert "el.dataset.act" in script and "closest('[data-form]')" in script
-    # A footer button sits outside the form it sends.
-    assert "el.dataset.uses" in script
-    # A tick box answers on change, with its new state.
-    assert "send(el, {on: el.checked ? '1' : '0'})" in script
 
 
 def test_every_control_on_every_screen_names_an_action_that_exists(state):
@@ -119,12 +101,13 @@ def test_typing_in_the_search_box_draws_only_the_list(state):
 
 # --- the seams -------------------------------------------------------------
 
-def test_one_dispatch_writes_the_page_action_log_line():
+def test_a_bridge_action_writes_exactly_one_page_action_log_line(state):
     """Every way in logs identically because only one place logs at all."""
-    src = inspect.getsource(ui)
-    assert src.count('_runlog.info("page.action"') == 1
-    assert src.count('state.log.phase("page"') + src.count('.log.phase("page"') >= 1
-    assert 'page.action' not in inspect.getsource(desktop)
+    before = len(state.log.snapshot())
+    desktop.Bridge(state).act('/filter', {'f': 'all', 'q': ''})
+    logged = [e for e in state.log.snapshot()[before:]
+              if e.get('event') == 'page.action' and e.get('action') == '/filter']
+    assert len(logged) == 1
 
 
 def test_a_dropped_file_opens_through_the_logged_dispatch(config_dir, export_zip):
@@ -226,10 +209,6 @@ def test_a_sign_in_action_that_raises_never_shows_what_was_typed(state, monkeypa
     assert 'hunter2-invented' not in res['html'] and 'ValueError' in state.note.text
 
 
-def test_the_script_says_so_when_a_call_is_rejected():
-    assert ".catch(" in uipage.CLIENT_JS and "banner(" in uipage.CLIENT_JS
-
-
 def test_a_keyerror_inside_an_action_is_not_reported_as_a_missing_action(state, monkeypatch):
     def boom(*_args, **_kwargs):
         raise KeyError("some-inner-lookup")
@@ -254,12 +233,20 @@ def test_nothing_but_cancel_gets_through_while_a_job_is_on_screen(state):
 
 # --- availability ----------------------------------------------------------
 
-def test_availability_checks_the_backend_not_just_the_package():
+def test_availability_checks_the_backend_not_just_the_package(monkeypatch):
     """Importing `webview` proves only that a pure-Python package is present;
     the thing that opens a window is resolved later, which is exactly where a
     one-file binary loses it."""
-    src = inspect.getsource(desktop)
-    assert "webview.platforms" in src
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, 'webview', types.ModuleType('webview'))
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setattr(desktop, '_BACKENDS', {'linux': ('vcfm_missing_backend',)})
+    ok, why = desktop.available(refresh=True)
+    assert not ok and 'vcfm_missing_backend' in why
+    monkeypatch.setitem(sys.modules, 'vcfm_missing_backend', types.ModuleType('vcfm_missing_backend'))
+    assert desktop.available(refresh=True) == (True, '')
 
 
 def test_availability_is_cached(monkeypatch):

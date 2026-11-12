@@ -172,24 +172,22 @@ class Bridge:
 
     def pick_path(self, kind: str, current: str = '') -> dict:
         """One of the computer's own file windows: a certificate to open, or a
-        place to save a bundle, a support report or the log file."""
+        place to save a bundle or a support report."""
         from pathlib import Path
         import webview
         window = getattr(self, '_window', None)
-        if not window or kind not in ('ca', 'bundle', 'report', 'log'):
+        if not window or kind not in ('ca', 'bundle', 'report'):
             return {'error': 'The file window is not available here.'}
         try:
             if kind == 'ca':
                 chosen = window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
                     file_types=('PEM certificates (*.pem;*.crt)', 'All files (*.*)'))
             else:
-                extension = {'bundle': '.zip', 'report': '.txt', 'log': '.log'}[kind]
+                extension = {'bundle': '.zip', 'report': '.txt'}[kind]
                 default = (self._state.default_out() if kind == 'bundle'
-                           else str(self._state.download_directory()
-                                    / ('support-report.txt' if kind == 'report' else 'vcf-content-migrator.log')))
+                           else str(self._state.download_directory() / 'support-report.txt'))
                 target = Path(self._state.output_path(current, extension, default))
-                types = {'bundle': 'Zip files (*.zip)', 'report': 'Text files (*.txt)',
-                         'log': 'Log files (*.log)'}[kind]
+                types = {'bundle': 'Zip files (*.zip)', 'report': 'Text files (*.txt)'}[kind]
                 chosen = window.create_file_dialog(webview.SAVE_DIALOG, directory=str(target.parent),
                     save_filename=target.name, file_types=(types,))
             value = (chosen[0] if chosen else '') if isinstance(chosen, (list, tuple)) else (chosen or '')

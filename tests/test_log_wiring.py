@@ -456,7 +456,7 @@ def test_a_head_event_written_twice_keeps_one_slot():
     assert len(headers) == 1 and headers[0]["tool"] == "second"
 
 
-def test_the_page_has_a_control_for_the_log_file_and_the_level(state, tmp_path, monkeypatch):
+def test_the_log_file_is_one_tick_box_with_nothing_else_around_it(state, tmp_path, monkeypatch):
     from vcfcf_migrator.ui import dispatch
     home = tmp_path / 'home'
     (home / 'Downloads').mkdir(parents=True)
@@ -469,13 +469,13 @@ def test_the_page_has_a_control_for_the_log_file_and_the_level(state, tmp_path, 
     dispatch(state, '/log', {'on': '1'})
     page = visible(state.render())
     assert 'Writing to Downloads / vcf-content-migrator.log' in page
-    assert 'Problems only' in page and 'A summary of each step' in page and 'Every decision (large files)' in page
+    assert 'How much to record' not in page and 'Change…' not in page
     assert (home / 'Downloads' / 'vcf-content-migrator.log').exists()
-    dispatch(state, '/settings', {'log_level': 'warn'})
-    assert state.log_settings()[2] == 'warn'
     dispatch(state, '/log', {'on': '0'})
     assert state.log_settings()[0] is None
-    assert 'How much to record' not in visible(state.render())
+    assert 'Writing to' not in visible(state.render())
+    with pytest.raises(KeyError):
+        dispatch(state, '/log-where', {})
 
 
 def test_the_support_report_button_says_what_the_file_holds(state):

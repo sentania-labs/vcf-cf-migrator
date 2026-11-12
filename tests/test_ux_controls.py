@@ -537,8 +537,7 @@ def test_blank_or_nameless_destination_falls_back_to_the_default(state, value):
     assert state.output_path(value, '.zip', 'fallback-bundle') == default
 
 
-@pytest.mark.parametrize('kind, name', [('bundle', None), ('report', 'support-report.txt'),
-                                        ('log', 'vcf-content-migrator.log')])
+@pytest.mark.parametrize('kind, name', [('bundle', None), ('report', 'support-report.txt')])
 @pytest.mark.parametrize('blank', ['', '   '])
 def test_native_save_dialog_starts_at_the_real_default(state, kind, name, blank, tmp_path, monkeypatch):
     monkeypatch.setattr(PageState, 'download_directory', staticmethod(lambda: tmp_path))

@@ -217,6 +217,27 @@ def test_legacy_negotiation_only_replays_the_initial_get():
     assert opener.requests[-1].get_method() == 'POST'
 
 
+def _unauthorized():
+    return urllib.error.HTTPError('https://operations.example', 401, 'Unauthorized', {}, io.BytesIO(b''))
+
+
+def test_a_refused_password_is_a_refused_sign_in():
+    c, _opener = client([_unauthorized()])
+    with pytest.raises(source.SignInRefused):
+        c.acquire('user', 'wrong-password')
+
+
+def test_a_401_after_the_token_was_issued_is_not_a_refused_password():
+    values = replies()
+    values[1:2] = [_unauthorized(), _unauthorized()]
+    c, opener = client(values)
+    with pytest.raises(source.SourceError) as caught:
+        c.acquire('user', 'password')
+    assert not isinstance(caught.value, source.SignInRefused)
+    assert 'session expired' in str(caught.value)
+    assert opener.requests[-1].full_url.endswith('/auth/token/release')
+
+
 def test_release_failure_does_not_discard_successful_snapshot():
     class FailedRelease(Opener):
         def open(self, request, timeout):

@@ -17,7 +17,7 @@ from vcfcf_migrator import insight as _insight
 from vcfcf_migrator import preview as _preview
 from vcfcf_migrator import tasks as _tasks
 from vcfcf_migrator.graph import KIND_ORDER
-from vcfcf_migrator.ui import (DOWNLOAD_STAGES, LIST_LIMIT, LOG_CHOICES, STEP_NAMES, STEPS, can_go)
+from vcfcf_migrator.ui import (DOWNLOAD_STAGES, LIST_LIMIT, STEP_NAMES, STEPS, can_go)
 from vcfcf_migrator.uipage import anchor, button, e, link
 from vcfcf_migrator.wording import KINDS, kind_counts, kind_many, kind_one, kind_what, listing, plural
 
@@ -1235,7 +1235,7 @@ def target_screen(state) -> Tuple[str, str]:
 # Help and settings
 
 def help_screen(state) -> Tuple[str, str]:
-    destination, destination_from, level, level_from = state.log_settings()
+    destination, destination_from = state.log_settings()[:2]
     log_on = bool(destination)
     fixed = destination_from in ('command line',) or destination_from.startswith('environment')
     log = ['<div class="field" style="margin:0"><label class="radio"><input type="checkbox" '
@@ -1245,19 +1245,9 @@ def help_screen(state) -> Tuple[str, str]:
     if log_on:
         where = Path(destination)
         log.append(f'<div class="sm" style="margin-top:4px">Writing to <b>{e(_folder(where.parent))} / '
-                   f'{e(where.name)}</b> '
-                   + ('<span class="muted">(set when the app was started, so it cannot be changed here)</span>'
-                      if fixed else
-                      (button('/log-where', 'Change…', ident='log-where') if state.dialog else ''))
-                   + '</div>')
-        chosen = next((name for name, _text in LOG_CHOICES if name == level),
-                      'warn' if level == 'error' else 'debug' if level == 'detail' else 'info')
-        locked = level_from == 'command line' or level_from.startswith('environment')
-        log.append('<label class="lat-label" style="margin-top:8px" for="log-level">How much to record'
-                   '</label><select class="lat-select" id="log-level" name="log_level" data-act="/settings"'
-                   + (' disabled' if locked else '') + '>'
-                   + ''.join(f'<option value="{name}"{" selected" if name == chosen else ""}>{text}</option>'
-                             for name, text in LOG_CHOICES) + '</select>')
+                   f'{e(where.name)}</b>'
+                   + (' <span class="muted">(set when the app was started, so it cannot be changed here)</span>'
+                      if fixed else '') + '</div>')
     log.append('<div class="lat-hint" style="margin-top:4px">Only needed if support asks for it. A log file '
                'holds real names, so keep it private and send the support report instead.</div></div>')
     support = ['<div class="lat-card"><h3>Something not working?</h3><p>Save a support report and attach it '

@@ -34,18 +34,18 @@ def response(monkeypatch, **values):
 ])
 def test_only_newer_stable_releases(monkeypatch, installed, tag, want):
     response(monkeypatch, tag_name=tag)
-    assert releases.newer_release(installed) == want
+    assert releases.release_status(installed)[0] == want
 
 
 @pytest.mark.parametrize('flags', [{'draft': True}, {'prerelease': True}, {'draft': None}])
 def test_unpublished_and_prerelease_responses_stay_quiet(monkeypatch, flags):
     response(monkeypatch, **flags)
-    assert releases.newer_release('0.5.1') is None
+    assert releases.release_status('0.5.1')[0] is None
 
 
 def test_request_is_public_bounded_and_has_no_user_data(monkeypatch):
     calls = response(monkeypatch, html_url='https://untrusted.invalid/')
-    assert releases.newer_release('0.5.1') == 'v0.5.2'
+    assert releases.release_status('0.5.1')[0] == 'v0.5.2'
     request, timeout = calls[0]
     assert request.full_url == releases.LATEST_API
     assert request.data is None
@@ -58,14 +58,14 @@ def test_request_is_public_bounded_and_has_no_user_data(monkeypatch):
 def test_unusable_response_is_silent(monkeypatch, payload):
     monkeypatch.setattr(releases.urllib.request, 'urlopen',
                         lambda *a, **kw: io.BytesIO(payload))
-    assert releases.newer_release('0.5.1') is None
+    assert releases.release_status('0.5.1')[0] is None
 
 
 def test_offline_is_silent(monkeypatch):
     def offline(*args, **kwargs):
         raise TimeoutError('private proxy detail')
     monkeypatch.setattr(releases.urllib.request, 'urlopen', offline)
-    assert releases.newer_release('0.5.1') is None
+    assert releases.release_status('0.5.1')[0] is None
 
 
 def test_slow_check_does_not_take_the_content_lock_and_runs_once(monkeypatch):

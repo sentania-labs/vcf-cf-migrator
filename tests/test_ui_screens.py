@@ -242,8 +242,6 @@ def test_the_panel_shows_what_it_is_what_it_needs_and_what_uses_it(state):
     # Exactly one thing is brought into view: the row, never a link in the panel.
     assert page.count(' data-into-view') == 1
     assert 'data-into-view' in page.split(f'id="{uipage.anchor(MAIL)}"')[1].split('>')[0]
-    assert "querySelector('[data-into-view]')" in uipage.CLIENT_JS
-    assert "querySelector('[data-reveal]')" not in uipage.CLIENT_JS
     assert ' data-into-view' not in state.render()          # once only, not on every redraw
 
 

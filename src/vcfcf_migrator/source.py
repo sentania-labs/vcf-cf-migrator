@@ -157,7 +157,7 @@ class Client:
                 404: 'This Operations endpoint does not offer the required content export API.',
                 429: 'Operations is busy. Wait before connecting again.',
             }
-            if code == 401:
+            if code == 401 and path == '/auth/token/acquire':
                 raise SignInRefused(messages[401]) from None
             raise SourceError(messages.get(code, 'Operations could not complete the request. No automatic export retry was made.')) from None
         except (urllib.error.URLError, ssl.SSLError, OSError, socket.timeout) as exc:

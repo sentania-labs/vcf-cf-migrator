@@ -49,9 +49,6 @@ DOWNLOAD_STAGES = ('Signing in', 'Asking VCF Operations to prepare the export',
                    'Downloading the export', 'Reading what is inside')
 _STAGE_OF = {'Authenticating': 0, 'Requesting content export': 1, 'Waiting for Operations export': 1,
              'Downloading content export': 2, 'Loading downloaded content': 3}
-# The three amounts of detail the settings offer, and the log level behind each.
-LOG_CHOICES = (('warn', 'Problems only'), ('info', 'A summary of each step'),
-               ('debug', 'Every decision (large files)'))
 
 
 def e(value) -> str:
@@ -1598,14 +1595,6 @@ def _act_log(state: "PageState", form: dict) -> str:
     return 'log-on'
 
 
-def _act_log_where(state: "PageState", _form: dict) -> str:
-    destination = state.log_settings()[0]
-    chosen = state.dialog('log', destination or '') if state.dialog else {}
-    if chosen and chosen.get('path'):
-        state.save_setting({'log_file': chosen['path']})
-    return ''
-
-
 def _act_conn_cert_file(state: "PageState", _form: dict) -> str:
     chosen = state.dialog('ca', '') if state.dialog else {}
     if chosen and chosen.get('path'):
@@ -1694,7 +1683,6 @@ ACTIONS = {
     '/settings': _act_settings,
     '/theme': _act_theme,
     '/log': _act_log,
-    '/log-where': _act_log_where,
     '/escape': _act_escape,
     '/redraw': _act_redraw,
 }
@@ -1703,7 +1691,7 @@ POST_PATHS = tuple(sorted(ACTIONS))
 # a reason to lose what the previous action said.
 KEEPS_NOTE = ('/focus', '/find', '/redraw', '/preview', '/close-preview', '/issue', '/task', '/tick',
               '/doc', '/close-doc', '/gloss', '/escape', '/help', '/back', '/conn-edited',
-              '/show-in-folder', '/settings', '/theme', '/log', '/log-where', '/support-report')
+              '/show-in-folder', '/settings', '/theme', '/log', '/support-report')
 
 
 def run_desktop(zip_path: Optional[str] = None, corpus_cli: Optional[str] = None,
